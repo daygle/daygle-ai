@@ -2,6 +2,9 @@ export type AgentEvent =
   | { type: "status"; message: string }
   | { type: "model"; content: string }
   | { type: "model_delta"; content: string }
+  | { type: "diff"; stat: string; diff: string }
+  | { type: "review"; verdict: "approved" | "changes_requested"; text: string }
+  | { type: "qa"; command: string; output: string; passed: boolean; skipped?: boolean }
   | { type: "tool_start"; name: string; args: Record<string, unknown> }
   | { type: "tool_result"; name: string; result: string }
   | { type: "approval_requested"; requestId: string; command: string }
@@ -18,6 +21,10 @@ export interface AgentConfig {
   numCtx?: number;
   maxSteps?: number;
   systemPrompt?: string;
+  reviewModel?: string;
+  maxReviewRounds?: number;
+  qaCommand?: string;
+  maxQaRounds?: number;
 }
 
 export interface AgentJobRequest {

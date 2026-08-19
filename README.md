@@ -14,17 +14,52 @@ It includes a self-hosted coding agent: point it at a GitHub repo, describe a ta
 - **React Router** (hash-based, so it works on any static host)
 - Talks directly to the **Ollama REST API** from the browser
 
-## Getting started
+## Installation
+
+### Prerequisites
+
+| Tool  | Why                                           | Install                                                      |
+| ----- | --------------------------------------------- | ------------------------------------------------------------ |
+| **bun** | Runtime for the app, agent server, and scripts | `curl -fsSL https://bun.sh/install \| bash`                    |
+| **git**  | Cloning repos and opening PRs                  | https://git-scm.com/downloads                                |
+| **curl** | Downloads the bundled Ollama binary            | `sudo apt-get install curl` / `brew install curl`            |
+| **zstd** | Extracts Ollama on **Linux** only              | `sudo apt-get install zstd` / `brew install zstd`            |
+
+> **Windows:** use **WSL2** — the setup scripts target Linux/macOS. The official Ollama Windows installer also works, but then point daygle's server URL at it in **Settings**.
+
+You also need ~2 GB of free disk for the Ollama binary and your model weights.
+
+### Install
+
+```bash
+bun run setup                                  # checks prereqs, installs deps + bundled Ollama
+bun run setup --model qwen2.5-coder:7b         # …and pulls a model right away
+```
+
+The setup script is idempotent — re-running it only installs what's missing. The equivalent manual flow is:
 
 ```bash
 bun install
 bun run ollama:install   # downloads Ollama into .ollama/ (Linux needs zstd)
-bun run ollama           # starts it on http://localhost:11434
-bun run agent            # starts the agent server on http://localhost:8787
-bun run dev              # starts the daygle UI
+```
+
+### Run
+
+```bash
+bun run ollama           # terminal 1: Ollama server on http://localhost:11434
+bun run dev              # terminal 2: daygle UI
 ```
 
 Open the printed URL — daygle defaults to `http://localhost:11434`, so it should connect to the bundled server immediately. Pull a model from the **Models** page (or `.ollama/bin/ollama pull llama3.2`).
+
+### Model recommendations
+
+- **Chat / everyday:** `llama3.2` (light) or `qwen2.5:7b`
+- **Agent (tool-calling):** `qwen2.5-coder:7b` — the best small model for structured tool calls; larger coder models (14b/32b) are stronger if you have the RAM
+
+### Agent server (optional)
+
+The coding agent needs its own server plus GitHub auth — see the [Agent](#agent) section below.
 
 ## Bundled Ollama
 
@@ -66,7 +101,9 @@ Then open **Agent** in the UI, paste a repo URL and a task (e.g. "Review the cod
 2. Loop over your model with tools — `list_files`, `read_file`, `search`, `write_file`, `run_command`
 3. Create a branch, commit the changes, push, and open a **pull request** for you to review
 
-The run log streams the model's output token-by-token, and **Advanced options** lets you tune temperature, context window, max steps, and override the system prompt per job.
+The run log streams the model's output token-by-token, and a **Changes** panel shows the working-tree diff live as files are edited — new files included, with a per-file `+/-` breakdown. **Advanced options** lets you tune temperature, context window, max steps, override the system prompt per job, and enable an **AI review gate** by picking a review model: after the agent finishes, that model reviews the diff before anything is committed — if it requests changes, the agent runs up to two fix rounds, and the review is included in the pull request body.
+
+Every job also runs a **QA verification gate** before anything is committed: it installs dependencies, auto-detects `typecheck` / `test` / `build` from `package.json` (or use the **QA command** field to override), and sends failures back to the agent for up to two fix rounds. The result is included in the pull request body.
 
 > **Sandboxed commands.** The agent runs shell commands in the cloned repo on your machine. Destructive, network, and credential-accessing commands are hard-blocked; read-only inspection runs automatically; everything else (tests, builds, installs) pauses for your **Approve/Deny** click in the Agent page before it runs. Still, only point it at repos you trust and review the diff before merging.
 
@@ -82,11 +119,35 @@ The run log streams the model's output token-by-token, and **Advanced options** 
 
 Set `DAYGLE_SANDBOX_NETWORK=1` to allow network access inside the sandbox (off by default).
 
+## Environment variables
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `GITHUB_APP_ID` | — | GitHub App ID (agent auth via App) |
+| `GITHUB_APP_PRIVATE_KEY` | — | GitHub App private key (agent auth via App) |
+| `GITHUB_APP_INSTALLATION_ID` | — | Optional: skip the App install lookup |
+| `DAYGLE_SANDBOX_NETWORK` | off | Set `1` to allow network inside the sandbox |
+| `DAYGLE_SANDBOX_IMAGE` | `node:22-slim` | Docker/Podman image for sandboxed commands |
+| `OLLAMA_MODELS` | `.ollama/models` | Where Ollama stores model weights |
+| `OLLAMA_HOST` | `0.0.0.0:11434` | Ollama bind address |
+| `OLLAMA_ORIGINS` | `*` | Allowed browser origins (required for the UI) |
+| `PORT` / `HOST` | `8787` / `0.0.0.0` | Agent server bind |
+
+## Troubleshooting
+
+- **`Ollama is not installed`** — run `bun run ollama:install` (or `bun run setup`).
+- **UI can't connect / origin errors** — make sure `bun run ollama` is running with `OLLAMA_ORIGINS="*"` (the bundled script sets this).
+- **Agent page says “Agent server not running”** — start it with `bun run agent`.
+- **`zstd: command not found`** (Linux) — `sudo apt-get install zstd`, then re-run setup.
+- **bubblewrap fails with “Operation not permitted”** (Ubuntu) — `sudo sysctl kernel.apparmor_restrict_unprivileged_userns=0`, or let it fall back to Docker.
+- **Windows** — use WSL2; the scripts don't run on native Windows.
+
 ## Scripts
 
 | Command                 | What it does                          |
 | ----------------------- | ------------------------------------- |
 | `bun run dev`           | Start the Vite dev server             |
+| `bun run setup`         | One-command install (deps + Ollama)   |
 | `bun run ollama:install`| Download Ollama into `.ollama/`       |
 | `bun run ollama`        | Start the bundled Ollama server       |
 | `bun run agent`         | Start the local agent server          |
@@ -125,3 +186,4 @@ agent/
 - [x] Container isolation via bubblewrap / Docker / Podman (auto-detected)
 - [x] Job cancellation and persistence of past runs
 - [x] Streaming model output and per-job tuning knobs
+- [x] AI review gate (separate reviewer model) + enforced QA verification

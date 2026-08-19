@@ -4,6 +4,7 @@ import {
   CheckCircle2,
   CircleAlert,
   ExternalLink,
+  FileDiff,
   GitBranch,
   History,
   Play,
@@ -62,10 +63,13 @@ export function AgentPage() {
   const [jobId, setJobId] = useState<string | null>(null);
   const [history, setHistory] = useState<AgentRunSummary[]>([]);
   const [viewingHistoryId, setViewingHistoryId] = useState<string | null>(null);
+  const [diff, setDiff] = useState<{ stat: string; diff: string } | null>(null);
   const [temperature, setTemperature] = useState(0.2);
   const [numCtx, setNumCtx] = useState(16384);
   const [maxSteps, setMaxSteps] = useState(40);
   const [systemPrompt, setSystemPrompt] = useState("");
+  const [reviewModel, setReviewModel] = useState("");
+  const [qaCommand, setQaCommand] = useState("");
   const logRef = useRef<HTMLDivElement | null>(null);
 
   const effectiveModel = model && models.some((m) => m.name === model) ? model : (models[0]?.name ?? "");
@@ -96,6 +100,10 @@ export function AgentPage() {
         pending += event.content;
         continue;
       }
+      if (event.type === "diff") {
+        // Diffs render in their own panel, not the log.
+        continue;
+      }
       if (event.type === "model") {
         pending = "";
         out.push(event);
@@ -110,6 +118,8 @@ export function AgentPage() {
     if (pending) out.push({ type: "model", content: pending });
     return out;
   }, [events]);
+
+  const diffFiles = useMemo(() => (diff ? parseDiff(diff.diff) : []), [diff]);
 
   async function refreshHistory() {
     try {
@@ -139,6 +149,7 @@ export function AgentPage() {
     setEvents([]);
     setStartError(null);
     setViewingHistoryId(null);
+    setDiff(null);
     try {
       const { id } = await startAgentJob(serverUrl, {
         repoUrl: repoUrl.trim(),
@@ -151,11 +162,16 @@ export function AgentPage() {
           numCtx: Number.isFinite(numCtx) && numCtx > 0 ? numCtx : undefined,
           maxSteps: Number.isFinite(maxSteps) && maxSteps > 0 ? maxSteps : undefined,
           systemPrompt: systemPrompt.trim() || undefined,
+          reviewModel: reviewModel.trim() || undefined,
+          qaCommand: qaCommand.trim() || undefined,
         },
       });
       setJobId(id);
       openAgentEvents(serverUrl, id, (event) => {
         setEvents((prev) => [...prev, event]);
+        if (event.type === "diff") {
+          setDiff({ stat: event.stat, diff: event.diff });
+        }
         if (event.type === "done" || event.type === "error" || event.type === "cancelled") {
           setRunning(false);
           setJobId(null);
@@ -181,6 +197,7 @@ export function AgentPage() {
     if (id === viewingHistoryId) return;
     setViewingHistoryId(id);
     setEvents([]);
+    setDiff(null);
     try {
       const job = await getAgentJob(serverUrl, id);
       setEvents(job.events ?? []);
@@ -386,6 +403,36 @@ export function AgentPage() {
                 className="mt-1.5 font-mono"
               />
             </div>
+            <div>
+              <label htmlFor="review-model" className="text-xs font-medium text-muted-foreground">
+                Review model <span className="text-muted-foreground/60">(optional)</span>
+              </label>
+              <Select
+                id="review-model"
+                value={reviewModel}
+                onChange={(event) => setReviewModel(event.target.value)}
+                className="mt-1.5"
+              >
+                <option value="">No AI review</option>
+                {models.map((m) => (
+                  <option key={m.digest} value={m.name}>
+                    {m.name}
+                  </option>
+                ))}
+              </Select>
+            </div>
+            <div>
+              <label htmlFor="qa-command" className="text-xs font-medium text-muted-foreground">
+                QA command <span className="text-muted-foreground/60">(optional)</span>
+              </label>
+              <Input
+                id="qa-command"
+                value={qaCommand}
+                onChange={(event) => setQaCommand(event.target.value)}
+                placeholder="auto-detect: typecheck / test / build"
+                className="mt-1.5 font-mono"
+              />
+            </div>
             <div className="sm:col-span-3">
               <label htmlFor="system-prompt" className="text-xs font-medium text-muted-foreground">
                 System prompt override <span className="text-muted-foreground/60">(optional)</span>
@@ -455,6 +502,46 @@ export function AgentPage() {
         )}
       </section>
 
+      {/* Changes */}
+      {diff !== null && diff.diff.trim() !== "" && (
+        <section>
+          <div className="mb-2 flex items-center gap-2 text-sm font-semibold">
+            <FileDiff className="h-4 w-4 text-accent" />
+            Changes
+            <span className="text-xs font-normal text-muted-foreground">
+              {diffFiles.length} file(s)
+            </span>
+          </div>
+          <div className="space-y-1.5 rounded-xl border border-border bg-[#050507] p-2">
+            {diffFiles.map((file) => (
+              <details key={file.path} open={diffFiles.length <= 3} className="rounded-lg border border-border bg-background">
+                <summary className="flex cursor-pointer items-center gap-2 px-3 py-2 font-mono text-xs text-foreground/90 hover:text-foreground">
+                  <span className="min-w-0 flex-1 truncate">{file.path}</span>
+                  <span className="text-accent">+{file.additions}</span>
+                  <span className="text-destructive">-{file.deletions}</span>
+                </summary>
+                <pre className="max-h-80 overflow-auto border-t border-border p-3 font-mono text-[11px] leading-relaxed">
+                  {file.content.split("\n").map((line, index) => (
+                    <div
+                      key={index}
+                      className={
+                        line.startsWith("+") && !line.startsWith("+++")
+                          ? "text-accent"
+                          : line.startsWith("-") && !line.startsWith("---")
+                            ? "text-destructive/90"
+                            : "text-muted-foreground"
+                      }
+                    >
+                      {line || " "}
+                    </div>
+                  ))}
+                </pre>
+              </details>
+            ))}
+          </div>
+        </section>
+      )}
+
       {/* Log */}
       {events.length > 0 && (
         <section>
@@ -498,6 +585,38 @@ function formatTime(ts: number): string {
   return new Date(ts).toLocaleString();
 }
 
+interface DiffFile {
+  path: string;
+  additions: number;
+  deletions: number;
+  content: string;
+}
+
+function parseDiff(diff: string): DiffFile[] {
+  const files: DiffFile[] = [];
+  let current: DiffFile | null = null;
+  for (const line of diff.split("\n")) {
+    if (line.startsWith("diff --git ")) {
+      if (current) files.push(current);
+      const match = line.match(/^diff --git a\/(.+?) b\/(.+)$/);
+      current = {
+        path: match?.[2] ?? match?.[1] ?? "?",
+        additions: 0,
+        deletions: 0,
+        content: `${line}\n`,
+      };
+      continue;
+    }
+    if (current) {
+      current.content += `${line}\n`;
+      if (line.startsWith("+") && !line.startsWith("+++")) current.additions += 1;
+      if (line.startsWith("-") && !line.startsWith("---")) current.deletions += 1;
+    }
+  }
+  if (current) files.push(current);
+  return files;
+}
+
 function EventLine({
   event,
   serverUrl,
@@ -519,6 +638,57 @@ function EventLine({
     case "model_delta":
       // Normally coalesced into a `model` block by the log renderer; kept for safety.
       return <div className="whitespace-pre-wrap text-sm leading-relaxed text-foreground/90">{event.content}</div>;
+    case "diff":
+      // Rendered in the dedicated Changes panel; never in the log.
+      return null;
+    case "qa": {
+      const tone = event.skipped
+        ? "text-muted-foreground"
+        : event.passed
+          ? "text-accent"
+          : "text-destructive";
+      const border = event.skipped
+        ? "border-border bg-muted/30"
+        : event.passed
+          ? "border-accent/40 bg-accent/10"
+          : "border-destructive/40 bg-destructive/10";
+      return (
+        <div className={`rounded-lg border p-3 ${border}`}>
+          <div className={`flex items-center gap-1.5 text-sm font-medium ${tone}`}>
+            <CircleAlert className="h-4 w-4" />
+            QA {event.skipped ? "skipped" : event.passed ? "passed" : "failed"}
+          </div>
+          {event.command && <div className="mt-1 font-mono text-xs text-muted-foreground">$ {event.command}</div>}
+          {event.output && (
+            <pre className="mt-1.5 max-h-48 overflow-auto whitespace-pre-wrap rounded-md border border-border bg-background p-2.5 font-mono text-[11px] leading-relaxed text-muted-foreground">
+              {event.output}
+            </pre>
+          )}
+        </div>
+      );
+    }
+    case "review":
+      return (
+        <div
+          className={`rounded-lg border p-3 ${
+            event.verdict === "approved"
+              ? "border-accent/40 bg-accent/10"
+              : "border-amber-400/40 bg-amber-400/10"
+          }`}
+        >
+          <div
+            className={`flex items-center gap-1.5 text-sm font-medium ${
+              event.verdict === "approved" ? "text-accent" : "text-amber-300"
+            }`}
+          >
+            <ShieldCheck className="h-4 w-4" />
+            AI review — {event.verdict === "approved" ? "approved" : "changes requested"}
+          </div>
+          <p className="mt-1.5 whitespace-pre-wrap text-sm leading-relaxed text-foreground/90">
+            {event.text}
+          </p>
+        </div>
+      );
     case "tool_start": {
       const args = JSON.stringify(event.args);
       return (

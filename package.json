@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0",
+    "setup": "sh scripts/setup.sh",
     "ollama:install": "sh scripts/install-ollama.sh",
     "ollama": "sh scripts/run-ollama.sh",
     "agent": "bun run agent/server.ts",

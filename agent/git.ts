@@ -37,6 +37,23 @@ export async function createBranch(dir: string, branch: string): Promise<void> {
   await run("git", ["checkout", "-b", branch], dir);
 }
 
+const MAX_STAT = 4_000;
+const MAX_DIFF = 100_000;
+
+function truncate(text: string, max: number): string {
+  return text.length > max ? `${text.slice(0, max)}\n… (truncated)` : text;
+}
+
+export async function workingDiff(dir: string): Promise<{ stat: string; diff: string }> {
+  // Mark untracked files as intent-to-add so they appear in `git diff` (without staging content).
+  await run("git", ["add", "-N", "."], dir).catch(() => {});
+  const [stat, diff] = await Promise.all([
+    run("git", ["diff", "--stat"], dir),
+    run("git", ["diff"], dir),
+  ]);
+  return { stat: truncate(stat, MAX_STAT), diff: truncate(diff, MAX_DIFF) };
+}
+
 export async function changedFiles(dir: string): Promise<string[]> {
   const out = await run("git", ["status", "--porcelain"], dir);
   return out

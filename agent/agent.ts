@@ -16,6 +16,9 @@ export type AgentEvent =
   | { type: "status"; message: string }
   | { type: "model"; content: string }
   | { type: "model_delta"; content: string }
+  | { type: "diff"; stat: string; diff: string }
+  | { type: "review"; verdict: "approved" | "changes_requested"; text: string }
+  | { type: "qa"; command: string; output: string; passed: boolean; skipped?: boolean }
   | { type: "tool_start"; name: string; args: Record<string, unknown> }
   | { type: "tool_result"; name: string; result: string }
   | { type: "approval_requested"; requestId: string; command: string }
@@ -35,6 +38,10 @@ export interface AgentConfig {
   numCtx?: number;
   maxSteps?: number;
   systemPrompt?: string;
+  reviewModel?: string;
+  maxReviewRounds?: number;
+  qaCommand?: string;
+  maxQaRounds?: number;
 }
 
 const DEFAULT_MAX_STEPS = 40;
@@ -249,4 +256,51 @@ export async function runAgentLoop(opts: {
   }
 
   return "Reached the maximum number of steps without finishing.";
+}
+
+export interface ReviewResult {
+  verdict: "approved" | "changes_requested";
+  text: string;
+}
+
+const REVIEW_SYSTEM_PROMPT = `You are a senior software engineer performing a pre-merge code review.
+Review the diff for correctness, bugs, security issues, regressions, and style. Be specific and concise; reference exact lines or functions where possible.
+
+Respond in this exact format:
+First line: APPROVED or CHANGES REQUESTED
+Then: a short summary and, if changes are requested, a numbered list of the concrete issues to fix.`;
+
+/**
+ * Reviews a diff with (typically) a different model before the changes are committed.
+ * Emits a single `review` event with the verdict and the full review text.
+ */
+export async function runReview(opts: {
+  ollamaUrl: string;
+  model: string;
+  task: string;
+  diff: string;
+  emit: (event: AgentEvent) => void;
+  signal?: AbortSignal;
+  config?: AgentConfig;
+}): Promise<ReviewResult> {
+  const { ollamaUrl, model, task, diff, emit, signal } = opts;
+  const temperature = opts.config?.temperature ?? DEFAULT_TEMPERATURE;
+  const numCtx = opts.config?.numCtx ?? DEFAULT_NUM_CTX;
+
+  const user = `Task being implemented:\n${task}\n\nDiff to review:\n\n${diff.slice(0, 60_000)}`;
+  const { content } = await chatOnce(
+    ollamaUrl,
+    model,
+    [
+      { role: "system", content: REVIEW_SYSTEM_PROMPT },
+      { role: "user", content: user },
+    ],
+    [],
+    { temperature, numCtx, signal },
+  );
+
+  const text = content.trim() || "APPROVED\n(no review content returned)";
+  const verdict: ReviewResult["verdict"] = /^\s*APPROVED\b/i.test(text) ? "approved" : "changes_requested";
+  emit({ type: "review", verdict, text });
+  return { verdict, text };
 }
