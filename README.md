@@ -66,6 +66,8 @@ Then open **Agent** in the UI, paste a repo URL and a task (e.g. "Review the cod
 2. Loop over your model with tools — `list_files`, `read_file`, `search`, `write_file`, `run_command`
 3. Create a branch, commit the changes, push, and open a **pull request** for you to review
 
+The run log streams the model's output token-by-token, and **Advanced options** lets you tune temperature, context window, max steps, and override the system prompt per job.
+
 > **Sandboxed commands.** The agent runs shell commands in the cloned repo on your machine. Destructive, network, and credential-accessing commands are hard-blocked; read-only inspection runs automatically; everything else (tests, builds, installs) pauses for your **Approve/Deny** click in the Agent page before it runs. Still, only point it at repos you trust and review the diff before merging.
 
 **Cancellation & history.** A running job can be stopped from the Agent page (the **Stop** button aborts the loop and kills in-flight commands). Every run is persisted to `~/.daygle/history`, listed in the Agent page's **Run history** panel, and clickable to replay its full log.
@@ -122,3 +124,4 @@ agent/
 - [x] Command sandboxing (block / allow / approve policy + process-group limits)
 - [x] Container isolation via bubblewrap / Docker / Podman (auto-detected)
 - [x] Job cancellation and persistence of past runs
+- [x] Streaming model output and per-job tuning knobs

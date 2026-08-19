@@ -15,6 +15,7 @@ interface AgentMessage {
 export type AgentEvent =
   | { type: "status"; message: string }
   | { type: "model"; content: string }
+  | { type: "model_delta"; content: string }
   | { type: "tool_start"; name: string; args: Record<string, unknown> }
   | { type: "tool_result"; name: string; result: string }
   | { type: "approval_requested"; requestId: string; command: string }
@@ -29,9 +30,18 @@ export class CancelledError extends Error {
   }
 }
 
-const MAX_STEPS = 40;
+export interface AgentConfig {
+  temperature?: number;
+  numCtx?: number;
+  maxSteps?: number;
+  systemPrompt?: string;
+}
 
-const SYSTEM_PROMPT = `You are daygle, a careful software engineering agent working inside a git repository checkout.
+const DEFAULT_MAX_STEPS = 40;
+const DEFAULT_TEMPERATURE = 0.2;
+const DEFAULT_NUM_CTX = 16384;
+
+const DEFAULT_SYSTEM_PROMPT = `You are daygle, a careful software engineering agent working inside a git repository checkout.
 Your job is to complete the user's task by inspecting the code and, when appropriate, editing it.
 
 Work in small, verifiable steps. Read and understand before editing.
@@ -56,43 +66,8 @@ interface RawToolCall {
   function?: { name?: string; arguments?: unknown };
 }
 
-async function chatOnce(
-  ollamaUrl: string,
-  model: string,
-  messages: AgentMessage[],
-  tools: ToolDefinition[],
-  signal?: AbortSignal,
-): Promise<{ content: string; toolCalls: ToolCall[] }> {
-  let res: Response;
-  try {
-    res = await fetch(`${ollamaUrl.replace(/\/+$/, "")}/api/chat`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model,
-        messages,
-        tools,
-        stream: false,
-        options: { temperature: 0.2, num_ctx: 16384 },
-      }),
-      signal,
-    });
-  } catch (err) {
-    if (signal?.aborted) throw new CancelledError();
-    throw err;
-  }
-
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`Ollama /api/chat failed (${res.status}): ${text.slice(0, 500)}`);
-  }
-
-  const data = (await res.json()) as {
-    message?: { content?: string; tool_calls?: RawToolCall[] };
-  };
-  const message = data.message ?? {};
-  const content = typeof message.content === "string" ? message.content : "";
-  const toolCalls: ToolCall[] = (message.tool_calls ?? []).map((call) => {
+function parseToolCalls(raw: RawToolCall[] | undefined): ToolCall[] {
+  return (raw ?? []).map((call) => {
     const name = call.function?.name ?? "unknown";
     let args: unknown = call.function?.arguments ?? {};
     if (typeof args === "string") {
@@ -107,8 +82,107 @@ async function chatOnce(
     }
     return { function: { name, arguments: args as Record<string, unknown> } };
   });
+}
 
-  return { content, toolCalls };
+async function chatOnce(
+  ollamaUrl: string,
+  model: string,
+  messages: AgentMessage[],
+  tools: ToolDefinition[],
+  options: {
+    temperature: number;
+    numCtx: number;
+    signal?: AbortSignal;
+    onDelta?: (chunk: string) => void;
+  },
+): Promise<{ content: string; toolCalls: ToolCall[] }> {
+  const { temperature, numCtx, signal, onDelta } = options;
+  let res: Response;
+  try {
+    res = await fetch(`${ollamaUrl.replace(/\/+$/, "")}/api/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model,
+        messages,
+        tools,
+        stream: true,
+        options: { temperature, num_ctx: numCtx },
+      }),
+      signal,
+    });
+  } catch (err) {
+    if (signal?.aborted) throw new CancelledError();
+    throw err;
+  }
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`Ollama /api/chat failed (${res.status}): ${text.slice(0, 500)}`);
+  }
+
+  const contentType = res.headers.get("content-type") ?? "";
+  const isStream =
+    contentType.includes("application/x-ndjson") || contentType.includes("text/event-stream");
+
+  // Some servers ignore `stream: true`; fall back to a single JSON body.
+  if (!isStream) {
+    const data = (await res.json()) as { message?: { content?: string; tool_calls?: RawToolCall[] } };
+    const message = data.message ?? {};
+    const content = typeof message.content === "string" ? message.content : "";
+    if (content) onDelta?.(content);
+    return { content, toolCalls: parseToolCalls(message.tool_calls) };
+  }
+
+  const reader = res.body?.getReader();
+  if (!reader) {
+    const data = (await res.json()) as { message?: { content?: string; tool_calls?: RawToolCall[] } };
+    const message = data.message ?? {};
+    const content = typeof message.content === "string" ? message.content : "";
+    if (content) onDelta?.(content);
+    return { content, toolCalls: parseToolCalls(message.tool_calls) };
+  }
+
+  const decoder = new TextDecoder();
+  let content = "";
+  let rawToolCalls: RawToolCall[] | undefined;
+  let buffer = "";
+
+  const consumeLine = (line: string) => {
+    const trimmed = line.trim();
+    if (!trimmed) return;
+    let data: { message?: { content?: string; tool_calls?: RawToolCall[] } };
+    try {
+      data = JSON.parse(trimmed) as typeof data;
+    } catch {
+      return;
+    }
+    const message = data.message ?? {};
+    const delta = typeof message.content === "string" ? message.content : "";
+    if (delta) {
+      content += delta;
+      onDelta?.(delta);
+    }
+    if (message.tool_calls?.length) rawToolCalls = message.tool_calls;
+  };
+
+  for (;;) {
+    let chunk: Awaited<ReturnType<typeof reader.read>>;
+    try {
+      chunk = await reader.read();
+    } catch (err) {
+      if (signal?.aborted) throw new CancelledError();
+      throw err;
+    }
+    if (chunk.done) break;
+    buffer += decoder.decode(chunk.value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() ?? "";
+    for (const line of lines) consumeLine(line);
+  }
+  if (buffer.trim()) consumeLine(buffer);
+
+  return { content, toolCalls: parseToolCalls(rawToolCalls) };
 }
 
 export async function runAgentLoop(opts: {
@@ -120,22 +194,32 @@ export async function runAgentLoop(opts: {
   approve?: CommandApprover;
   sandbox?: SandboxRunner;
   signal?: AbortSignal;
+  config?: AgentConfig;
 }): Promise<string> {
   const { root, task, model, ollamaUrl, emit, approve, sandbox, signal } = opts;
+  const temperature = opts.config?.temperature ?? DEFAULT_TEMPERATURE;
+  const numCtx = opts.config?.numCtx ?? DEFAULT_NUM_CTX;
+  const maxSteps = Math.max(1, Math.min(200, opts.config?.maxSteps ?? DEFAULT_MAX_STEPS));
+  const systemPrompt = opts.config?.systemPrompt?.trim() || DEFAULT_SYSTEM_PROMPT;
 
   const throwIfCancelled = () => {
     if (signal?.aborted) throw new CancelledError();
   };
 
   const messages: AgentMessage[] = [
-    { role: "system", content: SYSTEM_PROMPT },
+    { role: "system", content: systemPrompt },
     { role: "user", content: task },
   ];
 
-  for (let step = 0; step < MAX_STEPS; step++) {
+  for (let step = 0; step < maxSteps; step++) {
     throwIfCancelled();
-    emit({ type: "status", message: `Thinking… (step ${step + 1}/${MAX_STEPS})` });
-    const { content, toolCalls } = await chatOnce(ollamaUrl, model, messages, TOOL_DEFINITIONS, signal);
+    emit({ type: "status", message: `Thinking… (step ${step + 1}/${maxSteps})` });
+    const { content, toolCalls } = await chatOnce(ollamaUrl, model, messages, TOOL_DEFINITIONS, {
+      temperature,
+      numCtx,
+      signal,
+      onDelta: (delta) => emit({ type: "model_delta", content: delta }),
+    });
     throwIfCancelled();
 
     if (content) emit({ type: "model", content });

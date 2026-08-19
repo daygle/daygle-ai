@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Bot,
   CheckCircle2,
@@ -62,6 +62,10 @@ export function AgentPage() {
   const [jobId, setJobId] = useState<string | null>(null);
   const [history, setHistory] = useState<AgentRunSummary[]>([]);
   const [viewingHistoryId, setViewingHistoryId] = useState<string | null>(null);
+  const [temperature, setTemperature] = useState(0.2);
+  const [numCtx, setNumCtx] = useState(16384);
+  const [maxSteps, setMaxSteps] = useState(40);
+  const [systemPrompt, setSystemPrompt] = useState("");
   const logRef = useRef<HTMLDivElement | null>(null);
 
   const effectiveModel = model && models.some((m) => m.name === model) ? model : (models[0]?.name ?? "");
@@ -82,6 +86,29 @@ export function AgentPage() {
 
   useEffect(() => {
     logRef.current?.scrollTo({ top: logRef.current.scrollHeight, behavior: "smooth" });
+  }, [events]);
+
+  const displayEvents = useMemo(() => {
+    const out: AgentEvent[] = [];
+    let pending = "";
+    for (const event of events) {
+      if (event.type === "model_delta") {
+        pending += event.content;
+        continue;
+      }
+      if (event.type === "model") {
+        pending = "";
+        out.push(event);
+        continue;
+      }
+      if (pending) {
+        out.push({ type: "model", content: pending });
+        pending = "";
+      }
+      out.push(event);
+    }
+    if (pending) out.push({ type: "model", content: pending });
+    return out;
   }, [events]);
 
   async function refreshHistory() {
@@ -119,6 +146,12 @@ export function AgentPage() {
         model: effectiveModel,
         baseBranch: baseBranch.trim(),
         ollamaUrl,
+        config: {
+          temperature: Number.isFinite(temperature) ? temperature : undefined,
+          numCtx: Number.isFinite(numCtx) && numCtx > 0 ? numCtx : undefined,
+          maxSteps: Number.isFinite(maxSteps) && maxSteps > 0 ? maxSteps : undefined,
+          systemPrompt: systemPrompt.trim() || undefined,
+        },
       });
       setJobId(id);
       openAgentEvents(serverUrl, id, (event) => {
@@ -305,6 +338,70 @@ export function AgentPage() {
           </div>
         </div>
 
+        <details className="rounded-lg border border-border bg-background/50 px-3 py-2">
+          <summary className="cursor-pointer select-none text-xs font-medium text-muted-foreground hover:text-foreground">
+            Advanced options
+          </summary>
+          <div className="mt-3 grid gap-3 sm:grid-cols-3">
+            <div>
+              <label htmlFor="temperature" className="text-xs font-medium text-muted-foreground">
+                Temperature
+              </label>
+              <Input
+                id="temperature"
+                type="number"
+                min={0}
+                max={2}
+                step={0.1}
+                value={temperature}
+                onChange={(event) => setTemperature(Number(event.target.value))}
+                className="mt-1.5 font-mono"
+              />
+            </div>
+            <div>
+              <label htmlFor="num-ctx" className="text-xs font-medium text-muted-foreground">
+                Context window
+              </label>
+              <Input
+                id="num-ctx"
+                type="number"
+                min={2048}
+                step={1024}
+                value={numCtx}
+                onChange={(event) => setNumCtx(Number(event.target.value))}
+                className="mt-1.5 font-mono"
+              />
+            </div>
+            <div>
+              <label htmlFor="max-steps" className="text-xs font-medium text-muted-foreground">
+                Max steps
+              </label>
+              <Input
+                id="max-steps"
+                type="number"
+                min={1}
+                max={200}
+                value={maxSteps}
+                onChange={(event) => setMaxSteps(Number(event.target.value))}
+                className="mt-1.5 font-mono"
+              />
+            </div>
+            <div className="sm:col-span-3">
+              <label htmlFor="system-prompt" className="text-xs font-medium text-muted-foreground">
+                System prompt override <span className="text-muted-foreground/60">(optional)</span>
+              </label>
+              <Textarea
+                id="system-prompt"
+                value={systemPrompt}
+                onChange={(event) => setSystemPrompt(event.target.value)}
+                placeholder="Leave blank to use the default daygle prompt."
+                rows={4}
+                className="mt-1.5 font-mono text-xs"
+              />
+            </div>
+          </div>
+        </details>
+
         <div className="flex items-center gap-2">
           <Button onClick={handleStart} disabled={running || !repoUrl.trim() || !task.trim() || !effectiveModel}>
             {running ? <Spinner /> : <Play className="h-4 w-4" />}
@@ -369,7 +466,7 @@ export function AgentPage() {
             ref={logRef}
             className="max-h-[28rem] space-y-2 overflow-y-auto rounded-xl border border-border bg-[#050507] p-4 scrollbar-thin"
           >
-            {events.map((event, index) => (
+            {displayEvents.map((event, index) => (
               <EventLine
                 key={index}
                 event={event}
@@ -419,6 +516,9 @@ function EventLine({
           {event.content}
         </div>
       );
+    case "model_delta":
+      // Normally coalesced into a `model` block by the log renderer; kept for safety.
+      return <div className="whitespace-pre-wrap text-sm leading-relaxed text-foreground/90">{event.content}</div>;
     case "tool_start": {
       const args = JSON.stringify(event.args);
       return (

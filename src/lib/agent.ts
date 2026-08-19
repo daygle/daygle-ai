@@ -1,6 +1,7 @@
 export type AgentEvent =
   | { type: "status"; message: string }
   | { type: "model"; content: string }
+  | { type: "model_delta"; content: string }
   | { type: "tool_start"; name: string; args: Record<string, unknown> }
   | { type: "tool_result"; name: string; result: string }
   | { type: "approval_requested"; requestId: string; command: string }
@@ -12,12 +13,20 @@ export const DEFAULT_AGENT_URL = "http://localhost:8787";
 
 export type RunStatus = "running" | "done" | "error" | "cancelled";
 
+export interface AgentConfig {
+  temperature?: number;
+  numCtx?: number;
+  maxSteps?: number;
+  systemPrompt?: string;
+}
+
 export interface AgentJobRequest {
   repoUrl: string;
   task: string;
   model: string;
   baseBranch: string;
   ollamaUrl: string;
+  config?: AgentConfig;
 }
 
 export interface AgentRunSummary {

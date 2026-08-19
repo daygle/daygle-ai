@@ -3,7 +3,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { CancelledError, runAgentLoop, type AgentEvent } from "./agent";
+import { CancelledError, runAgentLoop, type AgentConfig, type AgentEvent } from "./agent";
 import {
   changedFiles,
   cloneRepo,
@@ -45,6 +45,7 @@ interface Job {
   controller: AbortController;
   createdAt: number;
   finishedAt?: number;
+  config?: AgentConfig;
 }
 
 const jobs = new Map<string, Job>();
@@ -93,6 +94,11 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
 }
 
 function publish(job: Job, event: AgentEvent): void {
+  if (event.type === "model_delta") {
+    // Streaming deltas are live-only; the full `model` event is what gets persisted.
+    for (const listener of job.listeners) listener(event);
+    return;
+  }
   job.events.push(event);
   for (const listener of job.listeners) listener(event);
   persist(job);
@@ -202,6 +208,7 @@ async function executeJob(job: Job): Promise<void> {
       approve: makeApprover(job),
       sandbox: sandbox ?? undefined,
       signal,
+      config: job.config,
     });
 
     throwIfCancelled();
@@ -299,6 +306,7 @@ const server = http.createServer((req, res) => {
         model?: string;
         baseBranch?: string;
         ollamaUrl?: string;
+        config?: AgentConfig;
       };
       try {
         body = JSON.parse(await readBody(req)) as typeof body;
@@ -326,6 +334,7 @@ const server = http.createServer((req, res) => {
         denied: new Set(),
         controller: new AbortController(),
         createdAt: Date.now(),
+        config: body.config,
       };
       jobs.set(job.id, job);
       persist(job);
