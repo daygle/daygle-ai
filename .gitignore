@@ -1,0 +1,7 @@
+node_modules
+.ollama/
+dist
+dist-ssr
+*.local
+.DS_Store
+.vite

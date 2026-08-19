@@ -1,0 +1,62 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 240 12% 4%;
+    --foreground: 240 8% 94%;
+    --card: 240 10% 7%;
+    --card-foreground: 240 8% 94%;
+    --muted: 240 8% 13%;
+    --muted-foreground: 240 5% 58%;
+    --border: 240 8% 17%;
+    --input: 240 8% 17%;
+    --ring: 84 78% 60%;
+    --accent: 84 78% 60%;
+    --accent-foreground: 240 30% 8%;
+    --destructive: 0 72% 55%;
+    --destructive-foreground: 0 0% 100%;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  html {
+    color-scheme: dark;
+  }
+
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+  }
+}
+
+@layer utilities {
+  .bg-grid {
+    background-image:
+      linear-gradient(to right, hsl(var(--border) / 0.55) 1px, transparent 1px),
+      linear-gradient(to bottom, hsl(var(--border) / 0.55) 1px, transparent 1px);
+    background-size: 34px 34px;
+  }
+
+  .glow-accent {
+    box-shadow: 0 0 0 1px hsl(var(--accent) / 0.25), 0 0 40px hsl(var(--accent) / 0.15);
+  }
+
+  .text-glow {
+    text-shadow: 0 0 32px hsl(var(--accent) / 0.45);
+  }
+
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    background: hsl(var(--border));
+    border-radius: 9999px;
+  }
+  .scrollbar-thin::-webkit-scrollbar-track {
+    background: transparent;
+  }
+}
