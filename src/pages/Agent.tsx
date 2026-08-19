@@ -30,6 +30,8 @@ import { Input } from "../components/ui/input";
 import { Textarea } from "../components/ui/textarea";
 import { Select } from "../components/ui/select";
 import { Spinner } from "../components/ui/spinner";
+import { WorkspacePanel } from "../components/WorkspacePanel";
+import { parseDiff } from "../lib/diff";
 
 const STORAGE_KEY = "daygle.agentUrl";
 
@@ -70,6 +72,8 @@ export function AgentPage() {
   const [systemPrompt, setSystemPrompt] = useState("");
   const [reviewModel, setReviewModel] = useState("");
   const [qaCommand, setQaCommand] = useState("");
+  const [useWorkspace, setUseWorkspace] = useState(false);
+  const [workspaceRefreshKey, setWorkspaceRefreshKey] = useState(0);
   const logRef = useRef<HTMLDivElement | null>(null);
 
   const effectiveModel = model && models.some((m) => m.name === model) ? model : (models[0]?.name ?? "");
@@ -164,6 +168,7 @@ export function AgentPage() {
           systemPrompt: systemPrompt.trim() || undefined,
           reviewModel: reviewModel.trim() || undefined,
           qaCommand: qaCommand.trim() || undefined,
+          workspace: useWorkspace || undefined,
         },
       });
       setJobId(id);
@@ -176,6 +181,7 @@ export function AgentPage() {
           setRunning(false);
           setJobId(null);
           void refreshHistory();
+          if (useWorkspace) setWorkspaceRefreshKey((key) => key + 1);
         }
       });
     } catch (err) {
@@ -282,6 +288,9 @@ export function AgentPage() {
         )}
       </section>
 
+      {/* Workspace */}
+      <WorkspacePanel serverUrl={serverUrl} refreshKey={workspaceRefreshKey} />
+
       {/* Job form */}
       <section className="space-y-4 rounded-xl border border-border bg-card p-5">
         <div className="grid gap-3 sm:grid-cols-2">
@@ -354,6 +363,16 @@ export function AgentPage() {
             </div>
           </div>
         </div>
+
+        <label className="flex items-center gap-2 text-xs text-muted-foreground">
+          <input
+            type="checkbox"
+            checked={useWorkspace}
+            onChange={(event) => setUseWorkspace(event.target.checked)}
+            className="h-3.5 w-3.5 rounded border-border accent-[hsl(var(--accent))]"
+          />
+          Run in the connected workspace — leave changes uncommitted for review (deliver from the Workspace panel)
+        </label>
 
         <details className="rounded-lg border border-border bg-background/50 px-3 py-2">
           <summary className="cursor-pointer select-none text-xs font-medium text-muted-foreground hover:text-foreground">
@@ -585,37 +604,7 @@ function formatTime(ts: number): string {
   return new Date(ts).toLocaleString();
 }
 
-interface DiffFile {
-  path: string;
-  additions: number;
-  deletions: number;
-  content: string;
-}
 
-function parseDiff(diff: string): DiffFile[] {
-  const files: DiffFile[] = [];
-  let current: DiffFile | null = null;
-  for (const line of diff.split("\n")) {
-    if (line.startsWith("diff --git ")) {
-      if (current) files.push(current);
-      const match = line.match(/^diff --git a\/(.+?) b\/(.+)$/);
-      current = {
-        path: match?.[2] ?? match?.[1] ?? "?",
-        additions: 0,
-        deletions: 0,
-        content: `${line}\n`,
-      };
-      continue;
-    }
-    if (current) {
-      current.content += `${line}\n`;
-      if (line.startsWith("+") && !line.startsWith("+++")) current.additions += 1;
-      if (line.startsWith("-") && !line.startsWith("---")) current.deletions += 1;
-    }
-  }
-  if (current) files.push(current);
-  return files;
-}
 
 function EventLine({
   event,
@@ -740,7 +729,12 @@ function EventLine({
           </div>
           {event.changedFiles && event.changedFiles.length > 0 && (
             <div className="mt-1 text-xs text-muted-foreground">
-              {event.changedFiles.length} file(s) changed{event.prUrl ? "" : " — no pull request opened"}
+              {event.changedFiles.length} file(s) changed
+              {event.pending
+                ? " — left uncommitted in the workspace, deliver from the panel above"
+                : event.prUrl
+                  ? ""
+                  : " — no pull request opened"}
             </div>
           )}
           {event.prUrl && (

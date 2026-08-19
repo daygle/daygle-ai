@@ -3,17 +3,27 @@ import fs from "node:fs";
 import path from "node:path";
 import { parseRepo } from "./github";
 
-function run(cmd: string, args: string[], cwd?: string): Promise<string> {
+function runInner(cmd: string, args: string[], cwd: string | undefined, trim: boolean): Promise<string> {
   return new Promise((resolve, reject) => {
     execFile(cmd, args, { cwd, timeout: 300_000, maxBuffer: 16 * 1024 * 1024 }, (error, stdout, stderr) => {
       if (error) {
         const detail = (stderr || error.message).toString().trim();
         reject(new Error(detail || `${cmd} ${args.join(" ")} failed`));
       } else {
-        resolve(stdout.toString().trim());
+        resolve(trim ? stdout.toString().trim() : stdout.toString());
       }
     });
   });
+}
+
+/** Runs a command and trims surrounding whitespace from stdout. */
+export function run(cmd: string, args: string[], cwd?: string): Promise<string> {
+  return runInner(cmd, args, cwd, true);
+}
+
+/** Runs a command without trimming stdout (needed for `git status --porcelain`). */
+export function runRaw(cmd: string, args: string[], cwd?: string): Promise<string> {
+  return runInner(cmd, args, cwd, false);
 }
 
 function tokenUrl(url: string, token: string): string {
@@ -55,7 +65,7 @@ export async function workingDiff(dir: string): Promise<{ stat: string; diff: st
 }
 
 export async function changedFiles(dir: string): Promise<string[]> {
-  const out = await run("git", ["status", "--porcelain"], dir);
+  const out = await runRaw("git", ["status", "--porcelain"], dir);
   return out
     .split("\n")
     .map((line) => line.slice(3).trim())

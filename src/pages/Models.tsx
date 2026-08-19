@@ -1,5 +1,6 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
+import { checkModelUpdates, DEFAULT_AGENT_URL, type ModelUpdateInfo } from "../lib/agent";
 import {
   Box,
   CircleAlert,
@@ -53,6 +54,17 @@ export function ModelsPage() {
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
 
+  const [agentUrl] = useState(() => {
+    try {
+      return localStorage.getItem("daygle.agentUrl") ?? DEFAULT_AGENT_URL;
+    } catch {
+      return DEFAULT_AGENT_URL;
+    }
+  });
+  const [updates, setUpdates] = useState<Record<string, ModelUpdateInfo> | null>(null);
+  const [checkingUpdates, setCheckingUpdates] = useState(false);
+  const [updatesError, setUpdatesError] = useState<string | null>(null);
+
   const sortedModels = useMemo(
     () => [...models].sort((a, b) => b.size - a.size),
     [models],
@@ -103,6 +115,28 @@ export function ModelsPage() {
       setDeleting(null);
     }
   }
+
+  async function runUpdateCheck() {
+    if (!connected || models.length === 0 || checkingUpdates) return;
+    setCheckingUpdates(true);
+    setUpdatesError(null);
+    try {
+      const results = await checkModelUpdates(agentUrl, baseUrl, models.map((m) => m.name));
+      const map: Record<string, ModelUpdateInfo> = {};
+      for (const result of results) map[result.name] = result;
+      setUpdates(map);
+    } catch {
+      setUpdates(null);
+      setUpdatesError("Start the agent server (bun run agent) to check for model updates.");
+    } finally {
+      setCheckingUpdates(false);
+    }
+  }
+
+  useEffect(() => {
+    void runUpdateCheck();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connected, models, baseUrl, agentUrl]);
 
   const isPulling = pulling || progress?.status === "done";
 
@@ -191,11 +225,29 @@ export function ModelsPage() {
           <h2 className="text-sm font-semibold">
             Installed <span className="text-muted-foreground">({models.length})</span>
           </h2>
-          <Button variant="ghost" size="sm" onClick={() => refreshModels()} disabled={loading}>
-            <RefreshCw className={cn("h-3.5 w-3.5", loading && "animate-spin")} />
-            Refresh
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => void runUpdateCheck()}
+              disabled={checkingUpdates || !connected || models.length === 0}
+              title="Compare installed models with the latest on the registry"
+            >
+              <RefreshCw className={cn("h-3.5 w-3.5", checkingUpdates && "animate-spin")} />
+              {checkingUpdates ? "Checking…" : "Check updates"}
+            </Button>
+            <Button variant="ghost" size="sm" onClick={() => refreshModels()} disabled={loading}>
+              <RefreshCw className={cn("h-3.5 w-3.5", loading && "animate-spin")} />
+              Refresh
+            </Button>
+          </div>
         </div>
+        {updatesError && (
+          <p className="mb-3 text-xs text-muted-foreground">
+            <CircleAlert className="mr-1 inline h-3 w-3" />
+            {updatesError}
+          </p>
+        )}
 
         {loading && models.length === 0 ? (
           <div className="flex items-center justify-center gap-2 rounded-xl border border-dashed border-border py-16 text-sm text-muted-foreground">
@@ -220,16 +272,19 @@ export function ModelsPage() {
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0">
                     <h3 className="truncate font-mono text-sm font-semibold">{model.name}</h3>
-                    <div className="mt-1 flex flex-wrap gap-1.5">
+                    <div className="mt-1 flex flex-wrap items-center gap-1.5">
                       {model.details?.parameter_size && (
                         <Badge className="border-accent/30 bg-accent/10 text-accent">
                           {model.details.parameter_size}
                         </Badge>
                       )}
-                      {model.details?.quantization_level && (
-                        <Badge>{model.details.quantization_level}</Badge>
-                      )}
+                      {model.details?.quantization_level && <Badge>{model.details.quantization_level}</Badge>}
                       {model.details?.family && <Badge>{model.details.family}</Badge>}
+                      {updates?.[model.name]?.updateAvailable && (
+                        <Badge className="border-amber-400/40 bg-amber-400/10 text-amber-300">
+                          Update available
+                        </Badge>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -247,6 +302,16 @@ export function ModelsPage() {
                 </div>
 
                 <div className="flex items-center gap-1.5 border-t border-border pt-3">
+                  {updates?.[model.name]?.updateAvailable && (
+                    <Button
+                      onClick={() => handlePull(model.name)}
+                      disabled={isPulling}
+                      className="flex h-8 flex-1 items-center justify-center gap-2 px-3 text-xs"
+                    >
+                      <RefreshCw className="h-3.5 w-3.5" />
+                      Update
+                    </Button>
+                  )}
                   <Link
                     to={`/chat?model=${encodeURIComponent(model.name)}`}
                     className="flex h-8 flex-1 items-center justify-center gap-2 rounded-md bg-accent px-3 text-xs font-medium text-accent-foreground transition-colors hover:bg-accent/90"

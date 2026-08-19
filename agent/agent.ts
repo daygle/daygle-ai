@@ -24,7 +24,7 @@ export type AgentEvent =
   | { type: "approval_requested"; requestId: string; command: string }
   | { type: "error"; message: string }
   | { type: "cancelled"; message: string }
-  | { type: "done"; summary: string; prUrl?: string; branch?: string; changedFiles?: string[] };
+  | { type: "done"; summary: string; prUrl?: string; branch?: string; changedFiles?: string[]; pending?: boolean };
 
 export class CancelledError extends Error {
   constructor() {
@@ -42,6 +42,7 @@ export interface AgentConfig {
   maxReviewRounds?: number;
   qaCommand?: string;
   maxQaRounds?: number;
+  workspace?: boolean;
 }
 
 const DEFAULT_MAX_STEPS = 40;
