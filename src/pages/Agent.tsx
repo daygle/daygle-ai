@@ -1764,6 +1764,7 @@ function TaskRunnerModal({
   const [reviewModel, setReviewModel] = useState("");
   const [qaCommand, setQaCommand] = useState("");
   const [agenticReview, setAgenticReview] = useState(false);
+  const [generateTests, setGenerateTests] = useState(false);
   const [advanced, setAdvanced] = useState(false);
   const [running, setRunning] = useState(false);
   const [lines, setLines] = useState<JobLine[]>([]);
@@ -1810,6 +1811,7 @@ function TaskRunnerModal({
           reviewModel: reviewModel.trim() || undefined,
           qaCommand: qaCommand.trim() || undefined,
           agenticReview: agenticReview || undefined,
+          generateTests: generateTests || undefined,
         },
       });
       jobIdRef.current = id;
@@ -1912,6 +1914,22 @@ function TaskRunnerModal({
                     </span>
                     <span className="mt-0.5 block text-[11px] text-muted-foreground">
                       The reviewer reads the surrounding code and runs the project’s tests before deciding — slower, but catches issues a diff-only review misses. Only used when a review model is set.
+                    </span>
+                  </span>
+                </label>
+                <label className="flex cursor-pointer items-start gap-2 rounded-md border border-border bg-background px-3 py-2 text-xs">
+                  <input
+                    type="checkbox"
+                    checked={generateTests}
+                    onChange={(e) => setGenerateTests(e.target.checked)}
+                    className="mt-0.5 h-3.5 w-3.5 accent-accent"
+                  />
+                  <span>
+                    <span className="flex items-center gap-1.5 font-medium text-foreground">
+                      <ListTodo className="h-3.5 w-3.5 text-accent" /> Generate tests
+                    </span>
+                    <span className="mt-0.5 block text-[11px] text-muted-foreground">
+                      After the change, write and run tests covering it (using the project’s existing test framework) before QA and review. Skipped if the repo has no test setup.
                     </span>
                   </span>
                 </label>

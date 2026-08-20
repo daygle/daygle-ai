@@ -3,7 +3,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { CancelledError, runAgentLoop, runAgenticReview, runReview, type AgentConfig, type AgentEvent } from "./agent";
+import { CancelledError, runAgentLoop, runAgenticReview, runReview, runTestGeneration, type AgentConfig, type AgentEvent } from "./agent";
 import { ChatSession, streamChat, type ChatEvent, type GenOptions } from "./chat";
 import { ChatHistoryStore, deriveTitle } from "./chat-history";
 import {
@@ -347,8 +347,37 @@ async function executeJob(job: Job): Promise<void> {
     } catch {
       // final snapshot is best-effort
     }
-    const changed = await changedFiles(workDir);
+    let changed = await changedFiles(workDir);
     if (changed.length > 0) {
+      // ---- Optional test-generation pass: write and run tests for the change
+      // before the QA gate, so the new tests are verified by the normal rounds. ----
+      if (job.config?.generateTests) {
+        emit({ type: "status", message: "Generating tests for the change…" });
+        const { diff } = await workingDiff(workDir).catch(() => ({ stat: "", diff: "" }));
+        if (diff.trim()) {
+          await runTestGeneration({
+            root: workDir,
+            task: job.task,
+            diff,
+            model: job.model,
+            ollamaUrl: job.ollamaUrl,
+            emit,
+            approve: makeApprover(job),
+            sandbox: sandbox ?? undefined,
+            signal,
+            config: job.config,
+          });
+          throwIfCancelled();
+          try {
+            const snapshot = await workingDiff(workDir);
+            publish(job, { type: "diff", stat: snapshot.stat, diff: snapshot.diff });
+          } catch {
+            // best-effort snapshot
+          }
+          changed = await changedFiles(workDir);
+        }
+      }
+
       // ---- QA verification gate (harness-run): install deps, run typecheck/test/build,
       // and send failures back to the agent for fix rounds. ----
       const maxQaRounds = Math.max(0, Math.min(5, job.config?.maxQaRounds ?? 2));
