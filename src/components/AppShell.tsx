@@ -1,14 +1,12 @@
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
-import { Bot, Box, MessageSquare, MessagesSquare, Settings } from "lucide-react";
+import { Bot, Box, Settings } from "lucide-react";
 import { Logo } from "./Logo";
 import { ConnectionStatus } from "./ConnectionStatus";
 import { cn } from "../lib/utils";
 
 const nav = [
   { to: "/models", label: "Models", icon: Box },
-  { to: "/chat", label: "Chat", icon: MessageSquare },
   { to: "/agent", label: "Agent", icon: Bot },
-  { to: "/agent/chat", label: "Agent Chat", icon: MessagesSquare },
   { to: "/settings", label: "Settings", icon: Settings },
 ];
 

@@ -100,10 +100,12 @@ const chatSweeper = setInterval(() => {
   for (const [id, session] of chatSessions) {
     if (now - session.lastActivity > CHAT_SESSION_TTL_MS) {
       chatSessions.delete(id);
-      try {
-        fs.rmSync(session.root, { recursive: true, force: true });
-      } catch {
-        // best effort
+      if (session.root) {
+        try {
+          fs.rmSync(session.root, { recursive: true, force: true });
+        } catch {
+          // best effort
+        }
       }
     }
   }
@@ -133,13 +135,16 @@ function persistChat(session: ChatSession): void {
 async function rehydrateChat(id: string): Promise<ChatSession | null> {
   const stored = chatHistoryStore.load(id);
   if (!stored) return null;
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "daygle-chat-"));
-  try {
-    const token = loadGithubToken() || undefined;
-    await cloneRepo(stored.repoUrl, dir, token);
-  } catch (err) {
-    fs.rmSync(dir, { recursive: true, force: true });
-    throw err;
+  let dir = "";
+  if (stored.repoUrl) {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "daygle-chat-"));
+    try {
+      const token = loadGithubToken() || undefined;
+      await cloneRepo(stored.repoUrl, dir, token);
+    } catch (err) {
+      fs.rmSync(dir, { recursive: true, force: true });
+      throw err;
+    }
   }
   const session: ChatSession = {
     id: stored.id,
@@ -585,10 +590,12 @@ const server = http.createServer((req, res) => {
       const live = chatSessions.get(id);
       if (live) {
         chatSessions.delete(id);
-        try {
-          fs.rmSync(live.root, { recursive: true, force: true });
-        } catch {
-          // best effort
+        if (live.root) {
+          try {
+            fs.rmSync(live.root, { recursive: true, force: true });
+          } catch {
+            // best effort
+          }
         }
       }
       chatHistoryStore.delete(id);
@@ -604,23 +611,29 @@ const server = http.createServer((req, res) => {
         sendJson(res, 400, { error: "Invalid JSON body." });
         return;
       }
-      if (!body.repoUrl?.trim() || !body.model?.trim()) {
-        sendJson(res, 400, { error: "repoUrl and model are required." });
+      if (!body.model?.trim()) {
+        sendJson(res, 400, { error: "model is required." });
         return;
       }
+      const repoUrl = body.repoUrl?.trim() ?? "";
       const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "daygle-chat-"));
-      try {
-        const token = loadGithubToken() || undefined;
-        await cloneRepo(body.repoUrl.trim(), dir, token);
-      } catch (err) {
-        fs.rmSync(dir, { recursive: true, force: true });
-        sendJson(res, 400, { error: `Failed to clone repo: ${err instanceof Error ? err.message : String(err)}` });
-        return;
+      // A repo is optional: with one, we clone for tool use; without, it's a
+      // plain conversation and there's nothing to check out.
+      let dir = "";
+      if (repoUrl) {
+        dir = fs.mkdtempSync(path.join(os.tmpdir(), "daygle-chat-"));
+        try {
+          const token = loadGithubToken() || undefined;
+          await cloneRepo(repoUrl, dir, token);
+        } catch (err) {
+          fs.rmSync(dir, { recursive: true, force: true });
+          sendJson(res, 400, { error: `Failed to clone repo: ${err instanceof Error ? err.message : String(err)}` });
+          return;
+        }
       }
       const session: ChatSession = {
         id,
-        repoUrl: body.repoUrl.trim(),
+        repoUrl,
         root: dir,
         model: body.model.trim(),
         ollamaUrl: (body.ollamaUrl ?? "http://localhost:11434").trim(),

@@ -128,12 +128,15 @@ journalctl -u daygle-ui -f
 - **Chat / everyday:** `llama3.2` (light) or `qwen2.5:7b`
 - **Agent (tool-calling):** `qwen2.5-coder:7b` — the best small model for structured tool calls; larger coder models (14b/32b) are stronger if you have the RAM
 
-### Agent pages
+### Agent page
 
-There are two agent modes:
+A single **Agent** page covers three ways of working, chosen by how you start:
 
-- **Agent** — one-shot task runner: give it a task, it clones the repo, makes changes, and opens a PR.
-- **Agent Chat** — interactive chat: connect to a repo and have a conversation with the AI. Ask questions, request changes, get explanations — all with file access tools.
+- **Just chat** — start with no repository to talk to your local model (no file access).
+- **Repo chat** — connect a repository to have a conversation with file-access tools: ask questions, request changes, get explanations, with inline command approval and write diffs.
+- **Run a task → PR** — from a connected repo, hand the agent a whole task; it works autonomously (multi-step loop → self-review → QA → commit) and opens a pull request.
+
+Conversations are saved and can be resumed from the "Recent chats" list.
 
 ## Bundled Ollama
 
@@ -243,9 +246,7 @@ src/
   pages/
     Landing.tsx            marketing page
     Models.tsx             pull / manage / inspect models
-    Chat.tsx               streaming chat playground
-    Agent.tsx              repo agent: task in, pull request out
-    AgentChat.tsx          interactive agent chat with tool access
+    Agent.tsx              unified agent: plain chat, repo chat (tools), or task → PR
     Settings.tsx           server URL + setup guide
 
 agent/

@@ -313,7 +313,7 @@ export function ModelsPage() {
                     </Button>
                   )}
                   <Link
-                    to={`/chat?model=${encodeURIComponent(model.name)}`}
+                    to={`/agent?model=${encodeURIComponent(model.name)}`}
                     className="flex h-8 flex-1 items-center justify-center gap-2 rounded-md bg-accent px-3 text-xs font-medium text-accent-foreground transition-colors hover:bg-accent/90"
                   >
                     <MessageSquare className="h-3.5 w-3.5" />

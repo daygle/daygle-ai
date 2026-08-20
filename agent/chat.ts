@@ -115,6 +115,8 @@ Available tools:
 
 Be concise. Read and understand before editing. Make the smallest change that solves the problem.`;
 
+export const CHAT_ONLY_SYSTEM_PROMPT = `You are daygle, a helpful, concise assistant. Answer questions, explain concepts, and help with coding by writing and discussing code inline. You are not connected to a repository, so you cannot read or modify files — if the user needs you to work inside a codebase, suggest they connect a repository.`;
+
 export async function* streamChat(
   session: ChatSession,
   userMessage: string,
@@ -122,10 +124,11 @@ export async function* streamChat(
   sandbox?: SandboxRunner,
   signal?: AbortSignal,
 ): AsyncGenerator<ChatEvent> {
-  // Ensure the model always gets its system prompt (which tells it to narrate
-  // what it's doing before each tool call), so the chat reads conversationally.
+  // A session with a checkout gets the tool-using coding prompt; a repo-less
+  // session is a plain conversation (no tools).
+  const hasRepo = Boolean(session.root);
   if (!session.messages.some((m) => m.role === "system")) {
-    session.messages.unshift({ role: "system", content: SYSTEM_PROMPT });
+    session.messages.unshift({ role: "system", content: hasRepo ? SYSTEM_PROMPT : CHAT_ONLY_SYSTEM_PROMPT });
   }
   session.messages.push({ role: "user", content: userMessage });
 
@@ -144,7 +147,7 @@ export async function* streamChat(
       body: JSON.stringify({
         model: session.model,
         messages: session.messages,
-        tools: TOOL_DEFINITIONS,
+        tools: hasRepo ? TOOL_DEFINITIONS : undefined,
         stream: true,
         options: { temperature, num_ctx: numCtx },
       }),
@@ -209,19 +212,22 @@ export async function* streamChat(
       }
     }
 
-    // Parse tool calls — first try structured format, then fallback to text parsing
-    let toolCalls = (rawToolCalls ?? []).map((call) => {
-      const name = call.function?.name ?? "unknown";
-      let args: unknown = call.function?.arguments ?? {};
-      if (typeof args === "string") {
-        try { args = JSON.parse(args); } catch { args = {}; }
-      }
-      if (typeof args !== "object" || args === null || Array.isArray(args)) args = {};
-      return { function: { name, arguments: args as Record<string, unknown> } };
-    });
+    // Parse tool calls — first try structured format, then fallback to text parsing.
+    // Repo-less sessions are pure conversation, so tools are ignored entirely.
+    let toolCalls = hasRepo
+      ? (rawToolCalls ?? []).map((call) => {
+          const name = call.function?.name ?? "unknown";
+          let args: unknown = call.function?.arguments ?? {};
+          if (typeof args === "string") {
+            try { args = JSON.parse(args); } catch { args = {}; }
+          }
+          if (typeof args !== "object" || args === null || Array.isArray(args)) args = {};
+          return { function: { name, arguments: args as Record<string, unknown> } };
+        })
+      : [];
 
     // Fallback: if no structured tool calls, try parsing from text content
-    if (toolCalls.length === 0 && content) {
+    if (hasRepo && toolCalls.length === 0 && content) {
       toolCalls = parseTextToolCalls(content);
     }
 
