@@ -278,6 +278,14 @@ function listFiles(root: string, rel: string): string {
     } catch {
       return;
     }
+    // Folders before files, each alphabetically, so the listing reads as a
+    // tidy tree (dirs first at every level) rather than filesystem order.
+    entries.sort((a, b) => {
+      const aDir = a.isDirectory();
+      const bDir = b.isDirectory();
+      if (aDir !== bDir) return aDir ? -1 : 1;
+      return a.name.localeCompare(b.name);
+    });
     for (const entry of entries) {
       if (out.length >= MAX_LIST) break;
       if (entry.name === ".git" || entry.name === "node_modules" || entry.name === "dist" || entry.name === ".ollama") continue;
