@@ -74,6 +74,22 @@ bun run dev              # terminal 2: daygle UI
 
 Open the printed URL — daygle defaults to `http://localhost:11434`, so it should connect to the bundled server immediately. Pull a model from the **Models** page (or `.ollama/bin/ollama pull llama3.2`).
 
+### Auto-start on boot (systemd)
+
+For a always-on server, install the systemd services:
+
+```bash
+sudo bash systemd/install-services.sh
+```
+
+This starts Ollama, the UI, and the agent server on boot. Manage them with:
+
+```bash
+systemctl status daygle-ollama daygle-ui daygle-agent
+sudo systemctl restart daygle-ollama daygle-ui daygle-agent
+journalctl -u daygle-ui -f
+```
+
 ### Model recommendations
 
 - **Chat / everyday:** `llama3.2` (light) or `qwen2.5:7b`
