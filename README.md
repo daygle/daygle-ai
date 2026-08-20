@@ -63,6 +63,24 @@ gh auth login
 
 Pick **GitHub.com** → **HTTPS** → **Paste an authentication token**. Create a token at https://github.com/settings/tokens with `repo` scope.
 
+### Command sandbox (recommended)
+
+The agent runs shell commands (tests, builds, installs) inside a sandbox for safety. Install one:
+
+**bubblewrap (preferred, lightweight):**
+
+```bash
+sudo apt install bubblewrap
+```
+
+**Docker (fallback):**
+
+```bash
+sudo apt install docker.io
+```
+
+If neither is installed, commands run directly on the host (policy-gated, but no isolation).
+
 You also need ~2 GB of free disk for the Ollama binary and your model weights.
 
 ### Install
