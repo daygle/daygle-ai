@@ -14,6 +14,7 @@ export const DEFAULT_GEN_OPTIONS: GenOptions = {
 };
 
 const STORAGE_KEY = "daygle.genOptions";
+const MODEL_STORAGE_KEY = "daygle.model";
 
 export function loadGenOptions(): GenOptions {
   try {
@@ -28,6 +29,23 @@ export function loadGenOptions(): GenOptions {
 export function saveGenOptions(options: GenOptions): void {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(options));
+  } catch {
+    // localStorage unavailable — ignore
+  }
+}
+
+export function loadModelPreference(): string {
+  try {
+    return localStorage.getItem(MODEL_STORAGE_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+export function saveModelPreference(model: string): void {
+  try {
+    if (model) localStorage.setItem(MODEL_STORAGE_KEY, model);
+    else localStorage.removeItem(MODEL_STORAGE_KEY);
   } catch {
     // localStorage unavailable — ignore
   }

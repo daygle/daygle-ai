@@ -3,13 +3,13 @@ import { CheckCircle2, CircleAlert, Cpu, Key, PlugZap, RotateCcw, Server, Slider
 import { useOllama } from "../context/OllamaProvider";
 import { describeError, getVersion } from "../lib/ollama";
 import { getGithubToken, saveGithubToken } from "../lib/agent";
-import { DEFAULT_GEN_OPTIONS, loadGenOptions, saveGenOptions, type GenOptions } from "../lib/genOptions";
+import { DEFAULT_GEN_OPTIONS, loadGenOptions, loadModelPreference, saveGenOptions, saveModelPreference, type GenOptions } from "../lib/genOptions";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Spinner } from "../components/ui/spinner";
 
 export function SettingsPage() {
-  const { baseUrl, setBaseUrl, connected, checking, version, error } = useOllama();
+  const { baseUrl, setBaseUrl, connected, checking, version, error, models } = useOllama();
   const [url, setUrl] = useState(baseUrl);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ ok: boolean; text: string } | null>(null);
@@ -26,6 +26,7 @@ export function SettingsPage() {
   const [ghTokenResult, setGhTokenResult] = useState<{ ok: boolean; text: string } | null>(null);
 
   const [gen, setGen] = useState<GenOptions>(() => loadGenOptions());
+  const [defaultModel, setDefaultModel] = useState(() => loadModelPreference());
 
   function updateGen(patch: Partial<GenOptions>) {
     setGen((prev) => {
@@ -42,6 +43,13 @@ export function SettingsPage() {
   useEffect(() => {
     getGithubToken(agentUrl).then(setGhToken).catch(() => {});
   }, [agentUrl]);
+
+  useEffect(() => {
+    if (models.length === 0 || (defaultModel && models.some((model) => model.name === defaultModel))) return;
+    const next = models[0].name;
+    setDefaultModel(next);
+    saveModelPreference(next);
+  }, [defaultModel, models]);
 
   async function handleTest() {
     const target = url.trim();
@@ -169,7 +177,24 @@ export function SettingsPage() {
         </div>
 
         <div className="rounded-2xl border border-border bg-card p-5">
-          <p className="text-xs text-muted-foreground">
+          <div className="space-y-1">
+            <label htmlFor="default-agent-model" className="text-xs font-medium text-muted-foreground">Default Agent model</label>
+            <select
+              id="default-agent-model"
+              value={defaultModel}
+              onChange={(event) => {
+                setDefaultModel(event.target.value);
+                saveModelPreference(event.target.value);
+              }}
+              disabled={models.length === 0}
+              className="mt-2 h-10 w-full rounded-md border border-input bg-card px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring/60 disabled:opacity-50"
+            >
+              {models.length === 0 && <option value="">No models detected</option>}
+              {models.map((model) => <option key={model.name} value={model.name}>{model.name}</option>)}
+            </select>
+            <p className="text-[11px] text-muted-foreground">Used when starting a new Agent chat. Existing chats keep their selected model.</p>
+          </div>
+          <p className="mt-5 border-t border-border pt-4 text-xs text-muted-foreground">
             Ollama parameters applied to new Agent chats. Leave optional fields blank to use the model's own defaults.
           </p>
           <div className="mt-4 grid gap-4 sm:grid-cols-2">

@@ -14,7 +14,6 @@ import {
   resolveApproval,
   sendChatMessage,
   startAgentJob,
-  updateChatModel,
   type AgentEvent,
   type ChatEvent,
   type ChatImage,
@@ -24,7 +23,7 @@ import {
 } from "../lib/agent";
 import { useOllama } from "../context/OllamaProvider";
 import { listModels } from "../lib/ollama";
-import { loadGenOptions } from "../lib/genOptions";
+import { loadGenOptions, loadModelPreference } from "../lib/genOptions";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Textarea } from "../components/ui/textarea";
@@ -75,6 +74,12 @@ function relativeTime(ts: number): string {
   if (h < 24) return `${h}h ago`;
   const d = Math.round(h / 24);
   return `${d}d ago`;
+}
+
+function messageTitle(messages: ChatBubble[]): string {
+  const userMessage = messages.find((message) => message.role === "user")?.content.trim().replace(/\s+/g, " ");
+  if (!userMessage) return "New chat";
+  return userMessage.length > 48 ? `${userMessage.slice(0, 48)}…` : userMessage;
 }
 
 /**
@@ -449,6 +454,7 @@ export function AgentPage() {
   const [autoSendQueued, setAutoSendQueued] = useState(false);
   const [taskOpen, setTaskOpen] = useState(false);
   const [confirmDeleteChat, setConfirmDeleteChat] = useState<string | null>(null);
+  const [chatSwitcherOpen, setChatSwitcherOpen] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -500,7 +506,9 @@ export function AgentPage() {
       .then((m) => {
         const names = m.map((model) => model.name);
         setModels(names);
+        const preferredModel = loadModelPreference();
         if (paramModel && names.includes(paramModel)) setModel(paramModel);
+        else if (preferredModel && names.includes(preferredModel)) setModel(preferredModel);
         else if (!model && names.length > 0) setModel(names[0]);
       })
       .catch(() => {});
@@ -509,6 +517,12 @@ export function AgentPage() {
   const refreshHistory = useCallback(() => {
     listChatSessions(agentUrl).then(setHistory).catch(() => {});
   }, [agentUrl]);
+
+  useEffect(() => {
+    if (!connected) return;
+    const timer = window.setInterval(refreshHistory, 5000);
+    return () => window.clearInterval(timer);
+  }, [connected, refreshHistory]);
 
   // Load the conversation list, and auto-resume the last open chat on refresh.
   useEffect(() => {
@@ -560,6 +574,10 @@ export function AgentPage() {
   }
 
   async function resumeChat(id: string, opts?: { silent?: boolean }) {
+    setChatSwitcherOpen(false);
+    setQueuedMessages([]);
+    setAutoSendQueued(false);
+    removeImageAttachment();
     setLoading(true);
     try {
       const chat = await getChatSession(agentUrl, id);
@@ -582,6 +600,17 @@ export function AgentPage() {
     }
   }
 
+  function switchChat(id: string) {
+    if (id === sessionId) {
+      setChatSwitcherOpen(false);
+      return;
+    }
+    abortRef.current?.();
+    setStreaming(false);
+    setStatusText("");
+    void resumeChat(id);
+  }
+
   function startNewChat() {
     abortRef.current?.();
     setConnected(false);
@@ -594,6 +623,7 @@ export function AgentPage() {
     setWorkspace({ files: [], stat: "", diff: "" });
     setNotes("");
     setStreaming(false);
+    setChatSwitcherOpen(false);
     rememberSession(null);
     refreshHistory();
   }
@@ -826,26 +856,6 @@ export function AgentPage() {
     [agentUrl],
   );
 
-  const handleModelSwitch = useCallback(
-    async (newModel: string) => {
-      if (!sessionId || newModel === model) return;
-      setModel(newModel);
-      try {
-        await updateChatModel(agentUrl, sessionId, newModel);
-        setMessages((prev) => [
-          ...prev,
-          { id: uid(), role: "assistant", content: `Switched to model **${newModel}**.` },
-        ]);
-      } catch (err) {
-        setMessages((prev) => [
-          ...prev,
-          { id: uid(), role: "assistant", content: `Failed to switch model: ${err instanceof Error ? err.message : String(err)}` },
-        ]);
-      }
-    },
-    [agentUrl, sessionId, model],
-  );
-
   const handleClarification = useCallback(
     (bubble: ChatBubble, selectedLabel: string) => {
       if (!bubble.requestId) return;
@@ -957,6 +967,19 @@ export function AgentPage() {
     },
     [agentUrl, sessionId],
   );
+
+  const activeChatTitle = history.find((chat) => chat.id === sessionId)?.title ?? messageTitle(messages);
+  const chatItems: ChatSummary[] = sessionId && !history.some((chat) => chat.id === sessionId)
+    ? [{
+        id: sessionId,
+        repoUrl: sessionRepo,
+        model,
+        title: activeChatTitle,
+        messageCount: messages.filter((message) => message.role === "user" || message.role === "assistant").length,
+        createdAt: Date.now(),
+        lastActivity: Date.now(),
+      }, ...history]
+    : history;
 
   // --- Connect screen ---
   if (!connected) {
@@ -1096,6 +1119,47 @@ export function AgentPage() {
         <header className="flex items-center gap-2 border-b border-border px-4 py-3">
         <Bot className="h-4 w-4 text-accent" />
         <span className="text-sm font-medium">Agent</span>
+        <div className="relative">
+          <button
+            onClick={() => setChatSwitcherOpen((open) => !open)}
+            className="flex max-w-xs items-center gap-1 rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
+            title="Switch active chat"
+          >
+            <MessageSquarePlus className="h-3.5 w-3.5 text-accent" />
+            <span className="max-w-[180px] truncate">{activeChatTitle}</span>
+            <ChevronDown className={`h-3 w-3 transition-transform ${chatSwitcherOpen ? "rotate-180" : ""}`} />
+          </button>
+          {chatSwitcherOpen && (
+            <div className="absolute left-0 top-full z-50 mt-2 w-80 max-w-[calc(100vw-2rem)] overflow-hidden rounded-lg border border-border bg-card shadow-xl">
+              <div className="flex items-center justify-between border-b border-border px-3 py-2">
+                <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Active chats</span>
+                <button onClick={() => { startNewChat(); }} className="flex items-center gap-1 text-[11px] text-accent hover:underline">
+                  <MessageSquarePlus className="h-3 w-3" /> New chat
+                </button>
+              </div>
+              <div className="scrollbar-thin max-h-80 overflow-y-auto p-1.5">
+                {chatItems.length === 0 ? (
+                  <p className="px-2 py-4 text-center text-xs text-muted-foreground">No saved chats yet.</p>
+                ) : (
+                  chatItems.slice(0, 20).map((chat) => (
+                    <button
+                      key={chat.id}
+                      onClick={() => switchChat(chat.id)}
+                      className={`flex w-full items-start gap-2 rounded-md px-2.5 py-2 text-left hover:bg-muted ${chat.id === sessionId ? "bg-muted" : ""}`}
+                    >
+                      <MessageSquarePlus className={`mt-0.5 h-3.5 w-3.5 shrink-0 ${chat.id === sessionId ? "text-accent" : "text-muted-foreground"}`} />
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-xs text-foreground">{chat.title}</span>
+                        <span className="block truncate text-[10px] text-muted-foreground">{chat.repoUrl || "Chat"} · {relativeTime(chat.lastActivity)}</span>
+                      </span>
+                      {chat.id === sessionId && <span className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full bg-accent" />}
+                    </button>
+                  ))
+                )}
+              </div>
+            </div>
+          )}
+        </div>
         {sessionRepo ? (
           <>
             <GitBranch className="ml-1 h-3 w-3 text-muted-foreground" />
@@ -1301,23 +1365,6 @@ export function AgentPage() {
                   <Square className="h-4 w-4" />
                 </Button>
               )}
-            </div>
-            <div className="flex items-center gap-2 pl-1">
-              <label htmlFor="agent-model" className="text-[11px] text-muted-foreground">Model</label>
-              <select
-                id="agent-model"
-                value={model}
-                onChange={(e) => handleModelSwitch(e.target.value)}
-                disabled={streaming || models.length === 0}
-                className="min-w-0 max-w-full rounded-md border border-border bg-background px-2 py-1 text-xs text-foreground disabled:opacity-60"
-                title="Switch model"
-              >
-                {models.length === 0 && <option value="">No models found</option>}
-                {models.map((m) => (
-                  <option key={m} value={m}>{m}</option>
-                ))}
-              </select>
-              {streaming && <span className="text-[11px] text-muted-foreground">Model switching is disabled while responding.</span>}
             </div>
           </div>
         </div>
