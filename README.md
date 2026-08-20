@@ -25,7 +25,29 @@ It includes a self-hosted coding agent: point it at a GitHub repo, describe a ta
 | **curl** | Downloads the bundled Ollama binary            | `sudo apt-get install curl` / `brew install curl`            |
 | **zstd** | Extracts Ollama on **Linux** only              | `sudo apt-get install zstd` / `brew install zstd`            |
 
+**Linux (Ubuntu/Debian):**
+
+```bash
+sudo apt install curl zstd git unzip
+curl -fsSL https://bun.sh/install | bash
+```
+
+**macOS:**
+
+```bash
+brew install curl zstd git unzip
+curl -fsSL https://bun.sh/install | bash
+```
+
 > **Windows:** use **WSL2** — the setup scripts target Linux/macOS. The official Ollama Windows installer also works, but then point daygle's server URL at it in **Settings**.
+
+### Clone & Install
+
+```bash
+sudo git clone https://github.com/daygle/daygle-ai.git /opt/daygle-ai
+cd /opt/daygle-ai
+bun run setup --model qwen2.5-coder:7b
+```
 
 You also need ~2 GB of free disk for the Ollama binary and your model weights.
 

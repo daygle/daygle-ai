@@ -92,7 +92,14 @@ fi
 if [ -n "$MODEL" ]; then
   echo ""
   echo "Pulling model $MODEL… (first pull downloads weights; this can take a while)"
+  # Start Ollama server in background for the pull, then stop it.
+  OLLAMA_HOST="0.0.0.0:11434" "$ROOT/.ollama/bin/ollama" serve &
+  OLLAMA_PID=$!
+  sleep 2  # give the server a moment to start
+  trap "kill $OLLAMA_PID 2>/dev/null || true" EXIT
   "$ROOT/.ollama/bin/ollama" pull "$MODEL"
+  kill $OLLAMA_PID 2>/dev/null || true
+  trap - EXIT
 fi
 
 # --- Next steps ------------------------------------------------------------
