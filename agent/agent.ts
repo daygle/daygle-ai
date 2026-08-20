@@ -276,6 +276,24 @@ First line: APPROVED or CHANGES REQUESTED
 Then: a short summary and, if changes are requested, a numbered list of the concrete issues to fix.`;
 
 /**
+ * Classify a reviewer's free-text response into a verdict. The reviewer is
+ * asked to start with "APPROVED" or "CHANGES REQUESTED", but models phrase it
+ * many ways, so we look for explicit change/approve signals near the top
+ * before falling back — and default to "changes_requested" when genuinely
+ * ambiguous, so an unclear review never silently waves changes through.
+ */
+export function parseReviewVerdict(text: string): ReviewResult["verdict"] {
+  // Weigh only the opening of the review, where the verdict line lives, so a
+  // later "no other changes requested" style aside can't flip the result.
+  const head = text.trim().split(/\r?\n/).slice(0, 3).join("\n").toLowerCase();
+  const wantsChanges = /\bchanges?\s+requested\b|\brequest(?:ing|s)?\s+changes\b|\bnot\s+approved\b|\brejected\b|\bneeds?\s+(?:changes|work|fixes)\b/.test(head);
+  const approves = /\bapproved?\b|\blgtm\b|\blooks\s+good\b|\bno\s+changes?\s+(?:needed|required)\b/.test(head);
+  if (wantsChanges) return "changes_requested";
+  if (approves) return "approved";
+  return "changes_requested";
+}
+
+/**
  * Reviews a diff with (typically) a different model before the changes are committed.
  * Emits a single `review` event with the verdict and the full review text.
  */
@@ -305,7 +323,7 @@ export async function runReview(opts: {
   );
 
   const text = content.trim() || "APPROVED\n(no review content returned)";
-  const verdict: ReviewResult["verdict"] = /^\s*APPROVED\b/i.test(text) ? "approved" : "changes_requested";
+  const verdict = parseReviewVerdict(text);
   emit({ type: "review", verdict, text });
   return { verdict, text };
 }

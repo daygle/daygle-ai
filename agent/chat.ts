@@ -48,6 +48,11 @@ export type ChatEvent =
   | { type: "approval_requested"; requestId: string; command: string }
   | { type: "approval_resolved"; requestId: string; decision: "approve" | "deny" }
   | { type: "clarification_requested"; requestId: string; question: string; options: Array<{ label: string; description?: string }> }
+  // Verification events — emitted by the on-demand "Verify" action, not the
+  // normal chat stream: a QA gate result and an optional second-model review.
+  | { type: "qa"; command: string; output: string; passed: boolean; skipped?: boolean }
+  | { type: "review"; verdict: "approved" | "changes_requested"; text: string }
+  | { type: "verify_done" }
   | { type: "error"; message: string };
 
 /**

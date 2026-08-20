@@ -324,7 +324,72 @@ export type ChatEvent =
   | { type: "approval_requested"; requestId: string; command: string }
   | { type: "approval_resolved"; requestId: string; decision: "approve" | "deny" }
   | { type: "clarification_requested"; requestId: string; question: string; options: Array<{ label: string; description?: string }> }
+  | { type: "qa"; command: string; output: string; passed: boolean; skipped?: boolean }
+  | { type: "review"; verdict: "approved" | "changes_requested"; text: string }
+  | { type: "verify_done" }
   | { type: "error"; message: string };
+
+export interface VerifyOptions {
+  /** Model to use for the AI review. Defaults to the chat's model server-side. */
+  reviewModel?: string;
+  /** Override the auto-detected QA command (e.g. "npm test"). */
+  qaCommand?: string;
+  /** Set false to run only the QA gate and skip the AI review. */
+  review?: boolean;
+}
+
+/**
+ * Runs the on-demand verification pass for a chat session (QA gate + optional
+ * second-model review) and streams the resulting `qa`/`review`/`status`/`error`
+ * events. Returns a cancel function.
+ */
+export function verifyChat(
+  serverUrl: string,
+  sessionId: string,
+  onEvent: (event: ChatEvent) => void,
+  options?: VerifyOptions,
+): () => void {
+  const controller = new AbortController();
+  fetch(`${strip(serverUrl)}/api/chat/sessions/${sessionId}/verify`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(options ?? {}),
+    signal: controller.signal,
+  })
+    .then(async (res) => {
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        onEvent({ type: "error", message: `Verify failed (${res.status}) ${text}` });
+        return;
+      }
+      const reader = res.body?.getReader();
+      if (!reader) return;
+      const decoder = new TextDecoder();
+      let buffer = "";
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed.startsWith("data: ")) continue;
+          try {
+            onEvent(JSON.parse(trimmed.slice(6)) as ChatEvent);
+          } catch {
+            // skip
+          }
+        }
+      }
+    })
+    .catch((err) => {
+      if (err.name !== "AbortError") {
+        onEvent({ type: "error", message: err instanceof Error ? err.message : String(err) });
+      }
+    });
+  return () => controller.abort();
+}
 
 export async function resolveApproval(
   serverUrl: string,

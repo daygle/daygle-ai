@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ChangeEvent } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { Bot, Check, ChevronDown, ChevronRight, ChevronUp, Copy, Eye, ExternalLink, FileEdit, Files, Folder, GitBranch, GitCompare, GripVertical, ImagePlus, ListTodo, Loader2, MessageSquarePlus, PanelRightClose, PanelRightOpen, RefreshCw, Rocket, Search, Send, Square, StickyNote, Terminal, Trash2, User, X } from "lucide-react";
+import { Bot, Check, ChevronDown, ChevronRight, ChevronUp, CircleAlert, Copy, Eye, ExternalLink, FileEdit, Files, Folder, GitBranch, GitCompare, GripVertical, ImagePlus, ListTodo, Loader2, MessageSquarePlus, PanelRightClose, PanelRightOpen, RefreshCw, Rocket, Search, Send, ShieldCheck, Square, StickyNote, Terminal, Trash2, User, X } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
@@ -14,6 +14,7 @@ import {
   resolveApproval,
   sendChatMessage,
   updateChatModel,
+  verifyChat,
   startAgentJob,
   type AgentEvent,
   type ChatEvent,
@@ -44,7 +45,7 @@ function toolStatus(name: string): string {
 
 interface ChatBubble {
   id: number | string;
-  role: "user" | "assistant" | "tool" | "approval" | "clarification";
+  role: "user" | "assistant" | "tool" | "approval" | "clarification" | "qa" | "review";
   content: string;
   toolName?: string;
   toolArgs?: Record<string, unknown>;
@@ -61,6 +62,14 @@ interface ChatBubble {
   selectedOption?: string;
   imageData?: string;
   imageMimeType?: string;
+  // qa bubbles
+  qaCommand?: string;
+  qaOutput?: string;
+  qaPassed?: boolean;
+  qaSkipped?: boolean;
+  // review bubbles
+  reviewVerdict?: "approved" | "changes_requested";
+  reviewText?: string;
 }
 
 let nextId = 0;
@@ -255,6 +264,54 @@ function CopyButton({ text }: { text: string }) {
       <Copy className="h-3 w-3" />
       {copied && <span className="ml-1 text-[10px] text-accent">copied</span>}
     </button>
+  );
+}
+
+/** Result card for the on-demand QA gate (typecheck / test / build). */
+function QaCard({ command, output, passed, skipped }: { command: string; output: string; passed: boolean; skipped?: boolean }) {
+  const [expanded, setExpanded] = useState(!passed && !skipped);
+  const tone = skipped
+    ? { border: "border-border", bg: "bg-muted/30", icon: <ShieldCheck className="h-3.5 w-3.5 text-muted-foreground" />, label: "No checks to run" }
+    : passed
+      ? { border: "border-emerald-500/40", bg: "bg-emerald-500/5", icon: <Check className="h-3.5 w-3.5 text-emerald-400" />, label: "QA passed" }
+      : { border: "border-destructive/40", bg: "bg-destructive/5", icon: <CircleAlert className="h-3.5 w-3.5 text-destructive" />, label: "QA failed" };
+
+  return (
+    <div className={`my-1 rounded-lg border ${tone.border} ${tone.bg}`}>
+      <button onClick={() => setExpanded((v) => !v)} className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs">
+        {tone.icon}
+        <span className="font-medium text-foreground">{tone.label}</span>
+        {command && <span className="truncate font-mono text-[11px] text-muted-foreground">{command}</span>}
+        {output && (expanded
+          ? <ChevronDown className="ml-auto h-3 w-3 text-muted-foreground" />
+          : <ChevronRight className="ml-auto h-3 w-3 text-muted-foreground" />)}
+      </button>
+      {expanded && output && (
+        <pre className="max-h-72 overflow-auto border-t border-border px-3 py-2 font-mono text-[11px] leading-relaxed text-muted-foreground">
+          {output}
+        </pre>
+      )}
+    </div>
+  );
+}
+
+/** Result card for the second-model AI review of the working diff. */
+function ReviewCard({ verdict, text }: { verdict: "approved" | "changes_requested"; text: string }) {
+  const approved = verdict === "approved";
+  const tone = approved
+    ? { border: "border-emerald-500/40", bg: "bg-emerald-500/5", icon: <Check className="h-3.5 w-3.5 text-emerald-400" />, label: "AI review: approved" }
+    : { border: "border-amber-500/40", bg: "bg-amber-500/5", icon: <CircleAlert className="h-3.5 w-3.5 text-amber-400" />, label: "AI review: changes requested" };
+
+  return (
+    <div className={`my-1 rounded-lg border ${tone.border} ${tone.bg} p-3`}>
+      <div className="mb-2 flex items-center gap-2 text-xs">
+        {tone.icon}
+        <span className="font-medium text-foreground">{tone.label}</span>
+      </div>
+      <div className="text-xs leading-relaxed text-muted-foreground">
+        <Markdown>{text}</Markdown>
+      </div>
+    </div>
   );
 }
 
@@ -525,6 +582,8 @@ export function AgentPage() {
   const [taskOpen, setTaskOpen] = useState(false);
   const [confirmDeleteChat, setConfirmDeleteChat] = useState<string | null>(null);
   const [chatsSidebarOpen, setChatsSidebarOpen] = useState(true);
+  const [verifying, setVerifying] = useState(false);
+  const verifyAbortRef = useRef<() => void>();
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -672,6 +731,7 @@ export function AgentPage() {
   function switchChat(id: string) {
     if (id === sessionId) return;
     abortRef.current?.();
+    verifyAbortRef.current?.();
     setStreaming(false);
     setStatusText("");
     void resumeChat(id);
@@ -696,6 +756,7 @@ export function AgentPage() {
 
   function startNewChat() {
     abortRef.current?.();
+    verifyAbortRef.current?.();
     setConnected(false);
     setSessionId(null);
     setSessionRepo("");
@@ -926,6 +987,53 @@ export function AgentPage() {
     setStatusText("");
     // Clear the blinking cursor on whatever bubble was mid-stream.
     setMessages((prev) => prev.map((m) => (m.streaming ? { ...m, streaming: false } : m)));
+  }
+
+  // On-demand verification of the chat's working tree: runs the QA gate
+  // (typecheck / test / build) and a second-model review of the diff, then
+  // drops the results into the transcript as qa/review bubbles.
+  function handleVerify() {
+    if (!sessionId || !sessionRepo || verifying) return;
+    setVerifying(true);
+    setStatusText("Verifying…");
+    setMessages((prev) => [
+      ...prev,
+      { id: uid(), role: "assistant", content: "Running verification — QA checks and an AI review of the current changes…" },
+    ]);
+    const finish = () => {
+      setVerifying(false);
+      setStatusText("");
+      void refreshWorkspace();
+    };
+    const cancel = verifyChat(agentUrl, sessionId, (event: ChatEvent) => {
+      switch (event.type) {
+        case "status":
+          setStatusText(event.message);
+          break;
+        case "qa":
+          setMessages((prev) => [
+            ...prev,
+            { id: uid(), role: "qa", content: "", qaCommand: event.command, qaOutput: event.output, qaPassed: event.passed, qaSkipped: event.skipped },
+          ]);
+          break;
+        case "review":
+          setMessages((prev) => [
+            ...prev,
+            { id: uid(), role: "review", content: "", reviewVerdict: event.verdict, reviewText: event.text },
+          ]);
+          break;
+        case "error":
+          setMessages((prev) => [...prev, { id: uid(), role: "assistant", content: `Verification error: ${event.message}` }]);
+          break;
+        case "verify_done":
+          finish();
+          break;
+      }
+    });
+    verifyAbortRef.current = () => {
+      cancel();
+      finish();
+    };
   }
 
   const handleApproval = useCallback(
@@ -1196,7 +1304,7 @@ export function AgentPage() {
 
   // --- Chat screen ---
   return (
-    <div className="flex h-[100dvh] min-w-0 overflow-hidden">
+    <div className="flex h-full min-w-0 overflow-hidden">
       {/* Left: chat list sidebar */}
       {chatsSidebarOpen && (
         <aside className="flex w-64 shrink-0 flex-col border-r border-border bg-card/40">
@@ -1307,7 +1415,7 @@ export function AgentPage() {
         ) : (
           <span className="text-xs text-muted-foreground">Chat</span>
         )}
-        {streaming && (
+        {(streaming || verifying) && (
           <span className="ml-2 flex items-center gap-1.5 rounded-full bg-accent/10 px-2 py-0.5 text-[11px] font-medium text-accent">
             <Loader2 className="h-3 w-3 animate-spin" />
             {statusText || "Working…"}
@@ -1315,7 +1423,20 @@ export function AgentPage() {
         )}
         <div className="ml-auto flex items-center gap-2">
           {sessionRepo && (
-            <Button variant="outline" size="sm" onClick={() => setTaskOpen(true)} disabled={streaming}>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={verifying ? () => verifyAbortRef.current?.() : handleVerify}
+              disabled={streaming}
+              title="Run QA checks and an AI review of the current changes"
+            >
+              {verifying
+                ? (<><Square className="mr-1 h-3.5 w-3.5" /> Stop</>)
+                : (<><ShieldCheck className="mr-1 h-3.5 w-3.5" /> Verify</>)}
+            </Button>
+          )}
+          {sessionRepo && (
+            <Button variant="outline" size="sm" onClick={() => setTaskOpen(true)} disabled={streaming || verifying}>
               <Rocket className="mr-1 h-3.5 w-3.5" /> Run task → PR
             </Button>
           )}
@@ -1436,6 +1557,23 @@ export function AgentPage() {
                       </div>
                     )}
                   </div>
+                </div>
+              )}
+
+              {msg.role === "qa" && (
+                <div className="ml-10">
+                  <QaCard
+                    command={msg.qaCommand ?? ""}
+                    output={msg.qaOutput ?? ""}
+                    passed={!!msg.qaPassed}
+                    skipped={!!msg.qaSkipped}
+                  />
+                </div>
+              )}
+
+              {msg.role === "review" && (
+                <div className="ml-10">
+                  <ReviewCard verdict={msg.reviewVerdict ?? "changes_requested"} text={msg.reviewText ?? ""} />
                 </div>
               )}
             </div>
