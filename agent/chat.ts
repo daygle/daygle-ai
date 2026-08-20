@@ -26,6 +26,33 @@ export type ChatEvent =
   | { type: "tool_result"; name: string; result: string }
   | { type: "error"; message: string };
 
+const TOOL_NAMES = new Set(["list_files", "read_file", "search", "write_file", "run_command"]);
+
+/**
+ * Fallback: parse tool calls that models output as raw JSON text
+ * instead of using Ollama's structured tool_calls format.
+ * Handles patterns like:
+ *   {"name": "list_files", "arguments": {"path": "/"}}
+ *   ```json{"name": "read_file", "arguments": {"path": "src/main.ts"}}```
+ */
+function parseTextToolCalls(text: string): Array<{ function: { name: string; arguments: Record<string, unknown> } }> {
+  const calls: Array<{ function: { name: string; arguments: Record<string, unknown> } }> = [];
+  // Match JSON objects that look like tool calls
+  const regex = /\{\s*"name"\s*:\s*"([^"]+)"\s*,\s*"arguments"\s*:\s*(\{[^}]*\})\s*\}/g;
+  let match;
+  while ((match = regex.exec(text)) !== null) {
+    const name = match[1];
+    if (!TOOL_NAMES.has(name)) continue;
+    try {
+      const args = JSON.parse(match[2]) as Record<string, unknown>;
+      calls.push({ function: { name, arguments: args } });
+    } catch {
+      // skip malformed args
+    }
+  }
+  return calls;
+}
+
 const SYSTEM_PROMPT = `You are daygle, a helpful software engineering assistant working inside a git repository checkout.
 
 You can inspect and edit code using tools. Respond conversationally — answer questions, explain code, suggest improvements, and make changes when asked.
@@ -136,8 +163,8 @@ export async function* streamChat(
       }
     }
 
-    // Parse tool calls
-    const toolCalls = (rawToolCalls ?? []).map((call) => {
+    // Parse tool calls — first try structured format, then fallback to text parsing
+    let toolCalls = (rawToolCalls ?? []).map((call) => {
       const name = call.function?.name ?? "unknown";
       let args: unknown = call.function?.arguments ?? {};
       if (typeof args === "string") {
@@ -146,6 +173,11 @@ export async function* streamChat(
       if (typeof args !== "object" || args === null || Array.isArray(args)) args = {};
       return { function: { name, arguments: args as Record<string, unknown> } };
     });
+
+    // Fallback: if no structured tool calls, try parsing from text content
+    if (toolCalls.length === 0 && content) {
+      toolCalls = parseTextToolCalls(content);
+    }
 
     if (content) {
       session.messages.push({ role: "assistant", content, tool_calls: toolCalls.length ? toolCalls : undefined });
