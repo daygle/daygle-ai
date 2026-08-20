@@ -317,3 +317,16 @@ export async function resolveApproval(
   });
   if (!res.ok) throw new Error(`Failed to resolve approval (${res.status})`);
 }
+
+export async function updateChatModel(
+  serverUrl: string,
+  sessionId: string,
+  model: string,
+): Promise<void> {
+  const res = await fetch(`${strip(serverUrl)}/api/chat/sessions/${sessionId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ model }),
+  });
+  if (!res.ok) throw new Error(`Failed to update model (${res.status})`);
+}

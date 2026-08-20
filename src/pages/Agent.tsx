@@ -13,6 +13,7 @@ import {
   resolveApproval,
   sendChatMessage,
   startAgentJob,
+  updateChatModel,
   type AgentEvent,
   type ChatEvent,
   type ChatSummary,
@@ -551,6 +552,26 @@ export function AgentPage() {
     [agentUrl],
   );
 
+  const handleModelSwitch = useCallback(
+    async (newModel: string) => {
+      if (!sessionId || newModel === model) return;
+      setModel(newModel);
+      try {
+        await updateChatModel(agentUrl, sessionId, newModel);
+        setMessages((prev) => [
+          ...prev,
+          { id: uid(), role: "assistant", content: `Switched to model **${newModel}**.` },
+        ]);
+      } catch (err) {
+        setMessages((prev) => [
+          ...prev,
+          { id: uid(), role: "assistant", content: `Failed to switch model: ${err instanceof Error ? err.message : String(err)}` },
+        ]);
+      }
+    },
+    [agentUrl, sessionId, model],
+  );
+
   const handleClarification = useCallback(
     (bubble: ChatBubble, selectedLabel: string) => {
       if (!bubble.requestId) return;
@@ -817,6 +838,19 @@ export function AgentPage() {
           </span>
         )}
         <div className="ml-auto flex items-center gap-2">
+          {models.length > 0 && (
+            <select
+              value={model}
+              onChange={(e) => handleModelSwitch(e.target.value)}
+              disabled={streaming}
+              className="rounded-md border border-border bg-background px-2 py-1 text-xs disabled:opacity-60"
+              title="Switch model"
+            >
+              {models.map((m) => (
+                <option key={m} value={m}>{m}</option>
+              ))}
+            </select>
+          )}
           {sessionRepo && (
             <Button variant="outline" size="sm" onClick={() => setTaskOpen(true)} disabled={streaming}>
               <Rocket className="mr-1 h-3.5 w-3.5" /> Run task → PR

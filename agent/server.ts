@@ -578,6 +578,30 @@ const server = http.createServer((req, res) => {
       return;
     }
 
+    if (chatIdMatch && req.method === "PATCH") {
+      const id = chatIdMatch[1];
+      let body: { model?: string; options?: GenOptions };
+      try {
+        body = JSON.parse(await readBody(req)) as typeof body;
+      } catch {
+        sendJson(res, 400, { error: "Invalid JSON body." });
+        return;
+      }
+      const live = chatSessions.get(id);
+      if (!live) {
+        sendJson(res, 404, { error: "Chat not found." });
+        return;
+      }
+      if (body.model?.trim()) {
+        live.model = body.model.trim();
+      }
+      if (body.options) {
+        live.options = body.options;
+      }
+      sendJson(res, 200, { ok: true, model: live.model });
+      return;
+    }
+
     if (req.method === "POST" && url.pathname === "/api/chat/sessions") {
       let body: { repoUrl?: string; model?: string; ollamaUrl?: string; options?: GenOptions };
       try {
