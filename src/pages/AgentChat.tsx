@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Bot, ChevronDown, ChevronRight, Copy, FileEdit, GitBranch, Loader2, Search, Send, Square, Terminal, User } from "lucide-react";
+import { Bot, ChevronDown, ChevronRight, Copy, FileEdit, GitBranch, Search, Send, Square, Terminal, User } from "lucide-react";
 import {
   createChatSession,
   sendChatMessage,
@@ -11,7 +11,7 @@ import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 
 interface ChatBubble {
-  id: number;
+  id: number | string;
   role: "user" | "assistant" | "tool";
   content: string;
   toolName?: string;
@@ -22,6 +22,24 @@ interface ChatBubble {
 
 let nextId = 0;
 function uid() { return ++nextId; }
+
+/**
+ * Remove raw tool-call JSON that some models emit as plain text instead of
+ * using the structured tool_calls format. The backend still executes these
+ * (they show up as tool cards), so they must never leak into the chat bubble.
+ * Handles complete objects, multi-line/nested arguments, ```json fences, and
+ * a trailing *incomplete* object mid-stream (so partial JSON never flashes).
+ */
+function stripToolJson(text: string): string {
+  return text
+    // drop code fences that models wrap tool calls in
+    .replace(/```(?:json|tool_code)?/gi, "")
+    // drop complete { "name": ..., "arguments": {...} } objects (non-greedy, multi-line)
+    .replace(/\{\s*"name"\s*:\s*"[^"]+"\s*,\s*"arguments"\s*:\s*\{[\s\S]*?\}\s*\}/g, "")
+    // drop a trailing, not-yet-closed tool-call object still streaming in
+    .replace(/\{\s*"name"\s*:[\s\S]*$/g, "")
+    .trim();
+}
 
 function ToolCall({ name, args, result }: { name: string; args: Record<string, unknown>; result?: string }) {
   const [expanded, setExpanded] = useState(false);
@@ -149,28 +167,36 @@ export function AgentChatPage() {
 
     const cancel = sendChatMessage(agentUrl, sessionId, userMsg, (event: ChatEvent) => {
       switch (event.type) {
-        case "model_delta":
+        case "model_delta": {
           assistantContent += event.content;
-          // Strip raw JSON tool calls from display
-          const cleaned = assistantContent.replace(/\{\s*"name"\s*:\s*"[^"]+"\s*,\s*"arguments"\s*:\s*\{[^}]*\}\s*\}/g, "").trim();
+          const cleaned = stripToolJson(assistantContent);
           setMessages((prev) => {
             const last = prev[prev.length - 1];
-            if (last?.id === assistantId && last.role === "assistant") {
+            const hasBubble = last?.id === assistantId && last.role === "assistant";
+            // Nothing displayable yet (pure tool-call JSON) — don't spawn an empty bubble.
+            if (!cleaned) {
+              return hasBubble ? [...prev.slice(0, -1), { ...last, content: cleaned, streaming: true }] : prev;
+            }
+            if (hasBubble) {
               return [...prev.slice(0, -1), { ...last, content: cleaned, streaming: true }];
             }
             return [...prev, { id: assistantId, role: "assistant", content: cleaned, streaming: true }];
           });
           break;
+        }
 
         case "model_done": {
-          const finalCleaned = assistantContent.replace(/\{\s*"name"\s*:\s*"[^"]+"\s*,\s*"arguments"\s*:\s*\{[^}]*\}\s*\}/g, "").trim();
+          const finalCleaned = stripToolJson(assistantContent) || event.content.trim();
           setMessages((prev) => {
             const last = prev[prev.length - 1];
-            if (last?.id === assistantId && last.role === "assistant") {
-              return [...prev.slice(0, -1), { ...last, content: finalCleaned || event.content, streaming: false }];
+            const hasBubble = last?.id === assistantId && last.role === "assistant";
+            if (hasBubble) {
+              // Drop the bubble entirely if it ended up with no real content.
+              if (!finalCleaned) return prev.slice(0, -1);
+              return [...prev.slice(0, -1), { ...last, content: finalCleaned, streaming: false }];
             }
-            if (finalCleaned || event.content) {
-              return [...prev, { id: assistantId, role: "assistant", content: finalCleaned || event.content, streaming: false }];
+            if (finalCleaned) {
+              return [...prev, { id: assistantId, role: "assistant", content: finalCleaned, streaming: false }];
             }
             return prev;
           });
@@ -181,10 +207,17 @@ export function AgentChatPage() {
         case "tool_start": {
           const toolId = `${assistantId}-tool-${event.name}-${Date.now()}`;
           pendingTools.set(toolId, { name: event.name, args: event.args });
-          setMessages((prev) => [
-            ...prev,
-            { id: toolId, role: "tool", content: "", toolName: event.name, toolArgs: event.args },
-          ]);
+          setMessages((prev) => {
+            // Freeze any still-streaming assistant bubble before the tool card,
+            // and drop it if it only held tool-call JSON (now empty).
+            const finalized = prev
+              .map((m) => (m.role === "assistant" && m.streaming ? { ...m, streaming: false } : m))
+              .filter((m) => !(m.role === "assistant" && !m.content));
+            return [...finalized, { id: toolId, role: "tool", content: "", toolName: event.name, toolArgs: event.args }];
+          });
+          // Subsequent model text belongs to a fresh turn (a new bubble after the tool).
+          assistantId = uid();
+          assistantContent = "";
           break;
         }
 

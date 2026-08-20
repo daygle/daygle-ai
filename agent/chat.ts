@@ -182,7 +182,10 @@ export async function* streamChat(
     // Strip raw JSON tool calls from displayed content (they're shown as cards)
     let displayContent = content;
     if (toolCalls.length > 0) {
-      displayContent = content.replace(/\{\s*"name"\s*:\s*"[^"]+"\s*,\s*"arguments"\s*:\s*\{[^}]*\}\s*\}/g, "").trim();
+      displayContent = content
+        .replace(/```(?:json|tool_code)?/gi, "")
+        .replace(/\{\s*"name"\s*:\s*"[^"]+"\s*,\s*"arguments"\s*:\s*\{[\s\S]*?\}\s*\}/g, "")
+        .trim();
     }
 
     if (content) {
