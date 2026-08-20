@@ -24,18 +24,22 @@ It includes a self-hosted coding agent: point it at a GitHub repo, describe a ta
 | **git**  | Cloning repos and opening PRs                  | https://git-scm.com/downloads                                |
 | **curl** | Downloads the bundled Ollama binary            | `sudo apt-get install curl` / `brew install curl`            |
 | **zstd** | Extracts Ollama on **Linux** only              | `sudo apt-get install zstd` / `brew install zstd`            |
+| **gh**   | GitHub CLI for cloning repos and opening PRs   | See below                                                    |
 
 **Linux (Ubuntu/Debian):**
 
 ```bash
 sudo apt install curl zstd git unzip
 curl -fsSL https://bun.sh/install | bash
+curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+sudo apt update && sudo apt install gh
 ```
 
 **macOS:**
 
 ```bash
-brew install curl zstd git unzip
+brew install curl zstd git unzip gh
 curl -fsSL https://bun.sh/install | bash
 ```
 
@@ -48,6 +52,16 @@ sudo git clone https://github.com/daygle/daygle-ai.git /opt/daygle-ai
 cd /opt/daygle-ai
 bun run setup --model qwen2.5-coder:7b
 ```
+
+### GitHub authentication (for the Agent)
+
+The agent needs GitHub access to clone repos and open pull requests. Authenticate with:
+
+```bash
+gh auth login
+```
+
+Pick **GitHub.com** → **HTTPS** → **Paste an authentication token**. Create a token at https://github.com/settings/tokens with `repo` scope.
 
 You also need ~2 GB of free disk for the Ollama binary and your model weights.
 
