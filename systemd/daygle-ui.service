@@ -1,0 +1,15 @@
+[Unit]
+Description=Daygle - Web UI
+After=network.target daygle-ollama.service
+Wants=daygle-ollama.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/daygle-ai
+ExecStart=/root/.bun/bin/bun run dev
+Environment=HOME=/root
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
