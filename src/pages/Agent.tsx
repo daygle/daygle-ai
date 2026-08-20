@@ -666,13 +666,19 @@ export function AgentPage() {
       .then((m) => {
         const names = m.map((model) => model.name);
         setModels(names);
-        const preferredModel = loadModelPreference();
-        if (paramModel && names.includes(paramModel)) setModel(paramModel);
-        else if (preferredModel && names.includes(preferredModel)) setModel(preferredModel);
-        else if (!model && names.length > 0) setModel(names[0]);
+        // Only pick an initial model when the current one is unset/unavailable —
+        // never override a selection the user (or a resumed chat) already made,
+        // otherwise changing the model just snaps back to the default.
+        setModel((current) => {
+          if (current && names.includes(current)) return current;
+          const preferredModel = loadModelPreference();
+          if (paramModel && names.includes(paramModel)) return paramModel;
+          if (preferredModel && names.includes(preferredModel)) return preferredModel;
+          return names.length > 0 ? names[0] : current;
+        });
       })
       .catch(() => {});
-  }, [ollamaUrl, model, paramModel]);
+  }, [ollamaUrl, paramModel]);
 
   const refreshHistory = useCallback(() => {
     listChatSessions(agentUrl).then(setHistory).catch(() => {});
