@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { CheckCircle2, CircleAlert, Cpu, Gauge, Key, PlugZap, RotateCcw, Server, SlidersHorizontal } from "lucide-react";
 import { useOllama } from "../context/OllamaProvider";
 import { describeError, getVersion } from "../lib/ollama";
@@ -28,16 +28,39 @@ export function SettingsPage() {
   const [gen, setGen] = useState<GenOptions>(() => loadGenOptions());
   const [defaultModel, setDefaultModel] = useState(() => loadModelPreference());
 
+  // These options autosave to the browser as you type (no Save button). A brief
+  // "Saved" flash makes that obvious and keeps the cards consistent.
+  const [savedFlash, setSavedFlash] = useState(false);
+  const savedTimer = useRef<number>();
+  function markSaved() {
+    setSavedFlash(true);
+    window.clearTimeout(savedTimer.current);
+    savedTimer.current = window.setTimeout(() => setSavedFlash(false), 1500);
+  }
+  useEffect(() => () => window.clearTimeout(savedTimer.current), []);
+
   function updateGen(patch: Partial<GenOptions>) {
     setGen((prev) => {
       const next = { ...prev, ...patch };
       saveGenOptions(next);
       return next;
     });
+    markSaved();
   }
+  // Reset only the sampling params, leaving the CPU/performance fields alone.
   function resetGen() {
-    setGen({ ...DEFAULT_GEN_OPTIONS });
-    saveGenOptions({ ...DEFAULT_GEN_OPTIONS });
+    updateGen({
+      temperature: DEFAULT_GEN_OPTIONS.temperature,
+      num_ctx: DEFAULT_GEN_OPTIONS.num_ctx,
+      top_p: undefined,
+      top_k: undefined,
+      repeat_penalty: undefined,
+      keep_alive: undefined,
+    });
+  }
+  // Reset only the CPU/performance fields.
+  function resetPerf() {
+    updateGen({ num_thread: undefined, num_batch: undefined, num_gpu: undefined });
   }
 
   useEffect(() => {
@@ -214,12 +237,7 @@ export function SettingsPage() {
               <p className="text-[11px] text-muted-foreground">How long the model stays loaded after a reply.</p>
             </div>
           </div>
-          <div className="mt-4 flex items-center justify-between border-t border-border pt-4">
-            <p className="text-[11px] text-muted-foreground">Saved automatically · applies to your next new chat.</p>
-            <Button variant="outline" size="sm" onClick={resetGen}>
-              <RotateCcw className="mr-1 h-3.5 w-3.5" /> Reset
-            </Button>
-          </div>
+          <AutosaveFooter saved={savedFlash} onReset={resetGen} />
         </div>
       </section>
 
@@ -271,6 +289,7 @@ export function SettingsPage() {
               <li>Set <span className="font-mono">Keep alive</span> to <span className="font-mono">-1</span> to keep the model loaded and skip reload lag between messages.</li>
             </ul>
           </div>
+          <AutosaveFooter saved={savedFlash} onReset={resetPerf} />
         </div>
       </section>
 
@@ -311,6 +330,21 @@ export function SettingsPage() {
           )}
         </div>
       </section>
+    </div>
+  );
+}
+
+/** Consistent footer for the autosaving cards: a "saved" status and a Reset. */
+function AutosaveFooter({ saved, onReset }: { saved: boolean; onReset: () => void }) {
+  return (
+    <div className="mt-4 flex items-center justify-between border-t border-border pt-4">
+      <p className={`flex items-center gap-1.5 text-[11px] ${saved ? "text-accent" : "text-muted-foreground"}`}>
+        {saved && <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />}
+        <span>{saved ? "Saved" : "Saved automatically"} · applies to your next new chat.</span>
+      </p>
+      <Button variant="outline" size="sm" onClick={onReset}>
+        <RotateCcw className="mr-1 h-3.5 w-3.5" /> Reset
+      </Button>
     </div>
   );
 }
