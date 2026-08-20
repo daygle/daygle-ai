@@ -25,5 +25,8 @@ dist-ssr/
 # Ollama
 .ollama/
 
+# Freebuff
+.freebuff/
+
 # Bun
 bun-debug.log
