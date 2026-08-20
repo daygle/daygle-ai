@@ -23,6 +23,7 @@ import {
   parseRepo,
 } from "./github";
 import { detectSandbox, type SandboxRunner } from "./sandbox";
+import type { CommandApprover } from "./tools";
 import { HistoryStore, type StoredJob } from "./history";
 import { runQaGate, type QaResult } from "./qa";
 import { checkModelUpdate } from "./updates";
@@ -84,11 +85,29 @@ interface Job {
 const jobs = new Map<string, Job>();
 
 interface PendingApproval {
-  jobId: string;
+  jobId?: string;
   resolve: (decision: "approve" | "deny") => void;
   timer: ReturnType<typeof setTimeout>;
 }
 const pendingApprovals = new Map<string, PendingApproval>();
+
+// Evict idle chat sessions and remove their cloned repos so memory and disk
+// don't grow without bound.
+const CHAT_SESSION_TTL_MS = 60 * 60 * 1000;
+const chatSweeper = setInterval(() => {
+  const now = Date.now();
+  for (const [id, session] of chatSessions) {
+    if (now - session.lastActivity > CHAT_SESSION_TTL_MS) {
+      chatSessions.delete(id);
+      try {
+        fs.rmSync(session.root, { recursive: true, force: true });
+      } catch {
+        // best effort
+      }
+    }
+  }
+}, 10 * 60 * 1000);
+chatSweeper.unref?.();
 
 const historyStore = new HistoryStore(path.join(os.homedir(), ".daygle", "history"));
 
@@ -518,6 +537,7 @@ const server = http.createServer((req, res) => {
         ollamaUrl: (body.ollamaUrl ?? "http://localhost:11434").trim(),
         messages: [],
         createdAt: Date.now(),
+        lastActivity: Date.now(),
       };
       chatSessions.set(id, session);
       sendJson(res, 200, { id, repoUrl: session.repoUrl });
@@ -543,6 +563,7 @@ const server = http.createServer((req, res) => {
         sendJson(res, 400, { error: "message is required." });
         return;
       }
+      session.lastActivity = Date.now();
       // Stream the response as SSE
       res.writeHead(200, {
         "Content-Type": "text/event-stream",
@@ -551,11 +572,51 @@ const server = http.createServer((req, res) => {
         ...CORS_HEADERS,
       });
       const controller = new AbortController();
-      req.on("close", () => controller.abort());
+      const emit = (event: ChatEvent) => {
+        try {
+          res.write(`data: ${JSON.stringify(event)}\n\n`);
+        } catch {
+          // socket already closed
+        }
+      };
+
+      // Approval channel: commands that mutate/execute pause here until the user
+      // approves or denies from the chat UI (or a 10-minute timeout denies).
+      const localApprovals = new Set<string>();
+      const approve: CommandApprover = (command) => {
+        const requestId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+        localApprovals.add(requestId);
+        return new Promise<"approve" | "deny">((resolve) => {
+          const timer = setTimeout(() => {
+            if (pendingApprovals.delete(requestId)) resolve("deny");
+          }, 10 * 60 * 1000);
+          pendingApprovals.set(requestId, { resolve, timer });
+          emit({ type: "approval_requested", requestId, command });
+        }).then((decision) => {
+          localApprovals.delete(requestId);
+          emit({ type: "approval_resolved", requestId, decision });
+          return decision;
+        });
+      };
+
+      req.on("close", () => {
+        controller.abort();
+        // Release any approvals still waiting so the generator doesn't hang.
+        for (const id of localApprovals) {
+          const pending = pendingApprovals.get(id);
+          if (pending) {
+            pendingApprovals.delete(id);
+            clearTimeout(pending.timer);
+            pending.resolve("deny");
+          }
+        }
+      });
+
       try {
-        for await (const event of streamChat(session, body.message.trim(), undefined, sandbox ?? undefined, controller.signal)) {
+        for await (const event of streamChat(session, body.message.trim(), approve, sandbox ?? undefined, controller.signal)) {
           res.write(`data: ${JSON.stringify(event)}\n\n`);
         }
+        session.lastActivity = Date.now();
       } catch (err) {
         if (!(err instanceof Error && err.name === "AbortError")) {
           res.write(`data: ${JSON.stringify({ type: "error", message: err instanceof Error ? err.message : String(err) })}\n\n`);

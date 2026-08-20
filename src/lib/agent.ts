@@ -327,7 +327,9 @@ export type ChatEvent =
   | { type: "model_delta"; content: string }
   | { type: "model_done"; content: string }
   | { type: "tool_start"; name: string; args: Record<string, unknown> }
-  | { type: "tool_result"; name: string; result: string }
+  | { type: "tool_result"; name: string; result: string; diff?: string }
+  | { type: "approval_requested"; requestId: string; command: string }
+  | { type: "approval_resolved"; requestId: string; decision: "approve" | "deny" }
   | { type: "error"; message: string };
 
 export async function resolveApproval(
