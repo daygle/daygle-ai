@@ -16,11 +16,11 @@ import { useOllama } from "../context/OllamaProvider";
 import {
   deleteModel,
   describeError,
-  pullModel,
   showModel,
   type OllamaModel,
   type PullProgress,
 } from "../lib/ollama";
+import { startPull, subscribePull } from "../lib/pullManager";
 import { formatBytes, shortDigest, timeAgo } from "../lib/utils";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
@@ -70,24 +70,23 @@ export function ModelsPage() {
     [models],
   );
 
-  async function handlePull(name: string) {
+  // Reflect the shared pull manager's state, so an in-progress download started
+  // before navigating away shows live progress again when this page remounts.
+  useEffect(() => {
+    return subscribePull((state) => {
+      setPulling(state.pulling);
+      setProgress(state.progress);
+      setPullError(state.error);
+    });
+  }, []);
+
+  function handlePull(name: string) {
     const target = name.trim();
     if (!target || pulling) return;
-    setPulling(true);
-    setPullError(null);
-    setProgress(null);
-    try {
-      await pullModel(baseUrl, target, setProgress);
-      setProgress({ status: "done" });
-      setPullName("");
-      await refreshModels();
-      setTimeout(() => setProgress(null), 1200);
-    } catch (err) {
-      setPullError(describeError(err));
-      setProgress(null);
-    } finally {
-      setPulling(false);
-    }
+    setPullName("");
+    // The manager owns the stream and survives navigation; it refreshes the
+    // model list on completion even if this page has unmounted.
+    void startPull(baseUrl, target, refreshModels);
   }
 
   async function openDetails(model: OllamaModel) {
