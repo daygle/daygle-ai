@@ -1,4 +1,4 @@
-import { NavLink, Outlet, useNavigate } from "react-router-dom";
+import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { Bot, Box, Settings } from "lucide-react";
 import { Logo } from "./Logo";
 import { ConnectionStatus } from "./ConnectionStatus";
@@ -12,6 +12,8 @@ const nav = [
 
 export function AppShell() {
   const navigate = useNavigate();
+  const location = useLocation();
+  const isAgentRoute = location.pathname === "/agent";
 
   return (
     <div className="min-h-screen bg-background">
@@ -69,7 +71,7 @@ export function AppShell() {
       </header>
 
       <main className="md:pl-60">
-        <div className="mx-auto max-w-6xl p-4 md:p-8">
+        <div className={isAgentRoute ? "p-0" : "mx-auto max-w-6xl p-4 md:p-8"}>
           <Outlet />
         </div>
       </main>

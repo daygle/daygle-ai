@@ -1091,7 +1091,7 @@ export function AgentPage() {
 
   // --- Chat screen ---
   return (
-    <div className="flex h-[calc(100dvh-6rem)] min-w-0 overflow-hidden md:h-[calc(100dvh-4rem)]">
+    <div className="flex h-[calc(100dvh-4rem)] min-w-0 overflow-hidden md:h-[100dvh]">
       <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
         <header className="flex items-center gap-2 border-b border-border px-4 py-3">
         <Bot className="h-4 w-4 text-accent" />
