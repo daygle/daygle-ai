@@ -580,6 +580,99 @@ const server = http.createServer((req, res) => {
       return;
     }
 
+    // On-demand verification for a chat session: runs the QA gate (typecheck /
+    // test / build, or a custom command) and, optionally, a second-model review
+    // of the working diff. Streams the results as SSE using the same channel
+    // shape as the chat stream so the UI can render them inline.
+    const chatVerifyMatch = url.pathname.match(/^\/api\/chat\/sessions\/([^/]+)\/verify$/);
+    if (chatVerifyMatch && req.method === "POST") {
+      const sessionId = chatVerifyMatch[1];
+      let session = chatSessions.get(sessionId);
+      if (!session) {
+        try {
+          session = (await rehydrateChat(sessionId)) ?? undefined;
+        } catch (err) {
+          sendJson(res, 400, { error: `Failed to restore chat: ${err instanceof Error ? err.message : String(err)}` });
+          return;
+        }
+      }
+      if (!session) {
+        sendJson(res, 404, { error: "Chat session not found." });
+        return;
+      }
+      if (!session.root) {
+        sendJson(res, 400, { error: "This chat isn't connected to a repository, so there's nothing to verify." });
+        return;
+      }
+      let body: { reviewModel?: string; qaCommand?: string; review?: boolean };
+      try {
+        const raw = await readBody(req);
+        body = raw ? (JSON.parse(raw) as typeof body) : {};
+      } catch {
+        sendJson(res, 400, { error: "Invalid JSON body." });
+        return;
+      }
+
+      res.writeHead(200, {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        Connection: "keep-alive",
+        ...CORS_HEADERS,
+      });
+      const controller = new AbortController();
+      req.on("close", () => controller.abort());
+      const emit = (event: ChatEvent) => {
+        try {
+          res.write(`data: ${JSON.stringify(event)}\n\n`);
+        } catch {
+          // socket already closed
+        }
+      };
+
+      try {
+        // 1) QA gate — install deps if needed, run detected/configured checks.
+        const qa = await runQaGate({
+          root: session.root,
+          command: body.qaCommand?.trim() || undefined,
+          signal: controller.signal,
+          onStatus: (message) => emit({ type: "status", message }),
+        });
+        emit({ type: "qa", command: qa.command, output: qa.output, passed: qa.passed, skipped: !qa.ran });
+
+        // 2) Optional second-model review of the current working diff.
+        const wantReview = body.review !== false;
+        if (wantReview && !controller.signal.aborted) {
+          const { diff } = await workingDiff(session.root).catch(() => ({ stat: "", diff: "" }));
+          if (diff.trim()) {
+            const reviewModel = body.reviewModel?.trim() || session.model;
+            emit({ type: "status", message: `AI review by ${reviewModel}…` });
+            const review = await runReview({
+              ollamaUrl: session.ollamaUrl,
+              model: reviewModel,
+              task: deriveTitle(session.messages) || "the requested changes",
+              diff,
+              emit: () => {},
+              signal: controller.signal,
+              config: session.options
+                ? { temperature: session.options.temperature, numCtx: session.options.num_ctx }
+                : undefined,
+            });
+            emit({ type: "review", verdict: review.verdict, text: review.text });
+          } else {
+            emit({ type: "status", message: "No working-directory changes to review." });
+          }
+        }
+      } catch (err) {
+        if (!controller.signal.aborted) {
+          emit({ type: "error", message: err instanceof Error ? err.message : String(err) });
+        }
+      } finally {
+        emit({ type: "verify_done" });
+      }
+      res.end();
+      return;
+    }
+
     const chatIdMatch = url.pathname.match(/^\/api\/chat\/sessions\/([^/]+)$/);
     if (chatIdMatch && req.method === "GET") {
       const id = chatIdMatch[1];
