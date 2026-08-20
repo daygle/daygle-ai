@@ -1,7 +1,29 @@
-node_modules
-.ollama/
-dist
-dist-ssr
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+dist-ssr/
+
+# Environment & local config
 *.local
+.env
+.env.*
+!.env.example
+
+# Editor & OS
 .DS_Store
-.vite
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Vite
+.vite/
+
+# Ollama
+.ollama/
+
+# Bun
+bun-debug.log
