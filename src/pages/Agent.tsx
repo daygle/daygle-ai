@@ -606,6 +606,7 @@ export function AgentPage() {
   const stickToBottomRef = useRef(true);
   const abortRef = useRef<() => void>();
   const toolResultsRef = useRef<Map<string, string>>(new Map());
+  const busyPollRef = useRef<number | null>(null);
 
   const refreshWorkspace = useCallback(async () => {
     if (!sessionId) {
@@ -731,7 +732,40 @@ export function AgentPage() {
     }
   }
 
+  function stopBusyPoll() {
+    if (busyPollRef.current !== null) {
+      window.clearInterval(busyPollRef.current);
+      busyPollRef.current = null;
+    }
+  }
+
+  // Reconnect to a generation that's still running server-side (e.g. after the
+  // user navigated away mid-answer and came back): the live SSE stream is gone,
+  // so poll the transcript until the session is no longer busy.
+  function startBusyPoll(id: string) {
+    stopBusyPoll();
+    setStreaming(true);
+    setStatusText("Working…");
+    busyPollRef.current = window.setInterval(async () => {
+      try {
+        const chat = await getChatSession(agentUrl, id);
+        setMessages(bubblesFromMessages(chat.messages));
+        if (!chat.busy) {
+          stopBusyPoll();
+          setStreaming(false);
+          setStatusText("");
+          void refreshWorkspace();
+        }
+      } catch {
+        stopBusyPoll();
+        setStreaming(false);
+        setStatusText("");
+      }
+    }, 1500);
+  }
+
   async function resumeChat(id: string, opts?: { silent?: boolean }) {
+    stopBusyPoll();
     setQueuedMessages([]);
     setAutoSendQueued(false);
     removeImageAttachment();
@@ -745,6 +779,8 @@ export function AgentPage() {
       if (chat.model) setModel(chat.model);
       setMessages(bubblesFromMessages(chat.messages));
       setConnected(true);
+      // If a reply is still streaming server-side, resume showing progress.
+      if (chat.busy) startBusyPoll(chat.id);
     } catch (err) {
       if (!opts?.silent) {
         setMessages([{ id: uid(), role: "assistant", content: `Failed to open chat: ${err instanceof Error ? err.message : String(err)}` }]);
@@ -786,6 +822,7 @@ export function AgentPage() {
   function startNewChat() {
     abortRef.current?.();
     verifyAbortRef.current?.();
+    stopBusyPoll();
     setConnected(false);
     setSessionId(null);
     setSessionRepo("");
@@ -1012,11 +1049,17 @@ export function AgentPage() {
 
   function handleStop() {
     abortRef.current?.();
+    stopBusyPoll();
     setStreaming(false);
     setStatusText("");
     // Clear the blinking cursor on whatever bubble was mid-stream.
     setMessages((prev) => prev.map((m) => (m.streaming ? { ...m, streaming: false } : m)));
   }
+
+  // Stop polling on unmount (navigating away) — this only detaches the UI; it
+  // never aborts the generation, which keeps running and persisting so it can
+  // be picked back up when the chat is reopened.
+  useEffect(() => () => stopBusyPoll(), []);
 
   // On-demand verification of the chat's working tree: runs the QA gate
   // (typecheck / test / build) and a second-model review of the diff, then

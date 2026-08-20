@@ -40,6 +40,8 @@ export interface ChatSession {
   createdAt: number;
   lastActivity: number;
   options?: GenOptions;
+  /** True while a generation is streaming, so a reconnecting client can resume. */
+  busy?: boolean;
 }
 
 export type ChatEvent =
