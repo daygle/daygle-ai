@@ -25,6 +25,9 @@ export interface GenOptions {
   top_k?: number;
   repeat_penalty?: number;
   keep_alive?: string;
+  num_thread?: number;
+  num_batch?: number;
+  num_gpu?: number;
 }
 
 export interface ChatSession {
@@ -272,6 +275,10 @@ export async function* streamChat(
   if (typeof opts.top_p === "number") genOptions.top_p = opts.top_p;
   if (typeof opts.top_k === "number") genOptions.top_k = opts.top_k;
   if (typeof opts.repeat_penalty === "number") genOptions.repeat_penalty = opts.repeat_penalty;
+  // CPU / performance knobs — forwarded straight to Ollama when set.
+  if (typeof opts.num_thread === "number") genOptions.num_thread = opts.num_thread;
+  if (typeof opts.num_batch === "number") genOptions.num_batch = opts.num_batch;
+  if (typeof opts.num_gpu === "number") genOptions.num_gpu = opts.num_gpu;
 
   for (let step = 0; step < MAX_STEPS; step++) {
     if (signal?.aborted) return;
