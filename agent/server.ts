@@ -3,7 +3,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { CancelledError, runAgentLoop, runReview, type AgentConfig, type AgentEvent } from "./agent";
+import { CancelledError, runAgentLoop, runAgenticReview, runReview, type AgentConfig, type AgentEvent } from "./agent";
 import { ChatSession, streamChat, type ChatEvent, type GenOptions } from "./chat";
 import { ChatHistoryStore, deriveTitle } from "./chat-history";
 import {
@@ -24,7 +24,7 @@ import {
   parseRepo,
 } from "./github";
 import { detectSandbox, type SandboxRunner } from "./sandbox";
-import { runTool, type CommandApprover } from "./tools";
+import { reviewApprover, runTool, type CommandApprover } from "./tools";
 import { HistoryStore, type StoredJob } from "./history";
 import { runQaGate, type QaResult } from "./qa";
 import { checkModelUpdate } from "./updates";
@@ -396,16 +396,30 @@ async function executeJob(job: Job): Promise<void> {
         for (let round = 0; round <= maxRounds; round++) {
           const { diff } = await workingDiff(workDir).catch(() => ({ stat: "", diff: "" }));
           if (!diff.trim()) break;
-          emit({ type: "status", message: `AI review by ${reviewModel}…` });
-          const review = await runReview({
-            ollamaUrl: job.ollamaUrl,
-            model: reviewModel,
-            task: job.task,
-            diff,
-            emit,
-            signal,
-            config: job.config,
-          });
+          const agentic = Boolean(job.config?.agenticReview);
+          emit({ type: "status", message: `${agentic ? "Agentic review" : "AI review"} by ${reviewModel}…` });
+          const review = agentic
+            ? await runAgenticReview({
+                root: workDir,
+                ollamaUrl: job.ollamaUrl,
+                model: reviewModel,
+                task: job.task,
+                diff,
+                emit,
+                approve: reviewApprover,
+                sandbox: sandbox ?? undefined,
+                signal,
+                config: job.config,
+              })
+            : await runReview({
+                ollamaUrl: job.ollamaUrl,
+                model: reviewModel,
+                task: job.task,
+                diff,
+                emit,
+                signal,
+                config: job.config,
+              });
           reviewText = review.text;
           if (review.verdict === "approved") break;
           if (round >= maxRounds) {
@@ -604,7 +618,7 @@ const server = http.createServer((req, res) => {
         sendJson(res, 400, { error: "This chat isn't connected to a repository, so there's nothing to verify." });
         return;
       }
-      let body: { reviewModel?: string; qaCommand?: string; review?: boolean };
+      let body: { reviewModel?: string; qaCommand?: string; review?: boolean; agentic?: boolean };
       try {
         const raw = await readBody(req);
         body = raw ? (JSON.parse(raw) as typeof body) : {};
@@ -645,18 +659,40 @@ const server = http.createServer((req, res) => {
           const { diff } = await workingDiff(session.root).catch(() => ({ stat: "", diff: "" }));
           if (diff.trim()) {
             const reviewModel = body.reviewModel?.trim() || session.model;
-            emit({ type: "status", message: `AI review by ${reviewModel}…` });
-            const review = await runReview({
-              ollamaUrl: session.ollamaUrl,
-              model: reviewModel,
-              task: deriveTitle(session.messages) || "the requested changes",
-              diff,
-              emit: () => {},
-              signal: controller.signal,
-              config: session.options
-                ? { temperature: session.options.temperature, numCtx: session.options.num_ctx }
-                : undefined,
-            });
+            const agentic = body.agentic !== false; // default to the agentic reviewer
+            const reviewConfig = session.options
+              ? { temperature: session.options.temperature, numCtx: session.options.num_ctx }
+              : undefined;
+            emit({ type: "status", message: `${agentic ? "Agentic review" : "AI review"} by ${reviewModel}…` });
+            // Forward the reviewer's tool/status steps so the investigation is
+            // visible in the chat transcript.
+            const forward = (event: AgentEvent) => {
+              if (event.type === "status") emit({ type: "status", message: event.message });
+              else if (event.type === "tool_start") emit({ type: "tool_start", name: event.name, args: event.args });
+              else if (event.type === "tool_result") emit({ type: "tool_result", name: event.name, result: event.result });
+            };
+            const review = agentic
+              ? await runAgenticReview({
+                  root: session.root,
+                  ollamaUrl: session.ollamaUrl,
+                  model: reviewModel,
+                  task: deriveTitle(session.messages) || "the requested changes",
+                  diff,
+                  emit: forward,
+                  approve: reviewApprover,
+                  sandbox: sandbox ?? undefined,
+                  signal: controller.signal,
+                  config: reviewConfig,
+                })
+              : await runReview({
+                  ollamaUrl: session.ollamaUrl,
+                  model: reviewModel,
+                  task: deriveTitle(session.messages) || "the requested changes",
+                  diff,
+                  emit: () => {},
+                  signal: controller.signal,
+                  config: reviewConfig,
+                });
             emit({ type: "review", verdict: review.verdict, text: review.text });
           } else {
             emit({ type: "status", message: "No working-directory changes to review." });

@@ -200,6 +200,53 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   },
 ];
 
+/** Read-only tool surface for the agentic reviewer — everything except write_file. */
+export const REVIEW_TOOL_DEFINITIONS: ToolDefinition[] = TOOL_DEFINITIONS.filter(
+  (tool) => tool.function.name !== "write_file",
+);
+
+// Test / typecheck / build runners the agentic reviewer may execute on its own.
+// These run project scripts, so they're gated to this allowlist; anything
+// destructive, networked, or secret-accessing is still hard-blocked by
+// classifyCommand before it ever reaches the reviewer's approver.
+const REVIEW_RUNNERS = new Set([
+  "npm", "pnpm", "yarn", "bun", "npx", "node", "deno", "tsc", "vitest", "jest",
+  "mocha", "eslint", "prettier", "biome", "go", "cargo", "python", "python3",
+  "pytest", "ruff", "mypy", "make", "gradle", "./gradlew", "mvn", "dotnet",
+  "rspec", "rake", "phpunit", "composer",
+]);
+
+/**
+ * Whether a command is safe for the agentic reviewer to run unattended: a
+ * chain of `cd <dir>` and known verification runners (or the read-only
+ * SAFE_PROGRAMS / safe git subcommands), with no shell plumbing beyond `&&`.
+ */
+export function isReviewSafeCommand(command: string): boolean {
+  const trimmed = command.trim();
+  if (!trimmed) return false;
+  // Only `&&` chaining is allowed; reject pipes, redirects, subshells, etc.
+  const withoutAnd = trimmed.replace(/&&/g, " ");
+  if (/[;&|<>`$()]/.test(withoutAnd)) return false;
+
+  const segments = trimmed.split("&&").map((s) => s.trim()).filter(Boolean);
+  if (segments.length === 0) return false;
+  return segments.every((segment) => {
+    const tokens = segment.split(/\s+/);
+    const program = tokens[0];
+    if (program === "cd") return tokens.length === 2;
+    if (program === "git") return Boolean(tokens[1]) && SAFE_GIT.has(tokens[1]);
+    return REVIEW_RUNNERS.has(program) || SAFE_PROGRAMS.has(program);
+  });
+}
+
+/**
+ * A CommandApprover for the agentic reviewer: auto-approves verification
+ * commands from the allowlist and denies everything else, so the reviewer can
+ * run tests unattended without prompting or gaining write access.
+ */
+export const reviewApprover: CommandApprover = (command: string) =>
+  Promise.resolve(isReviewSafeCommand(command) ? "approve" : "deny");
+
 function safeResolve(root: string, rel: string): string {
   const abs = path.resolve(root, rel || ".");
   const rootAbs = path.resolve(root);

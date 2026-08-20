@@ -1,4 +1,4 @@
-import { TOOL_DEFINITIONS, runTool, type CommandApprover, type ToolDefinition } from "./tools";
+import { REVIEW_TOOL_DEFINITIONS, TOOL_DEFINITIONS, runTool, type CommandApprover, type ToolDefinition } from "./tools";
 import type { SandboxRunner } from "./sandbox";
 
 export interface ToolCall {
@@ -42,6 +42,10 @@ export interface AgentConfig {
   maxReviewRounds?: number;
   qaCommand?: string;
   maxQaRounds?: number;
+  /** When true, the review is agentic — it reads code and runs checks before deciding. */
+  agenticReview?: boolean;
+  /** Max tool-using steps for the agentic reviewer before it must decide. */
+  maxReviewSteps?: number;
 }
 
 const DEFAULT_MAX_STEPS = 40;
@@ -323,6 +327,116 @@ export async function runReview(opts: {
   );
 
   const text = content.trim() || "APPROVED\n(no review content returned)";
+  const verdict = parseReviewVerdict(text);
+  emit({ type: "review", verdict, text });
+  return { verdict, text };
+}
+
+const DEFAULT_MAX_REVIEW_STEPS = 12;
+
+const AGENTIC_REVIEW_SYSTEM_PROMPT = `You are a senior software engineer performing a pre-merge code review inside the repository checkout that already contains the change.
+
+You have READ-ONLY tools to investigate before you decide:
+- list_files(path) — list files/directories
+- read_file(path, start_line?, end_line?) — read a file with numbered lines
+- search(pattern, path?) — regex-search the repo
+- run_command(command) — run verification commands (tests, typecheck, lint, build). Only test/build runners are permitted; anything else is denied. You cannot modify files.
+
+How to review:
+1. Read the diff, then open the surrounding code and call sites the change affects — don't judge from the diff alone.
+2. When it helps, run the project's tests or typecheck to confirm the change actually works.
+3. Look for correctness bugs, regressions, security issues, missing error handling, and broken conventions.
+
+Work in small steps and wait for each tool result. When you have enough evidence, STOP calling tools and give your verdict in this exact format:
+First line: APPROVED or CHANGES REQUESTED
+Then: a short summary and, if changes are requested, a numbered list of concrete issues to fix (reference files/lines).`;
+
+/**
+ * Agentic pre-merge review: a reviewer model that reads the code and runs the
+ * project's checks (via a scoped, read-only tool set) before returning a
+ * verdict — stronger than a diff-only review because it can confirm the change
+ * actually works. Emits tool/status events so the investigation is visible, and
+ * a final `review` event.
+ */
+export async function runAgenticReview(opts: {
+  root: string;
+  ollamaUrl: string;
+  model: string;
+  task: string;
+  diff: string;
+  emit: (event: AgentEvent) => void;
+  approve?: CommandApprover;
+  sandbox?: SandboxRunner;
+  signal?: AbortSignal;
+  config?: AgentConfig;
+}): Promise<ReviewResult> {
+  const { root, ollamaUrl, model, task, diff, emit, approve, sandbox, signal } = opts;
+  const temperature = opts.config?.temperature ?? DEFAULT_TEMPERATURE;
+  const numCtx = opts.config?.numCtx ?? DEFAULT_NUM_CTX;
+  const maxSteps = Math.max(1, Math.min(40, opts.config?.maxReviewSteps ?? DEFAULT_MAX_REVIEW_STEPS));
+
+  const throwIfCancelled = () => {
+    if (signal?.aborted) throw new CancelledError();
+  };
+
+  const messages: AgentMessage[] = [
+    { role: "system", content: AGENTIC_REVIEW_SYSTEM_PROMPT },
+    {
+      role: "user",
+      content: `Task being implemented:\n${task}\n\nDiff under review:\n\n${diff.slice(0, 60_000)}\n\nInvestigate as needed, then give your verdict.`,
+    },
+  ];
+
+  let lastContent = "";
+  for (let step = 0; step < maxSteps; step++) {
+    throwIfCancelled();
+    emit({ type: "status", message: `Reviewing… (step ${step + 1}/${maxSteps})` });
+    const { content, toolCalls } = await chatOnce(ollamaUrl, model, messages, REVIEW_TOOL_DEFINITIONS, {
+      temperature,
+      numCtx,
+      signal,
+    });
+    throwIfCancelled();
+    if (content) lastContent = content;
+
+    if (toolCalls.length === 0) {
+      const text = content.trim() || "CHANGES REQUESTED\n(reviewer returned no verdict)";
+      const verdict = parseReviewVerdict(text);
+      emit({ type: "review", verdict, text });
+      return { verdict, text };
+    }
+
+    messages.push({ role: "assistant", content, tool_calls: toolCalls });
+    for (const call of toolCalls) {
+      const name = call.function.name;
+      const args = call.function.arguments ?? {};
+      // Defense in depth: the reviewer must never mutate the tree.
+      if (name === "write_file") {
+        emit({ type: "tool_start", name, args });
+        const result = "Denied: the reviewer is read-only and cannot write files.";
+        emit({ type: "tool_result", name, result });
+        messages.push({ role: "tool", content: result, tool_name: name });
+        continue;
+      }
+      emit({ type: "tool_start", name, args });
+      let result: string;
+      try {
+        result = await runTool(root, name, args, approve, sandbox, signal);
+        throwIfCancelled();
+      } catch (err) {
+        if (err instanceof CancelledError) throw err;
+        result = `Error: ${err instanceof Error ? err.message : String(err)}`;
+      }
+      emit({ type: "tool_result", name, result });
+      messages.push({ role: "tool", content: result, tool_name: name });
+    }
+  }
+
+  // Ran out of steps without a clean stop — treat the last words as the verdict,
+  // defaulting to changes-requested so an inconclusive review doesn't approve.
+  const text = lastContent.trim()
+    ? `${lastContent.trim()}\n\n(Reviewer reached its step limit.)`
+    : "CHANGES REQUESTED\n(reviewer reached its step limit without a verdict)";
   const verdict = parseReviewVerdict(text);
   emit({ type: "review", verdict, text });
   return { verdict, text };

@@ -27,6 +27,9 @@ export interface AgentConfig {
   maxReviewRounds?: number;
   qaCommand?: string;
   maxQaRounds?: number;
+  /** When true, the reviewer reads code and runs checks before deciding. */
+  agenticReview?: boolean;
+  maxReviewSteps?: number;
 }
 
 export interface AgentJobRequest {
@@ -336,6 +339,8 @@ export interface VerifyOptions {
   qaCommand?: string;
   /** Set false to run only the QA gate and skip the AI review. */
   review?: boolean;
+  /** Set false to use the quick diff-only review instead of the agentic reviewer. */
+  agentic?: boolean;
 }
 
 /**
