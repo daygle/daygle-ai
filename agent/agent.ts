@@ -46,6 +46,10 @@ export interface AgentConfig {
   agenticReview?: boolean;
   /** Max tool-using steps for the agentic reviewer before it must decide. */
   maxReviewSteps?: number;
+  /** When true, a test-generation pass writes and runs tests for the change. */
+  generateTests?: boolean;
+  /** Max tool-using steps for the test-generation pass. */
+  maxTestGenSteps?: number;
 }
 
 const DEFAULT_MAX_STEPS = 40;
@@ -265,6 +269,62 @@ export async function runAgentLoop(opts: {
   }
 
   return "Reached the maximum number of steps without finishing.";
+}
+
+const DEFAULT_MAX_TEST_GEN_STEPS = 30;
+
+const TEST_GEN_SYSTEM_PROMPT = `You are daygle, a software engineer writing automated tests for a change that was just made to a git repository.
+
+You MUST use the provided tools — read files, search, write test files, and run the tests. Do NOT describe tests as text; actually create and run them.
+
+CRITICAL: Never write tool calls or shell commands as plain text. To use a tool you MUST invoke it through the tool interface.
+
+How to work:
+1. Study the change and the code it touches, and look for an existing test setup — a test runner, config, and where tests live (e.g. *.test.ts, *_test.py, tests/). Match the project's existing testing framework and conventions exactly. Do NOT introduce a new test framework or dependencies.
+2. Write focused tests that cover the new or changed behavior, including the important edge cases — not trivial or redundant assertions.
+3. Run the tests with the project's test command and iterate until they pass. If the change itself is buggy, prefer fixing the test to assert correct behavior; only touch non-test code if a test reveals a real defect.
+4. If the repository has no test framework set up and adding one would be intrusive, do NOT scaffold one — stop and explain that in your summary instead.
+
+Rules:
+- Only add or edit test files (and minimal fixtures) unless a test uncovers a real bug in the change.
+- Keep tests deterministic and self-contained. No network, no reliance on external services.
+- When finished, give a short summary of the tests you added and their result, then STOP calling tools.`;
+
+/**
+ * Test-generation pass: reuses the coding agent loop with a test-focused prompt
+ * to write and run automated tests covering a change. Runs after the main task
+ * so the diff exists, and before the QA gate so the new tests are verified (and
+ * fixed) by the normal rounds.
+ */
+export async function runTestGeneration(opts: {
+  root: string;
+  task: string;
+  diff: string;
+  model: string;
+  ollamaUrl: string;
+  emit: (event: AgentEvent) => void;
+  approve?: CommandApprover;
+  sandbox?: SandboxRunner;
+  signal?: AbortSignal;
+  config?: AgentConfig;
+}): Promise<string> {
+  const { root, task, diff, model, ollamaUrl, emit, approve, sandbox, signal } = opts;
+  const taskText = `A change was just made to the repository to accomplish this task:\n${task}\n\nHere is the diff of that change:\n\n${diff.slice(0, 60_000)}\n\nWrite automated tests that cover this change, following the project's existing test framework and conventions, and make them pass.`;
+  return runAgentLoop({
+    root,
+    task: taskText,
+    model,
+    ollamaUrl,
+    emit,
+    approve,
+    sandbox,
+    signal,
+    config: {
+      ...opts.config,
+      systemPrompt: TEST_GEN_SYSTEM_PROMPT,
+      maxSteps: opts.config?.maxTestGenSteps ?? DEFAULT_MAX_TEST_GEN_STEPS,
+    },
+  });
 }
 
 export interface ReviewResult {

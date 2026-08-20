@@ -30,6 +30,9 @@ export interface AgentConfig {
   /** When true, the reviewer reads code and runs checks before deciding. */
   agenticReview?: boolean;
   maxReviewSteps?: number;
+  /** When true, a test-generation pass writes and runs tests for the change. */
+  generateTests?: boolean;
+  maxTestGenSteps?: number;
 }
 
 export interface AgentJobRequest {
