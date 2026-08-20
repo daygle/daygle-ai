@@ -1,6 +1,6 @@
 # daygle
 
-A private AI workbench that runs on **your own [Ollama](https://ollama.com)** server. Pull open-source models, manage what's installed, and test them in a streaming chat playground — no cloud, no API bill, no vendor lock-in.
+A private AI coding agent that runs on **your own [Ollama](https://ollama.com)** server. Pull open-source models, manage what's installed, chat with them, and hand the agent a whole task to complete and open a PR — no cloud, no API bill, no vendor lock-in.
 
 Ollama is **bundled into the project**: it installs into `.ollama/` and stores models there too, so the whole thing is self-contained.
 
