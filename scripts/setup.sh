@@ -56,6 +56,14 @@ need bun
 need curl
 need git
 need tar
+need_gh=0
+if ! command -v gh >/dev/null 2>&1; then
+  echo "  ✗ gh not found (needed for agent)"
+  need_gh=1
+  missing=1
+else
+  echo "  ✓ gh"
+fi
 
 OS="$(uname -s)"
 if [ ! -x "$ROOT/.ollama/bin/ollama" ] && [ "$OS" = "Linux" ] && ! command -v zstd >/dev/null 2>&1; then
@@ -65,7 +73,16 @@ fi
 
 if [ "$missing" -eq 1 ]; then
   echo ""
-  echo "Install the missing tools and re-run this script:"
+  echo "if [ "$need_gh" -eq 1 ] && [ "$(uname -s)" = "Linux" ]; then
+  echo ""
+  echo "Installing gh CLI…"
+  curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg 2>/dev/null
+  echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+  apt-get update -qq && apt-get install -y -qq gh
+  echo "  ✓ gh installed"
+fi
+
+Install the missing tools and re-run this script:"
   echo "  bun:   curl -fsSL https://bun.sh/install | bash   (then open a new shell)"
   echo "  curl:  sudo apt-get install curl   |   brew install curl"
   echo "  zstd:  sudo apt-get install zstd   |   brew install zstd"
@@ -113,3 +130,4 @@ echo ""
 echo "Agent page authentication (pick one):"
 echo "   - GitHub App: set GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY, then bun run agent"
 echo "   - gh CLI:     gh auth login"
+echo "   - Token:      enter a GitHub token in the Settings page of the UI"

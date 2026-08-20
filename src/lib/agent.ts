@@ -69,10 +69,26 @@ function strip(url: string): string {
 
 export async function agentHealth(
   serverUrl: string,
-): Promise<{ ok: boolean; gh: boolean; app: boolean; sandbox: string | null }> {
+): Promise<{ ok: boolean; gh: boolean; app: boolean; token: boolean; sandbox: string | null }> {
   const res = await fetch(`${strip(serverUrl)}/api/health`);
   if (!res.ok) throw new Error("Agent server not reachable");
-  return (await res.json()) as { ok: boolean; gh: boolean; app: boolean; sandbox: string | null };
+  return (await res.json()) as { ok: boolean; gh: boolean; app: boolean; token: boolean; sandbox: string | null };
+}
+
+export async function getGithubToken(serverUrl: string): Promise<string> {
+  const res = await fetch(`${strip(serverUrl)}/api/github-token`);
+  if (!res.ok) throw new Error("Failed to load token");
+  const data = (await res.json()) as { token: string };
+  return data.token;
+}
+
+export async function saveGithubToken(serverUrl: string, token: string): Promise<void> {
+  const res = await fetch(`${strip(serverUrl)}/api/github-token`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token }),
+  });
+  if (!res.ok) throw new Error("Failed to save token");
 }
 
 export async function startAgentJob(

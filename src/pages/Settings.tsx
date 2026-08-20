@@ -1,7 +1,8 @@
-import { useState } from "react";
-import { CheckCircle2, CircleAlert, PlugZap, Server, TerminalSquare } from "lucide-react";
+import { useEffect, useState } from "react";
+import { CheckCircle2, CircleAlert, Key, PlugZap, Server, TerminalSquare } from "lucide-react";
 import { useOllama } from "../context/OllamaProvider";
 import { describeError, getVersion } from "../lib/ollama";
+import { getGithubToken, saveGithubToken } from "../lib/agent";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Spinner } from "../components/ui/spinner";
@@ -11,6 +12,21 @@ export function SettingsPage() {
   const [url, setUrl] = useState(baseUrl);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ ok: boolean; text: string } | null>(null);
+
+  const [agentUrl] = useState(() => {
+    try {
+      return localStorage.getItem("daygle.agentUrl") ?? "http://localhost:8787";
+    } catch {
+      return "http://localhost:8787";
+    }
+  });
+  const [ghToken, setGhToken] = useState("");
+  const [ghTokenSaving, setGhTokenSaving] = useState(false);
+  const [ghTokenResult, setGhTokenResult] = useState<{ ok: boolean; text: string } | null>(null);
+
+  useEffect(() => {
+    getGithubToken(agentUrl).then(setGhToken).catch(() => {});
+  }, [agentUrl]);
 
   async function handleTest() {
     const target = url.trim();
@@ -30,6 +46,19 @@ export function SettingsPage() {
   function handleSave() {
     setBaseUrl(url.trim());
     setTestResult(null);
+  }
+
+  async function handleSaveToken() {
+    setGhTokenSaving(true);
+    setGhTokenResult(null);
+    try {
+      await saveGithubToken(agentUrl, ghToken.trim());
+      setGhTokenResult({ ok: true, text: "Token saved." });
+    } catch (err) {
+      setGhTokenResult({ ok: false, text: describeError(err) });
+    } finally {
+      setGhTokenSaving(false);
+    }
   }
 
   return (
@@ -135,6 +164,39 @@ export function SettingsPage() {
           browser, so run both on the same machine. If you use daygle from a hosted sandbox or another device, it can't
           reach <code className="font-mono">localhost</code> on your computer — run <code className="font-mono">bun run dev</code>{" "}
           locally, or expose your server with a tunnel (e.g. Tailscale or ngrok).
+        </div>
+      </section>
+
+      <section className="space-y-4">
+        <div className="flex items-center gap-2">
+          <Key className="h-4 w-4 text-accent" />
+          <h2 className="text-sm font-semibold">GitHub Token</h2>
+        </div>
+
+        <div className="rounded-xl border border-border bg-card p-5">
+          <p className="text-xs text-muted-foreground">
+            A personal access token lets the agent clone private repos and open pull requests. Create one at
+            <a href="https://github.com/settings/tokens" target="_blank" rel="noreferrer" className="text-accent underline">github.com/settings/tokens</a>
+            with <strong>repo</strong> scope.
+          </p>
+          <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+            <Input
+              type="password"
+              value={ghToken}
+              onChange={(e) => setGhToken(e.target.value)}
+              placeholder="ghp_xxxxxxxxxxxx"
+              className="font-mono"
+            />
+            <Button onClick={handleSaveToken} disabled={ghTokenSaving}>
+              {ghTokenSaving ? <Spinner /> : "Save"}
+            </Button>
+          </div>
+          {ghTokenResult && (
+            <p className={`mt-3 flex items-center gap-1.5 text-xs ${ghTokenResult.ok ? "text-accent" : "text-destructive"}`}>
+              {ghTokenResult.ok ? <CheckCircle2 className="h-3.5 w-3.5 shrink-0" /> : <CircleAlert className="h-3.5 w-3.5 shrink-0" />}
+              {ghTokenResult.text}
+            </p>
+          )}
         </div>
       </section>
     </div>

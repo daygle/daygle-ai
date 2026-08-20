@@ -39,9 +39,24 @@ import {
 const PORT = Number(process.env.PORT ?? 8787);
 const HOST = process.env.HOST ?? "0.0.0.0";
 
+const TOKEN_PATH = path.join(os.homedir(), ".daygle", "github-token");
+
 let sandbox: SandboxRunner | null = null;
 
 let workspace: { repoUrl: string; dir: string } | null = null;
+
+function loadGithubToken(): string {
+  try {
+    return fs.readFileSync(TOKEN_PATH, "utf8").trim();
+  } catch {
+    return "";
+  }
+}
+
+function saveGithubToken(token: string): void {
+  fs.mkdirSync(path.dirname(TOKEN_PATH), { recursive: true });
+  fs.writeFileSync(TOKEN_PATH, token.trim(), "utf8");
+}
 
 interface Job {
   id: string;
@@ -230,6 +245,8 @@ async function executeJob(job: Job): Promise<void> {
         repoName = parsed.repo;
         emit({ type: "status", message: "Requesting repo-scoped GitHub App token…" });
         token = await createInstallationToken(repoOwner);
+      } else {
+        token = loadGithubToken() || undefined;
       }
 
       emit({ type: "status", message: `Cloning ${job.repoUrl}…` });
@@ -442,8 +459,29 @@ const server = http.createServer((req, res) => {
     if (req.method === "GET" && url.pathname === "/api/health") {
       const gh = await ghAuthenticated();
       const app = githubAppAvailable();
-      sendJson(res, 200, { ok: true, gh, app, sandbox: sandbox?.name ?? null });
+      const token = loadGithubToken();
+      sendJson(res, 200, { ok: true, gh, app, token: !!token, sandbox: sandbox?.name ?? null });
       return;
+    }
+
+    if (url.pathname === "/api/github-token") {
+      if (req.method === "GET") {
+        const token = loadGithubToken();
+        sendJson(res, 200, { token });
+        return;
+      }
+      if (req.method === "POST") {
+        let body: { token?: string };
+        try {
+          body = JSON.parse(await readBody(req)) as { token?: string };
+        } catch {
+          sendJson(res, 400, { error: "Invalid JSON body." });
+          return;
+        }
+        saveGithubToken(body.token ?? "");
+        sendJson(res, 200, { ok: true });
+        return;
+      }
     }
 
     if (url.pathname.startsWith("/api/workspace")) {
