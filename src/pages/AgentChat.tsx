@@ -86,17 +86,25 @@ export function AgentChatPage() {
         case "model_done":
           setStreaming(false);
           break;
-        case "tool_start":
+        case "tool_start": {
+          const args = event.args;
+          let desc = event.name;
+          if (event.name === "read_file" && args.path) desc = `read_file(${args.path})`;
+          else if (event.name === "list_files" && args.path) desc = `list_files(${args.path})`;
+          else if (event.name === "search" && args.pattern) desc = `search(${args.pattern})`;
+          else if (event.name === "write_file" && args.path) desc = `write_file(${args.path})`;
+          else if (event.name === "run_command" && args.command) desc = `run_command(${args.command})`;
           setMessages((prev) => [
             ...prev,
-            { role: "tool", content: `Running ${event.name}…`, toolName: event.name },
+            { role: "tool", content: desc, toolName: event.name },
           ]);
           break;
+        }
         case "tool_result":
           setMessages((prev) => {
             const last = prev[prev.length - 1];
             if (last?.role === "tool" && last.toolName === event.name) {
-              return [...prev.slice(0, -1), { ...last, content: `${event.name}: ${event.result.slice(0, 500)}` }];
+              return [...prev.slice(0, -1), { ...last, content: `${last.content}\n${event.result.slice(0, 500)}` }];
             }
             return [...prev, { role: "tool", content: `${event.name}: ${event.result.slice(0, 500)}`, toolName: event.name }];
           });
