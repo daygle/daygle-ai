@@ -1010,6 +1010,24 @@ export function AgentPage() {
         case "status":
           setStatusText(event.message);
           break;
+        case "tool_start":
+          setMessages((prev) => [
+            ...prev,
+            { id: uid(), role: "tool", content: "", toolName: event.name, toolArgs: event.args },
+          ]);
+          break;
+        case "tool_result":
+          setMessages((prev) => {
+            for (let i = prev.length - 1; i >= 0; i--) {
+              if (prev[i].role === "tool" && prev[i].toolName === event.name && !prev[i].toolResult) {
+                const updated = [...prev];
+                updated[i] = { ...updated[i], toolResult: event.result, toolDiff: event.diff };
+                return updated;
+              }
+            }
+            return prev;
+          });
+          break;
         case "qa":
           setMessages((prev) => [
             ...prev,
@@ -1745,6 +1763,7 @@ function TaskRunnerModal({
   const [baseBranch, setBaseBranch] = useState("");
   const [reviewModel, setReviewModel] = useState("");
   const [qaCommand, setQaCommand] = useState("");
+  const [agenticReview, setAgenticReview] = useState(false);
   const [advanced, setAdvanced] = useState(false);
   const [running, setRunning] = useState(false);
   const [lines, setLines] = useState<JobLine[]>([]);
@@ -1790,6 +1809,7 @@ function TaskRunnerModal({
         config: {
           reviewModel: reviewModel.trim() || undefined,
           qaCommand: qaCommand.trim() || undefined,
+          agenticReview: agenticReview || undefined,
         },
       });
       jobIdRef.current = id;
@@ -1879,6 +1899,22 @@ function TaskRunnerModal({
                 <Input value={baseBranch} onChange={(e) => setBaseBranch(e.target.value)} placeholder="Base branch (default: repo default)" className="font-mono text-xs" />
                 <Input value={reviewModel} onChange={(e) => setReviewModel(e.target.value)} placeholder="Review model (default: same model)" className="font-mono text-xs" />
                 <Input value={qaCommand} onChange={(e) => setQaCommand(e.target.value)} placeholder="QA command, e.g. npm test" className="font-mono text-xs" />
+                <label className="flex cursor-pointer items-start gap-2 rounded-md border border-border bg-background px-3 py-2 text-xs">
+                  <input
+                    type="checkbox"
+                    checked={agenticReview}
+                    onChange={(e) => setAgenticReview(e.target.checked)}
+                    className="mt-0.5 h-3.5 w-3.5 accent-accent"
+                  />
+                  <span>
+                    <span className="flex items-center gap-1.5 font-medium text-foreground">
+                      <ShieldCheck className="h-3.5 w-3.5 text-accent" /> Agentic review
+                    </span>
+                    <span className="mt-0.5 block text-[11px] text-muted-foreground">
+                      The reviewer reads the surrounding code and runs the project’s tests before deciding — slower, but catches issues a diff-only review misses. Only used when a review model is set.
+                    </span>
+                  </span>
+                </label>
               </div>
             )}
 
