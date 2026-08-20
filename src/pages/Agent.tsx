@@ -839,6 +839,7 @@ export function AgentPage() {
                   </div>
                   <div className="min-w-0 flex-1 pt-0.5">
                     <p className="whitespace-pre-wrap text-sm">{msg.content}</p>
+                    {msg.content && <CopyButton text={msg.content} />}
                   </div>
                 </div>
               )}
