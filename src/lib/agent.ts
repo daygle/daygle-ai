@@ -302,6 +302,7 @@ export type ChatEvent =
   | { type: "tool_result"; name: string; result: string; diff?: string }
   | { type: "approval_requested"; requestId: string; command: string }
   | { type: "approval_resolved"; requestId: string; decision: "approve" | "deny" }
+  | { type: "clarification_requested"; requestId: string; question: string; options: Array<{ label: string; description?: string }> }
   | { type: "error"; message: string };
 
 export async function resolveApproval(

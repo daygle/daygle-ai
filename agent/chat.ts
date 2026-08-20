@@ -40,6 +40,7 @@ export type ChatEvent =
   | { type: "tool_result"; name: string; result: string; diff?: string }
   | { type: "approval_requested"; requestId: string; command: string }
   | { type: "approval_resolved"; requestId: string; decision: "approve" | "deny" }
+  | { type: "clarification_requested"; requestId: string; question: string; options: Array<{ label: string; description?: string }> }
   | { type: "error"; message: string };
 
 /**
@@ -79,6 +80,30 @@ function lineDiff(oldText: string, newText: string): string {
 }
 
 const TOOL_NAMES = new Set(["list_files", "read_file", "search", "write_file", "run_command"]);
+
+/**
+ * Parse a clarification request from model output text.
+ * Looks for a JSON object with a "clarification" key containing a question and options.
+ * Returns null if no clarification request is found.
+ */
+function parseClarificationRequest(text: string): { question: string; options: Array<{ label: string; description?: string }> } | null {
+  // Look for JSON objects with a "clarification" key
+  const regex = /\{\s*"clarification"\s*:\s*\{([^}]+)\}\s*\}/g;
+  let match;
+  while ((match = regex.exec(text)) !== null) {
+    try {
+      const obj = JSON.parse(`{"clarification": {${match[1]}}}`) as {
+        clarification: { question: string; options: Array<{ label: string; description?: string }> };
+      };
+      if (obj.clarification?.question && Array.isArray(obj.clarification?.options) && obj.clarification.options.length > 0) {
+        return obj.clarification;
+      }
+    } catch {
+      // skip malformed JSON
+    }
+  }
+  return null;
+}
 
 /**
  * Fallback: parse tool calls that models output as raw text
@@ -156,9 +181,20 @@ function parseTextToolCalls(text: string): Array<{ function: { name: string; arg
             else if (name === 'run_command') args.command = argStr;
           }
         }
-      }
+      }      calls.push({ function: { name, arguments: args } });
+    }
+  }
 
-      calls.push({ function: { name, arguments: args } });
+  // Third: catch "bash cd <dir> <command>" patterns and convert to run_command
+  // e.g. "bash cd web vite" -> run_command("cd web && vite")
+  if (calls.length === 0) {
+    const cdRegex = /(?:bash\s+)?cd\s+(\S+)\s+(.+)/gi;
+    while ((match = cdRegex.exec(text)) !== null) {
+      const dir = match[1];
+      const cmd = match[2].trim();
+      if (cmd && !cmd.startsWith('{')) {
+        calls.push({ function: { name: 'run_command', arguments: { command: `cd ${dir} && ${cmd}` } } });
+      }
     }
   }
 
@@ -169,7 +205,12 @@ export const SYSTEM_PROMPT = `You are daygle, a helpful software engineering ass
 
 You have tools to inspect and edit the code — listing files, reading files, searching, writing files, and running shell commands. Use them by making an actual tool call; the system runs it and returns the result to you.
 
-CRITICAL: Never write a tool call as text or code. Do NOT type things like "list_files()", "bash list_files()", or a JSON/code snippet describing a call — that does nothing. To use a tool you must invoke it through the tool interface, not print it. When you are not calling a tool, just talk normally.
+CRITICAL: Never write tool calls or shell commands as text. Do NOT type things like:
+- "list_files()"
+- "bash list_files()"
+- "bash cd web vite"
+- Any JSON or code snippet describing a call
+These do nothing — they are just text. To use a tool you MUST invoke it through the tool interface, not print it. When you are not calling a tool, just talk normally.
 
 Available tools:
 - list_files(path) — list files/directories under a path
@@ -177,10 +218,13 @@ Available tools:
 - search(pattern, path?) — regex-search files for patterns
 - write_file(path, content) — create or overwrite a file
 - run_command(command) — run a shell command (tests, typecheck, etc.)
+  IMPORTANT: For commands that need to run in a subdirectory, use "cd <dir> && <command>" as a single command string.
+
+When you are unsure how to proceed, ask for clarification by outputting a JSON object in your response like this:
+{"clarification": {"question": "Your question here", "options": [{"label": "Option A", "description": "Description of option A"}, {"label": "Option B", "description": "Description of option B"}]}}
+The system will display these options to the user and let them choose. Wait for their response before proceeding.
 
 A good turn reads like: one short sentence about what you're doing ("Let me look at the project structure."), then the real tool call, then your reply once the result comes back.
-
-IMPORTANT: You must call tools using the proper function call format, NOT by writing "bash function_name()" as text.
 
 Be concise. Read and understand before editing. Make the smallest change that solves the problem.`;
 
@@ -316,11 +360,26 @@ export async function* streamChat(
         .replace(/\{\s*"name"\s*:\s*"[^"]+"\s*,\s*"arguments"\s*:\s*\{[\s\S]*?\}\s*\}/g, "")
         // Strip bash-style tool calls like: bash list_files("src")
         .replace(/(?:bash\s+)?(?:list_files|read_file|search|write_file|run_command)\s*\([^)]*\)/gi, "")
+        // Strip bash cd patterns like: bash cd web vite
+        .replace(/(?:bash\s+)?cd\s+\S+\s+.+/gi, "")
         .trim();
     }
 
     if (content) {
       session.messages.push({ role: "assistant", content, tool_calls: toolCalls.length ? toolCalls : undefined });
+    }
+
+    // Check for clarification request in the model output
+    const clarificationRequest = parseClarificationRequest(content);
+    if (clarificationRequest && toolCalls.length === 0) {
+      const requestId = `clar-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+      // Strip the clarification JSON from display content
+      const cleanedContent = content.replace(/\{\s*"clarification"\s*:\s*\{[^}]+\}\s*\}/g, "").trim();
+      if (cleanedContent) {
+        yield { type: "model_done", content: cleanedContent };
+      }
+      yield { type: "clarification_requested", requestId, question: clarificationRequest.question, options: clarificationRequest.options };
+      return;
     }
 
     // No tool calls — model is done responding

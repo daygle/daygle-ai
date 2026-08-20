@@ -40,7 +40,7 @@ function toolStatus(name: string): string {
 
 interface ChatBubble {
   id: number | string;
-  role: "user" | "assistant" | "tool" | "approval";
+  role: "user" | "assistant" | "tool" | "approval" | "clarification";
   content: string;
   toolName?: string;
   toolArgs?: Record<string, unknown>;
@@ -51,6 +51,10 @@ interface ChatBubble {
   requestId?: string;
   command?: string;
   decision?: "approve" | "deny";
+  // clarification bubbles
+  question?: string;
+  options?: Array<{ label: string; description?: string }>;
+  selectedOption?: string;
 }
 
 let nextId = 0;
@@ -498,6 +502,22 @@ export function AgentPage() {
           );
           break;
 
+        case "clarification_requested":
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: `clarification-${event.requestId}`,
+              role: "clarification",
+              content: "",
+              requestId: event.requestId,
+              question: event.question,
+              options: event.options,
+            },
+          ]);
+          setStreaming(false);
+          setStatusText("");
+          break;
+
         case "error":
           setMessages((prev) => [...prev, { id: uid(), role: "assistant", content: `Error: ${event.message}` }]);
           setStreaming(false);
@@ -525,6 +545,118 @@ export function AgentPage() {
       resolveApproval(agentUrl, bubble.requestId, decision).catch(() => {});
     },
     [agentUrl],
+  );
+
+  const handleClarification = useCallback(
+    (bubble: ChatBubble, selectedLabel: string) => {
+      if (!bubble.requestId) return;
+      // Update the bubble to show the selected option
+      setMessages((prev) => prev.map((m) => (m.id === bubble.id ? { ...m, selectedOption: selectedLabel } : m)));
+      // Send the user's choice as a new message
+      setInput(selectedLabel);
+      // Trigger send after a brief delay to ensure state updates
+      setTimeout(() => {
+        const userMsg = selectedLabel;
+        if (!sessionId) return;
+        setMessages((prev) => [...prev, { id: uid(), role: "user", content: userMsg }]);
+        setStreaming(true);
+        setStatusText("Thinking…");
+        toolResultsRef.current.clear();
+
+        let assistantId = uid();
+        let assistantContent = "";
+
+        const cancel = sendChatMessage(agentUrl, sessionId, userMsg, (event: ChatEvent) => {
+          switch (event.type) {
+            case "status":
+              setStatusText(event.message);
+              break;
+            case "model_delta": {
+              assistantContent += event.content;
+              const cleaned = stripToolJson(assistantContent);
+              setMessages((prev) => {
+                const last = prev[prev.length - 1];
+                const hasBubble = last?.id === assistantId && last.role === "assistant";
+                if (!cleaned) {
+                  return hasBubble ? [...prev.slice(0, -1), { ...last, content: cleaned, streaming: true }] : prev;
+                }
+                if (hasBubble) {
+                  return [...prev.slice(0, -1), { ...last, content: cleaned, streaming: true }];
+                }
+                return [...prev, { id: assistantId, role: "assistant", content: cleaned, streaming: true }];
+              });
+              break;
+            }
+            case "model_done": {
+              const finalCleaned = stripToolJson(assistantContent) || event.content.trim();
+              setMessages((prev) => {
+                const last = prev[prev.length - 1];
+                const hasBubble = last?.id === assistantId && last.role === "assistant";
+                if (hasBubble) {
+                  if (!finalCleaned) return prev.slice(0, -1);
+                  return [...prev.slice(0, -1), { ...last, content: finalCleaned, streaming: false }];
+                }
+                if (finalCleaned) {
+                  return [...prev, { id: assistantId, role: "assistant", content: finalCleaned, streaming: false }];
+                }
+                return prev;
+              });
+              setStreaming(false);
+              setStatusText("");
+              break;
+            }
+            case "tool_start": {
+              const toolId = `${assistantId}-tool-${event.name}-${Date.now()}`;
+              setMessages((prev) => {
+                const finalized = prev
+                  .map((m) => (m.role === "assistant" && m.streaming ? { ...m, streaming: false } : m))
+                  .filter((m) => !(m.role === "assistant" && !m.content));
+                return [...finalized, { id: toolId, role: "tool", content: "", toolName: event.name, toolArgs: event.args }];
+              });
+              setStatusText(toolStatus(event.name));
+              assistantId = uid();
+              assistantContent = "";
+              break;
+            }
+            case "tool_result":
+              setMessages((prev) => {
+                for (let i = prev.length - 1; i >= 0; i--) {
+                  if (prev[i].role === "tool" && prev[i].toolName === event.name && !prev[i].toolResult) {
+                    const updated = [...prev];
+                    updated[i] = { ...updated[i], toolResult: event.result, toolDiff: event.diff };
+                    return updated;
+                  }
+                }
+                return prev;
+              });
+              setStatusText("Thinking…");
+              break;
+            case "clarification_requested":
+              setMessages((prev) => [
+                ...prev,
+                {
+                  id: `clarification-${event.requestId}`,
+                  role: "clarification",
+                  content: "",
+                  requestId: event.requestId,
+                  question: event.question,
+                  options: event.options,
+                },
+              ]);
+              setStreaming(false);
+              setStatusText("");
+              break;
+            case "error":
+              setMessages((prev) => [...prev, { id: uid(), role: "assistant", content: `Error: ${event.message}` }]);
+              setStreaming(false);
+              setStatusText("");
+              break;
+          }
+        });
+        abortRef.current = cancel;
+      }, 100);
+    },
+    [agentUrl, sessionId],
   );
 
   // --- Connect screen ---
@@ -756,6 +888,39 @@ export function AgentPage() {
                       <p className="text-xs text-muted-foreground">
                         {msg.decision === "approve" ? "✓ Approved" : "✕ Denied"}
                       </p>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {msg.role === "clarification" && (
+                <div className="ml-10">
+                  <div className="my-1 rounded-lg border border-blue-500/40 bg-blue-500/5 p-3">
+                    <div className="mb-2 flex items-center gap-2 text-xs">
+                      <MessageSquarePlus className="h-3.5 w-3.5 text-blue-400" />
+                      <span className="font-medium text-foreground">{msg.question}</span>
+                    </div>
+                    {msg.selectedOption ? (
+                      <p className="text-xs text-muted-foreground">
+                        ✓ Selected: {msg.selectedOption}
+                      </p>
+                    ) : (
+                      <div className="flex flex-wrap gap-2">
+                        {msg.options?.map((option) => (
+                          <Button
+                            key={option.label}
+                            size="sm"
+                            variant="outline"
+                            onClick={() => handleClarification(msg, option.label)}
+                            className="text-left"
+                          >
+                            <span className="font-medium">{option.label}</span>
+                            {option.description && (
+                              <span className="ml-1 text-muted-foreground">— {option.description}</span>
+                            )}
+                          </Button>
+                        ))}
+                      </div>
                     )}
                   </div>
                 </div>
