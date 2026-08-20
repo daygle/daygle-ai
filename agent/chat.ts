@@ -99,6 +99,19 @@ function lineDiff(oldText: string, newText: string): string {
 const TOOL_NAMES = new Set(["list_files", "read_file", "search", "write_file", "run_command"]);
 
 /**
+ * Normalize a keep_alive value for Ollama. Ollama accepts either a Go duration
+ * string ("5m", "1h30m") or a number of seconds (-1 = keep loaded forever,
+ * 0 = unload immediately). A bare integer like "-1" is NOT a valid duration
+ * string ("missing unit in duration"), so send those as numbers.
+ */
+function normalizeKeepAlive(value: string | undefined): string | number | undefined {
+  if (value === undefined) return undefined;
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  return /^-?\d+$/.test(trimmed) ? Number(trimmed) : trimmed;
+}
+
+/**
  * Parse a clarification request from model output text.
  * Looks for a JSON object with a "clarification" key containing a question and options.
  * Returns null if no clarification request is found.
@@ -299,7 +312,7 @@ export async function* streamChat(
         }),
         tools: hasRepo ? TOOL_DEFINITIONS : undefined,
         stream: true,
-        keep_alive: opts.keep_alive,
+        keep_alive: normalizeKeepAlive(opts.keep_alive),
         options: genOptions,
       }),
       signal,
