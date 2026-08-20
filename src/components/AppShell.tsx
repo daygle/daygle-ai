@@ -5,8 +5,8 @@ import { ConnectionStatus } from "./ConnectionStatus";
 import { cn } from "../lib/utils";
 
 const nav = [
-  { to: "/models", label: "Models", icon: Box },
   { to: "/agent", label: "Agent", icon: Bot },
+  { to: "/models", label: "Models", icon: Box },
   { to: "/settings", label: "Settings", icon: Settings },
 ];
 

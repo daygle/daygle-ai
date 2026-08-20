@@ -6,6 +6,10 @@ export interface GenOptions {
   top_k?: number;
   repeat_penalty?: number;
   keep_alive?: string;
+  // CPU / performance tuning (see the Performance section in Settings).
+  num_thread?: number;
+  num_batch?: number;
+  num_gpu?: number;
 }
 
 export const DEFAULT_GEN_OPTIONS: GenOptions = {

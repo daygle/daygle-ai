@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { CheckCircle2, CircleAlert, Cpu, Key, PlugZap, RotateCcw, Server, SlidersHorizontal } from "lucide-react";
+import { CheckCircle2, CircleAlert, Cpu, Gauge, Key, PlugZap, RotateCcw, Server, SlidersHorizontal } from "lucide-react";
 import { useOllama } from "../context/OllamaProvider";
 import { describeError, getVersion } from "../lib/ollama";
 import { getGithubToken, saveGithubToken } from "../lib/agent";
@@ -85,7 +85,7 @@ export function SettingsPage() {
   }
 
   return (
-    <div className="max-w-2xl space-y-8">
+    <div className="space-y-8">
       <header className="flex items-center gap-3">
         <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-accent/15 text-accent">
           <SlidersHorizontal className="h-5 w-5" />
@@ -197,7 +197,7 @@ export function SettingsPage() {
           <p className="mt-5 border-t border-border pt-4 text-xs text-muted-foreground">
             Ollama parameters applied to new Agent chats. Leave optional fields blank to use the model's own defaults.
           </p>
-          <div className="mt-4 grid gap-4 sm:grid-cols-2">
+          <div className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             <NumField label="Temperature" hint="0 = focused, higher = more creative" value={gen.temperature} step="0.1" min={0} max={2} onChange={(v) => updateGen({ temperature: v })} />
             <NumField label="Context length (num_ctx)" hint="tokens of context; larger uses more memory" value={gen.num_ctx} step="512" min={256} onChange={(v) => updateGen({ num_ctx: v })} />
             <NumField label="top_p" hint="nucleus sampling — optional" value={gen.top_p} step="0.05" min={0} max={1} onChange={(v) => updateGen({ top_p: v })} />
@@ -219,6 +219,57 @@ export function SettingsPage() {
             <Button variant="outline" size="sm" onClick={resetGen}>
               <RotateCcw className="mr-1 h-3.5 w-3.5" /> Reset
             </Button>
+          </div>
+        </div>
+      </section>
+
+      <section className="space-y-4">
+        <div className="flex items-center gap-2.5">
+          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-accent/15 text-accent">
+            <Gauge className="h-4 w-4" />
+          </div>
+          <h2 className="text-sm font-semibold">Performance</h2>
+        </div>
+
+        <div className="rounded-2xl border border-border bg-card p-5">
+          <p className="text-xs text-muted-foreground">
+            Tuning for CPU-only machines (no GPU). These pass straight through to Ollama on your next new chat. Leave blank to let Ollama choose.
+          </p>
+          <div className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            <NumField
+              label="CPU threads (num_thread)"
+              hint="threads used to generate; try your number of physical cores"
+              value={gen.num_thread}
+              step="1"
+              min={1}
+              onChange={(v) => updateGen({ num_thread: v })}
+            />
+            <NumField
+              label="Batch size (num_batch)"
+              hint="prompt batch; smaller (e.g. 128–256) uses less RAM"
+              value={gen.num_batch}
+              step="32"
+              min={8}
+              onChange={(v) => updateGen({ num_batch: v })}
+            />
+            <NumField
+              label="GPU layers (num_gpu)"
+              hint="0 forces pure CPU and avoids slow partial offload"
+              value={gen.num_gpu}
+              step="1"
+              min={0}
+              onChange={(v) => updateGen({ num_gpu: v })}
+            />
+          </div>
+          <div className="mt-4 rounded-lg border border-border bg-background p-3 text-[11px] leading-relaxed text-muted-foreground">
+            <p className="mb-1 flex items-center gap-1.5 font-medium text-foreground">
+              <Cpu className="h-3.5 w-3.5 text-accent" /> Tips for slow, CPU-only machines
+            </p>
+            <ul className="ml-4 list-disc space-y-0.5">
+              <li>Prefer smaller / quantized models (e.g. 3B–7B, <span className="font-mono">q4</span> builds) — the single biggest speedup.</li>
+              <li>Lower the <span className="font-mono">Context length</span> above; large contexts are much slower on CPU.</li>
+              <li>Set <span className="font-mono">Keep alive</span> to <span className="font-mono">-1</span> to keep the model loaded and skip reload lag between messages.</li>
+            </ul>
           </div>
         </div>
       </section>
