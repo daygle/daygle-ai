@@ -250,6 +250,86 @@ export function openAgentEvents(
   return () => source.close();
 }
 
+export interface ChatSessionInfo {
+  id: string;
+  repoUrl: string;
+}
+
+export async function createChatSession(
+  serverUrl: string,
+  repoUrl: string,
+  model: string,
+  ollamaUrl: string,
+): Promise<ChatSessionInfo> {
+  const res = await fetch(`${strip(serverUrl)}/api/chat/sessions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ repoUrl, model, ollamaUrl }),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`Failed to create chat session (${res.status}) ${text}`);
+  }
+  return (await res.json()) as ChatSessionInfo;
+}
+
+export function sendChatMessage(
+  serverUrl: string,
+  sessionId: string,
+  message: string,
+  onEvent: (event: ChatEvent) => void,
+): () => void {
+  const controller = new AbortController();
+  fetch(`${strip(serverUrl)}/api/chat/sessions/${sessionId}/messages`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ message }),
+    signal: controller.signal,
+  })
+    .then(async (res) => {
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        onEvent({ type: "error", message: `Failed (${res.status}) ${text}` });
+        return;
+      }
+      const reader = res.body?.getReader();
+      if (!reader) return;
+      const decoder = new TextDecoder();
+      let buffer = "";
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed.startsWith("data: ")) continue;
+          try {
+            const event = JSON.parse(trimmed.slice(6)) as ChatEvent;
+            onEvent(event);
+          } catch {
+            // skip
+          }
+        }
+      }
+    })
+    .catch((err) => {
+      if (err.name !== "AbortError") {
+        onEvent({ type: "error", message: err instanceof Error ? err.message : String(err) });
+      }
+    });
+  return () => controller.abort();
+}
+
+export type ChatEvent =
+  | { type: "status"; message: string }
+  | { type: "model_delta"; content: string }
+  | { type: "model_done"; content: string }
+  | { type: "tool_start"; name: string; args: Record<string, unknown> }
+  | { type: "tool_result"; name: string; result: string }
+  | { type: "error"; message: string };
+
 export async function resolveApproval(
   serverUrl: string,
   requestId: string,

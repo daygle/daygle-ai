@@ -6,6 +6,7 @@ import { ModelsPage } from "./pages/Models";
 import { ChatPage } from "./pages/Chat";
 import { SettingsPage } from "./pages/Settings";
 import { AgentPage } from "./pages/Agent";
+import { AgentChatPage } from "./pages/AgentChat";
 
 export default function App() {
   return (
@@ -17,6 +18,7 @@ export default function App() {
             <Route path="/models" element={<ModelsPage />} />
             <Route path="/chat" element={<ChatPage />} />
             <Route path="/agent" element={<AgentPage />} />
+            <Route path="/agent/chat" element={<AgentChatPage />} />
             <Route path="/settings" element={<SettingsPage />} />
           </Route>
           <Route path="*" element={<Landing />} />

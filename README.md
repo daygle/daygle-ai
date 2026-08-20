@@ -102,6 +102,7 @@ bun run ollama:install   # downloads Ollama into .ollama/ (Linux needs zstd)
 ```bash
 bun run ollama           # terminal 1: Ollama server on http://localhost:11434
 bun run dev              # terminal 2: daygle UI
+bun run agent            # terminal 3: agent server (needed for Agent pages)
 ```
 
 Open the printed URL — daygle defaults to `http://localhost:11434`, so it should connect to the bundled server immediately. Pull a model from the **Models** page (or `.ollama/bin/ollama pull llama3.2`).
@@ -127,9 +128,12 @@ journalctl -u daygle-ui -f
 - **Chat / everyday:** `llama3.2` (light) or `qwen2.5:7b`
 - **Agent (tool-calling):** `qwen2.5-coder:7b` — the best small model for structured tool calls; larger coder models (14b/32b) are stronger if you have the RAM
 
-### Agent server (optional)
+### Agent pages
 
-The coding agent needs its own server plus GitHub auth — see the [Agent](#agent) section below.
+There are two agent modes:
+
+- **Agent** — one-shot task runner: give it a task, it clones the repo, makes changes, and opens a PR.
+- **Agent Chat** — interactive chat: connect to a repo and have a conversation with the AI. Ask questions, request changes, get explanations — all with file access tools.
 
 ## Bundled Ollama
 
@@ -241,6 +245,7 @@ src/
     Models.tsx             pull / manage / inspect models
     Chat.tsx               streaming chat playground
     Agent.tsx              repo agent: task in, pull request out
+    AgentChat.tsx          interactive agent chat with tool access
     Settings.tsx           server URL + setup guide
 
 agent/
@@ -252,6 +257,7 @@ agent/
   history.ts              disk-backed run history
   updates.ts              model update detection (digest comparison)
   workspace.ts            persistent repo checkout + git actions
+  chat.ts                 interactive agent chat with tool-calling
   server.ts               HTTP + SSE job server
 ```
 

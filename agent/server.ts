@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { CancelledError, runAgentLoop, runReview, type AgentConfig, type AgentEvent } from "./agent";
+import { ChatSession, streamChat, type ChatEvent } from "./chat";
 import {
   changedFiles,
   cloneRepo,
@@ -44,6 +45,8 @@ const TOKEN_PATH = path.join(os.homedir(), ".daygle", "github-token");
 let sandbox: SandboxRunner | null = null;
 
 let workspace: { repoUrl: string; dir: string } | null = null;
+
+const chatSessions = new Map<string, ChatSession>();
 
 function loadGithubToken(): string {
   try {
@@ -482,6 +485,84 @@ const server = http.createServer((req, res) => {
         sendJson(res, 200, { ok: true });
         return;
       }
+    }
+
+    // ---- Chat sessions (interactive agent chat) ----
+    if (req.method === "POST" && url.pathname === "/api/chat/sessions") {
+      let body: { repoUrl?: string; model?: string; ollamaUrl?: string };
+      try {
+        body = JSON.parse(await readBody(req)) as typeof body;
+      } catch {
+        sendJson(res, 400, { error: "Invalid JSON body." });
+        return;
+      }
+      if (!body.repoUrl?.trim() || !body.model?.trim()) {
+        sendJson(res, 400, { error: "repoUrl and model are required." });
+        return;
+      }
+      const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "daygle-chat-"));
+      try {
+        const token = loadGithubToken() || undefined;
+        await cloneRepo(body.repoUrl.trim(), dir, token);
+      } catch (err) {
+        fs.rmSync(dir, { recursive: true, force: true });
+        sendJson(res, 400, { error: `Failed to clone repo: ${err instanceof Error ? err.message : String(err)}` });
+        return;
+      }
+      const session: ChatSession = {
+        id,
+        repoUrl: body.repoUrl.trim(),
+        root: dir,
+        model: body.model.trim(),
+        ollamaUrl: (body.ollamaUrl ?? "http://localhost:11434").trim(),
+        messages: [],
+        createdAt: Date.now(),
+      };
+      chatSessions.set(id, session);
+      sendJson(res, 200, { id, repoUrl: session.repoUrl });
+      return;
+    }
+
+    const chatMatch = url.pathname.match(/^\/api\/chat\/sessions\/([^/]+)(?:\/messages)?$/);
+    if (chatMatch && req.method === "POST") {
+      const sessionId = chatMatch[1];
+      const session = chatSessions.get(sessionId);
+      if (!session) {
+        sendJson(res, 404, { error: "Chat session not found." });
+        return;
+      }
+      let body: { message?: string };
+      try {
+        body = JSON.parse(await readBody(req)) as typeof body;
+      } catch {
+        sendJson(res, 400, { error: "Invalid JSON body." });
+        return;
+      }
+      if (!body.message?.trim()) {
+        sendJson(res, 400, { error: "message is required." });
+        return;
+      }
+      // Stream the response as SSE
+      res.writeHead(200, {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        Connection: "keep-alive",
+        ...CORS_HEADERS,
+      });
+      const controller = new AbortController();
+      req.on("close", () => controller.abort());
+      try {
+        for await (const event of streamChat(session, body.message.trim(), undefined, sandbox ?? undefined, controller.signal)) {
+          res.write(`data: ${JSON.stringify(event)}\n\n`);
+        }
+      } catch (err) {
+        if (!(err instanceof Error && err.name === "AbortError")) {
+          res.write(`data: ${JSON.stringify({ type: "error", message: err instanceof Error ? err.message : String(err) })}\n\n`);
+        }
+      }
+      res.end();
+      return;
     }
 
     if (url.pathname.startsWith("/api/workspace")) {
