@@ -1,4 +1,4 @@
-import { TOOL_DEFINITIONS, runTool, type CommandApprover, type ToolDefinition } from "./tools";
+import { TOOL_DEFINITIONS, runTool, type CommandApprover } from "./tools";
 import type { SandboxRunner } from "./sandbox";
 
 export interface ChatMessage {
@@ -53,7 +53,7 @@ function parseTextToolCalls(text: string): Array<{ function: { name: string; arg
   return calls;
 }
 
-const SYSTEM_PROMPT = `You are daygle, a helpful software engineering assistant working inside a git repository checkout.
+export const SYSTEM_PROMPT = `You are daygle, a helpful software engineering assistant working inside a git repository checkout.
 
 You can inspect and edit code using tools. Respond conversationally — answer questions, explain code, suggest improvements, and make changes when asked.
 
@@ -81,6 +81,11 @@ export async function* streamChat(
   sandbox?: SandboxRunner,
   signal?: AbortSignal,
 ): AsyncGenerator<ChatEvent> {
+  // Ensure the model always gets its system prompt (which tells it to narrate
+  // what it's doing before each tool call), so the chat reads conversationally.
+  if (!session.messages.some((m) => m.role === "system")) {
+    session.messages.unshift({ role: "system", content: SYSTEM_PROMPT });
+  }
   session.messages.push({ role: "user", content: userMessage });
 
   const MAX_STEPS = 20;
