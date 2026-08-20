@@ -1,4 +1,6 @@
-import { TOOL_DEFINITIONS, runTool, type CommandApprover, type ToolDefinition } from "./tools";
+import fs from "node:fs";
+import path from "node:path";
+import { TOOL_DEFINITIONS, runTool, type CommandApprover } from "./tools";
 import type { SandboxRunner } from "./sandbox";
 
 export interface ChatMessage {
@@ -16,6 +18,7 @@ export interface ChatSession {
   ollamaUrl: string;
   messages: ChatMessage[];
   createdAt: number;
+  lastActivity: number;
 }
 
 export type ChatEvent =
@@ -23,8 +26,46 @@ export type ChatEvent =
   | { type: "model_delta"; content: string }
   | { type: "model_done"; content: string }
   | { type: "tool_start"; name: string; args: Record<string, unknown> }
-  | { type: "tool_result"; name: string; result: string }
+  | { type: "tool_result"; name: string; result: string; diff?: string }
+  | { type: "approval_requested"; requestId: string; command: string }
+  | { type: "approval_resolved"; requestId: string; decision: "approve" | "deny" }
   | { type: "error"; message: string };
+
+/**
+ * Compact line-level diff (LCS) between two file versions, used to show the
+ * user exactly what a write_file changed instead of just "wrote N bytes".
+ * Lines are prefixed with " " (context), "+" (added), or "-" (removed).
+ */
+function lineDiff(oldText: string, newText: string): string {
+  const a = oldText.length ? oldText.split("\n") : [];
+  const b = newText.split("\n");
+  const n = a.length;
+  const m = b.length;
+  // Guard against O(n*m) blow-up on very large files.
+  if (n > 2000 || m > 2000) return `@@ file replaced (${n} → ${m} lines) @@`;
+
+  const dp: number[][] = Array.from({ length: n + 1 }, () => new Array<number>(m + 1).fill(0));
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+    }
+  }
+
+  const out: string[] = [];
+  let i = 0;
+  let j = 0;
+  while (i < n && j < m) {
+    if (a[i] === b[j]) { out.push(` ${a[i]}`); i++; j++; }
+    else if (dp[i + 1][j] >= dp[i][j + 1]) { out.push(`-${a[i]}`); i++; }
+    else { out.push(`+${b[j]}`); j++; }
+  }
+  while (i < n) out.push(`-${a[i++]}`);
+  while (j < m) out.push(`+${b[j++]}`);
+
+  const MAX = 400;
+  if (out.length > MAX) return `${out.slice(0, MAX).join("\n")}\n… (${out.length - MAX} more lines)`;
+  return out.join("\n") || "(no changes)";
+}
 
 const TOOL_NAMES = new Set(["list_files", "read_file", "search", "write_file", "run_command"]);
 
@@ -53,7 +94,7 @@ function parseTextToolCalls(text: string): Array<{ function: { name: string; arg
   return calls;
 }
 
-const SYSTEM_PROMPT = `You are daygle, a helpful software engineering assistant working inside a git repository checkout.
+export const SYSTEM_PROMPT = `You are daygle, a helpful software engineering assistant working inside a git repository checkout.
 
 You can inspect and edit code using tools. Respond conversationally — answer questions, explain code, suggest improvements, and make changes when asked.
 
@@ -81,6 +122,11 @@ export async function* streamChat(
   sandbox?: SandboxRunner,
   signal?: AbortSignal,
 ): AsyncGenerator<ChatEvent> {
+  // Ensure the model always gets its system prompt (which tells it to narrate
+  // what it's doing before each tool call), so the chat reads conversationally.
+  if (!session.messages.some((m) => m.role === "system")) {
+    session.messages.unshift({ role: "system", content: SYSTEM_PROMPT });
+  }
   session.messages.push({ role: "user", content: userMessage });
 
   const MAX_STEPS = 20;
@@ -182,7 +228,10 @@ export async function* streamChat(
     // Strip raw JSON tool calls from displayed content (they're shown as cards)
     let displayContent = content;
     if (toolCalls.length > 0) {
-      displayContent = content.replace(/\{\s*"name"\s*:\s*"[^"]+"\s*,\s*"arguments"\s*:\s*\{[^}]*\}\s*\}/g, "").trim();
+      displayContent = content
+        .replace(/```(?:json|tool_code)?/gi, "")
+        .replace(/\{\s*"name"\s*:\s*"[^"]+"\s*,\s*"arguments"\s*:\s*\{[\s\S]*?\}\s*\}/g, "")
+        .trim();
     }
 
     if (content) {
@@ -201,13 +250,29 @@ export async function* streamChat(
       const args = call.function.arguments ?? {};
       yield { type: "tool_start", name, args };
 
+      // For file writes, snapshot the previous contents so we can show a diff.
+      let before: string | undefined;
+      if (name === "write_file" && typeof args.path === "string") {
+        try {
+          before = fs.readFileSync(path.resolve(session.root, args.path), "utf8");
+        } catch {
+          before = ""; // new file
+        }
+      }
+
       let result: string;
       try {
         result = await runTool(session.root, name, args, approve, sandbox, signal);
       } catch (err) {
         result = `Error: ${err instanceof Error ? err.message : String(err)}`;
       }
-      yield { type: "tool_result", name, result };
+
+      let diff: string | undefined;
+      if (name === "write_file" && before !== undefined && typeof args.content === "string" && !result.startsWith("Error")) {
+        diff = lineDiff(before, args.content);
+      }
+
+      yield { type: "tool_result", name, result, diff };
       session.messages.push({ role: "tool", content: result, tool_name: name });
     }
   }

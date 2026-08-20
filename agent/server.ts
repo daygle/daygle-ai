@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { CancelledError, runAgentLoop, runReview, type AgentConfig, type AgentEvent } from "./agent";
 import { ChatSession, streamChat, type ChatEvent } from "./chat";
+import { ChatHistoryStore, deriveTitle } from "./chat-history";
 import {
   changedFiles,
   cloneRepo,
@@ -23,6 +24,7 @@ import {
   parseRepo,
 } from "./github";
 import { detectSandbox, type SandboxRunner } from "./sandbox";
+import type { CommandApprover } from "./tools";
 import { HistoryStore, type StoredJob } from "./history";
 import { runQaGate, type QaResult } from "./qa";
 import { checkModelUpdate } from "./updates";
@@ -84,13 +86,74 @@ interface Job {
 const jobs = new Map<string, Job>();
 
 interface PendingApproval {
-  jobId: string;
+  jobId?: string;
   resolve: (decision: "approve" | "deny") => void;
   timer: ReturnType<typeof setTimeout>;
 }
 const pendingApprovals = new Map<string, PendingApproval>();
 
+// Evict idle chat sessions and remove their cloned repos so memory and disk
+// don't grow without bound.
+const CHAT_SESSION_TTL_MS = 60 * 60 * 1000;
+const chatSweeper = setInterval(() => {
+  const now = Date.now();
+  for (const [id, session] of chatSessions) {
+    if (now - session.lastActivity > CHAT_SESSION_TTL_MS) {
+      chatSessions.delete(id);
+      try {
+        fs.rmSync(session.root, { recursive: true, force: true });
+      } catch {
+        // best effort
+      }
+    }
+  }
+}, 10 * 60 * 1000);
+chatSweeper.unref?.();
+
 const historyStore = new HistoryStore(path.join(os.homedir(), ".daygle", "history"));
+const chatHistoryStore = new ChatHistoryStore(path.join(os.homedir(), ".daygle", "chat-history"));
+
+function persistChat(session: ChatSession): void {
+  chatHistoryStore.save({
+    id: session.id,
+    repoUrl: session.repoUrl,
+    model: session.model,
+    ollamaUrl: session.ollamaUrl,
+    title: deriveTitle(session.messages),
+    messages: session.messages,
+    createdAt: session.createdAt,
+    lastActivity: session.lastActivity,
+  });
+}
+
+/**
+ * Restore a persisted chat into memory when its in-memory session has expired.
+ * Re-clones the repo so the conversation can continue against a fresh checkout.
+ */
+async function rehydrateChat(id: string): Promise<ChatSession | null> {
+  const stored = chatHistoryStore.load(id);
+  if (!stored) return null;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "daygle-chat-"));
+  try {
+    const token = loadGithubToken() || undefined;
+    await cloneRepo(stored.repoUrl, dir, token);
+  } catch (err) {
+    fs.rmSync(dir, { recursive: true, force: true });
+    throw err;
+  }
+  const session: ChatSession = {
+    id: stored.id,
+    repoUrl: stored.repoUrl,
+    root: dir,
+    model: stored.model,
+    ollamaUrl: stored.ollamaUrl,
+    messages: stored.messages,
+    createdAt: stored.createdAt,
+    lastActivity: Date.now(),
+  };
+  chatSessions.set(id, session);
+  return session;
+}
 
 function toStored(job: Job): StoredJob {
   return {
@@ -488,6 +551,51 @@ const server = http.createServer((req, res) => {
     }
 
     // ---- Chat sessions (interactive agent chat) ----
+    if (req.method === "GET" && url.pathname === "/api/chat/sessions") {
+      sendJson(res, 200, { sessions: chatHistoryStore.list() });
+      return;
+    }
+
+    const chatIdMatch = url.pathname.match(/^\/api\/chat\/sessions\/([^/]+)$/);
+    if (chatIdMatch && req.method === "GET") {
+      const id = chatIdMatch[1];
+      const live = chatSessions.get(id);
+      const chat = live
+        ? {
+            id: live.id,
+            repoUrl: live.repoUrl,
+            model: live.model,
+            ollamaUrl: live.ollamaUrl,
+            title: deriveTitle(live.messages),
+            messages: live.messages,
+            createdAt: live.createdAt,
+            lastActivity: live.lastActivity,
+          }
+        : chatHistoryStore.load(id);
+      if (!chat) {
+        sendJson(res, 404, { error: "Chat not found." });
+        return;
+      }
+      sendJson(res, 200, { chat });
+      return;
+    }
+
+    if (chatIdMatch && req.method === "DELETE") {
+      const id = chatIdMatch[1];
+      const live = chatSessions.get(id);
+      if (live) {
+        chatSessions.delete(id);
+        try {
+          fs.rmSync(live.root, { recursive: true, force: true });
+        } catch {
+          // best effort
+        }
+      }
+      chatHistoryStore.delete(id);
+      sendJson(res, 200, { ok: true });
+      return;
+    }
+
     if (req.method === "POST" && url.pathname === "/api/chat/sessions") {
       let body: { repoUrl?: string; model?: string; ollamaUrl?: string };
       try {
@@ -518,6 +626,7 @@ const server = http.createServer((req, res) => {
         ollamaUrl: (body.ollamaUrl ?? "http://localhost:11434").trim(),
         messages: [],
         createdAt: Date.now(),
+        lastActivity: Date.now(),
       };
       chatSessions.set(id, session);
       sendJson(res, 200, { id, repoUrl: session.repoUrl });
@@ -527,10 +636,19 @@ const server = http.createServer((req, res) => {
     const chatMatch = url.pathname.match(/^\/api\/chat\/sessions\/([^/]+)(?:\/messages)?$/);
     if (chatMatch && req.method === "POST") {
       const sessionId = chatMatch[1];
-      const session = chatSessions.get(sessionId);
+      let session = chatSessions.get(sessionId);
       if (!session) {
-        sendJson(res, 404, { error: "Chat session not found." });
-        return;
+        // Session expired from memory — restore it from disk if we have a transcript.
+        try {
+          session = (await rehydrateChat(sessionId)) ?? undefined;
+        } catch (err) {
+          sendJson(res, 400, { error: `Failed to restore chat: ${err instanceof Error ? err.message : String(err)}` });
+          return;
+        }
+        if (!session) {
+          sendJson(res, 404, { error: "Chat session not found." });
+          return;
+        }
       }
       let body: { message?: string };
       try {
@@ -543,6 +661,7 @@ const server = http.createServer((req, res) => {
         sendJson(res, 400, { error: "message is required." });
         return;
       }
+      session.lastActivity = Date.now();
       // Stream the response as SSE
       res.writeHead(200, {
         "Content-Type": "text/event-stream",
@@ -551,9 +670,48 @@ const server = http.createServer((req, res) => {
         ...CORS_HEADERS,
       });
       const controller = new AbortController();
-      req.on("close", () => controller.abort());
+      const emit = (event: ChatEvent) => {
+        try {
+          res.write(`data: ${JSON.stringify(event)}\n\n`);
+        } catch {
+          // socket already closed
+        }
+      };
+
+      // Approval channel: commands that mutate/execute pause here until the user
+      // approves or denies from the chat UI (or a 10-minute timeout denies).
+      const localApprovals = new Set<string>();
+      const approve: CommandApprover = (command) => {
+        const requestId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+        localApprovals.add(requestId);
+        return new Promise<"approve" | "deny">((resolve) => {
+          const timer = setTimeout(() => {
+            if (pendingApprovals.delete(requestId)) resolve("deny");
+          }, 10 * 60 * 1000);
+          pendingApprovals.set(requestId, { resolve, timer });
+          emit({ type: "approval_requested", requestId, command });
+        }).then((decision) => {
+          localApprovals.delete(requestId);
+          emit({ type: "approval_resolved", requestId, decision });
+          return decision;
+        });
+      };
+
+      req.on("close", () => {
+        controller.abort();
+        // Release any approvals still waiting so the generator doesn't hang.
+        for (const id of localApprovals) {
+          const pending = pendingApprovals.get(id);
+          if (pending) {
+            pendingApprovals.delete(id);
+            clearTimeout(pending.timer);
+            pending.resolve("deny");
+          }
+        }
+      });
+
       try {
-        for await (const event of streamChat(session, body.message.trim(), undefined, sandbox ?? undefined, controller.signal)) {
+        for await (const event of streamChat(session, body.message.trim(), approve, sandbox ?? undefined, controller.signal)) {
           res.write(`data: ${JSON.stringify(event)}\n\n`);
         }
       } catch (err) {
@@ -561,6 +719,9 @@ const server = http.createServer((req, res) => {
           res.write(`data: ${JSON.stringify({ type: "error", message: err instanceof Error ? err.message : String(err) })}\n\n`);
         }
       }
+      // Persist the transcript so the conversation survives restarts / TTL eviction.
+      session.lastActivity = Date.now();
+      persistChat(session);
       res.end();
       return;
     }
