@@ -7,7 +7,7 @@ export function Logo({ className }: { className?: string }) {
       <span className="flex h-7 w-7 items-center justify-center rounded-md bg-accent text-accent-foreground">
         <Terminal className="h-4 w-4" strokeWidth={2.5} />
       </span>
-      <span className="font-mono text-sm font-semibold tracking-tight">daygle</span>
+      <span className="font-mono text-sm font-semibold tracking-tight">Daygle AI</span>
     </span>
   );
 }
