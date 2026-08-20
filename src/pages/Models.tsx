@@ -142,11 +142,16 @@ export function ModelsPage() {
 
   return (
     <div className="space-y-6">
-      <header className="flex flex-col gap-1">
-        <h1 className="text-xl font-semibold tracking-tight">Models</h1>
-        <p className="text-sm text-muted-foreground">
-          Pull open models from your Ollama server and manage what's installed.
-        </p>
+      <header className="flex items-center gap-3">
+        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-accent/15 text-accent">
+          <Box className="h-5 w-5" />
+        </div>
+        <div>
+          <h1 className="text-xl font-semibold tracking-tight">Models</h1>
+          <p className="text-sm text-muted-foreground">
+            Pull open models from your Ollama server and manage what's installed.
+          </p>
+        </div>
       </header>
 
       {connected === false && (
@@ -166,22 +171,27 @@ export function ModelsPage() {
       )}
 
       {/* Pull form */}
-      <section className="rounded-xl border border-border bg-card p-5">
-        <h2 className="flex items-center gap-2 text-sm font-semibold">
-          <Download className="h-4 w-4 text-accent" />
-          Pull a model
-        </h2>
+      <section className="rounded-2xl border border-border bg-card p-5">
+        <div className="flex items-center gap-2.5">
+          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-accent/15 text-accent">
+            <Download className="h-4 w-4" />
+          </div>
+          <h2 className="text-sm font-semibold">Pull a model</h2>
+        </div>
         <div className="mt-3 flex flex-col gap-2 sm:flex-row">
-          <Input
-            value={pullName}
-            onChange={(event) => setPullName(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") handlePull(pullName);
-            }}
-            placeholder="e.g. qwen2.5-coder:7b"
-            className="font-mono"
-            disabled={isPulling}
-          />
+          <div className="relative flex-1">
+            <Download className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={pullName}
+              onChange={(event) => setPullName(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") handlePull(pullName);
+              }}
+              placeholder="e.g. qwen2.5-coder:7b"
+              className="pl-9 font-mono"
+              disabled={isPulling}
+            />
+          </div>
           <Button onClick={() => handlePull(pullName)} disabled={isPulling || !pullName.trim()} className="shrink-0">
             {pulling ? <Spinner /> : <Download className="h-4 w-4" />}
             {pulling ? "Pulling…" : "Pull"}
@@ -250,11 +260,11 @@ export function ModelsPage() {
         )}
 
         {loading && models.length === 0 ? (
-          <div className="flex items-center justify-center gap-2 rounded-xl border border-dashed border-border py-16 text-sm text-muted-foreground">
+          <div className="flex items-center justify-center gap-2 rounded-2xl border border-dashed border-border py-16 text-sm text-muted-foreground">
             <Spinner /> Loading models…
           </div>
         ) : sortedModels.length === 0 ? (
-          <div className="flex flex-col items-center justify-center gap-3 rounded-xl border border-dashed border-border py-16 text-center">
+          <div className="flex flex-col items-center justify-center gap-3 rounded-2xl border border-dashed border-border py-16 text-center">
             <Box className="h-8 w-8 text-muted-foreground/50" />
             <p className="text-sm text-muted-foreground">No models installed yet.</p>
             <p className="max-w-sm text-xs text-muted-foreground/70">
@@ -267,7 +277,7 @@ export function ModelsPage() {
             {sortedModels.map((model) => (
               <div
                 key={model.name}
-                className="group flex flex-col gap-3 rounded-xl border border-border bg-card p-4 transition-colors hover:border-border/80"
+                className="group flex flex-col gap-3 rounded-2xl border border-border bg-card p-4 transition-colors hover:border-accent/40"
               >
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0">

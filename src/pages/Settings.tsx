@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { CheckCircle2, CircleAlert, Key, PlugZap, Server } from "lucide-react";
+import { CheckCircle2, CircleAlert, Key, PlugZap, Server, SlidersHorizontal } from "lucide-react";
 import { useOllama } from "../context/OllamaProvider";
 import { describeError, getVersion } from "../lib/ollama";
 import { getGithubToken, saveGithubToken } from "../lib/agent";
@@ -63,31 +63,41 @@ export function SettingsPage() {
 
   return (
     <div className="max-w-2xl space-y-8">
-      <header>
-        <h1 className="text-xl font-semibold tracking-tight">Settings</h1>
-        <p className="mt-1 text-sm text-muted-foreground">
-          daygle bundles its own Ollama server. Point it at a server, or run the bundled one.
-        </p>
+      <header className="flex items-center gap-3">
+        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-accent/15 text-accent">
+          <SlidersHorizontal className="h-5 w-5" />
+        </div>
+        <div>
+          <h1 className="text-xl font-semibold tracking-tight">Settings</h1>
+          <p className="text-sm text-muted-foreground">
+            Point daygle at an Ollama server and give the agent a GitHub token.
+          </p>
+        </div>
       </header>
 
       <section className="space-y-4">
-        <div className="flex items-center gap-2">
-          <Server className="h-4 w-4 text-accent" />
+        <div className="flex items-center gap-2.5">
+          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-accent/15 text-accent">
+            <Server className="h-4 w-4" />
+          </div>
           <h2 className="text-sm font-semibold">Server</h2>
         </div>
 
-        <div className="rounded-xl border border-border bg-card p-5">
+        <div className="rounded-2xl border border-border bg-card p-5">
           <label htmlFor="ollama-url" className="text-xs font-medium text-muted-foreground">
             Ollama base URL
           </label>
           <div className="mt-2 flex flex-col gap-2 sm:flex-row">
-            <Input
-              id="ollama-url"
-              value={url}
-              onChange={(event) => setUrl(event.target.value)}
-              placeholder="http://localhost:11434"
-              className="font-mono"
-            />
+            <div className="relative flex-1">
+              <Server className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                id="ollama-url"
+                value={url}
+                onChange={(event) => setUrl(event.target.value)}
+                placeholder="http://localhost:11434"
+                className="pl-9 font-mono"
+              />
+            </div>
             <div className="flex gap-2">
               <Button variant="outline" onClick={handleTest} disabled={testing || !url.trim()}>
                 {testing ? <Spinner /> : <PlugZap className="h-4 w-4" />}
@@ -136,25 +146,30 @@ export function SettingsPage() {
       </section>
 
       <section className="space-y-4">
-        <div className="flex items-center gap-2">
-          <Key className="h-4 w-4 text-accent" />
+        <div className="flex items-center gap-2.5">
+          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-accent/15 text-accent">
+            <Key className="h-4 w-4" />
+          </div>
           <h2 className="text-sm font-semibold">GitHub Token</h2>
         </div>
 
-        <div className="rounded-xl border border-border bg-card p-5">
+        <div className="rounded-2xl border border-border bg-card p-5">
           <p className="text-xs text-muted-foreground">
             A personal access token lets the agent clone private repos and open pull requests. Create one at{" "}
             <a href="https://github.com/settings/tokens" target="_blank" rel="noreferrer" className="text-accent underline">github.com/settings/tokens</a>{" "}
             with <strong>repo</strong> scope.
           </p>
           <div className="mt-3 flex flex-col gap-2 sm:flex-row">
-            <Input
-              type="password"
-              value={ghToken}
-              onChange={(e) => setGhToken(e.target.value)}
-              placeholder="ghp_xxxxxxxxxxxx"
-              className="font-mono"
-            />
+            <div className="relative flex-1">
+              <Key className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                type="password"
+                value={ghToken}
+                onChange={(e) => setGhToken(e.target.value)}
+                placeholder="ghp_xxxxxxxxxxxx"
+                className="pl-9 font-mono"
+              />
+            </div>
             <Button onClick={handleSaveToken} disabled={ghTokenSaving}>
               {ghTokenSaving ? <Spinner /> : "Save"}
             </Button>
