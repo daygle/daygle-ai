@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
-import { CheckCircle2, CircleAlert, Key, PlugZap, Server, SlidersHorizontal } from "lucide-react";
+import { CheckCircle2, CircleAlert, Cpu, Key, PlugZap, RotateCcw, Server, SlidersHorizontal } from "lucide-react";
 import { useOllama } from "../context/OllamaProvider";
 import { describeError, getVersion } from "../lib/ollama";
 import { getGithubToken, saveGithubToken } from "../lib/agent";
+import { DEFAULT_GEN_OPTIONS, loadGenOptions, saveGenOptions, type GenOptions } from "../lib/genOptions";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Spinner } from "../components/ui/spinner";
@@ -23,6 +24,20 @@ export function SettingsPage() {
   const [ghToken, setGhToken] = useState("");
   const [ghTokenSaving, setGhTokenSaving] = useState(false);
   const [ghTokenResult, setGhTokenResult] = useState<{ ok: boolean; text: string } | null>(null);
+
+  const [gen, setGen] = useState<GenOptions>(() => loadGenOptions());
+
+  function updateGen(patch: Partial<GenOptions>) {
+    setGen((prev) => {
+      const next = { ...prev, ...patch };
+      saveGenOptions(next);
+      return next;
+    });
+  }
+  function resetGen() {
+    setGen({ ...DEFAULT_GEN_OPTIONS });
+    saveGenOptions({ ...DEFAULT_GEN_OPTIONS });
+  }
 
   useEffect(() => {
     getGithubToken(agentUrl).then(setGhToken).catch(() => {});
@@ -148,6 +163,44 @@ export function SettingsPage() {
       <section className="space-y-4">
         <div className="flex items-center gap-2.5">
           <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-accent/15 text-accent">
+            <Cpu className="h-4 w-4" />
+          </div>
+          <h2 className="text-sm font-semibold">Generation</h2>
+        </div>
+
+        <div className="rounded-2xl border border-border bg-card p-5">
+          <p className="text-xs text-muted-foreground">
+            Ollama parameters applied to new Agent chats. Leave optional fields blank to use the model's own defaults.
+          </p>
+          <div className="mt-4 grid gap-4 sm:grid-cols-2">
+            <NumField label="Temperature" hint="0 = focused, higher = more creative" value={gen.temperature} step="0.1" min={0} max={2} onChange={(v) => updateGen({ temperature: v })} />
+            <NumField label="Context length (num_ctx)" hint="tokens of context; larger uses more memory" value={gen.num_ctx} step="512" min={256} onChange={(v) => updateGen({ num_ctx: v })} />
+            <NumField label="top_p" hint="nucleus sampling — optional" value={gen.top_p} step="0.05" min={0} max={1} onChange={(v) => updateGen({ top_p: v })} />
+            <NumField label="top_k" hint="optional" value={gen.top_k} step="1" min={0} onChange={(v) => updateGen({ top_k: v })} />
+            <NumField label="Repeat penalty" hint="optional" value={gen.repeat_penalty} step="0.05" min={0} onChange={(v) => updateGen({ repeat_penalty: v })} />
+            <div className="space-y-1">
+              <label className="text-xs font-medium text-muted-foreground">Keep alive</label>
+              <Input
+                value={gen.keep_alive ?? ""}
+                onChange={(e) => updateGen({ keep_alive: e.target.value.trim() || undefined })}
+                placeholder="e.g. 5m · -1 keeps loaded · 0 unloads"
+                className="font-mono"
+              />
+              <p className="text-[11px] text-muted-foreground">How long the model stays loaded after a reply.</p>
+            </div>
+          </div>
+          <div className="mt-4 flex items-center justify-between border-t border-border pt-4">
+            <p className="text-[11px] text-muted-foreground">Saved automatically · applies to your next new chat.</p>
+            <Button variant="outline" size="sm" onClick={resetGen}>
+              <RotateCcw className="mr-1 h-3.5 w-3.5" /> Reset
+            </Button>
+          </div>
+        </div>
+      </section>
+
+      <section className="space-y-4">
+        <div className="flex items-center gap-2.5">
+          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-accent/15 text-accent">
             <Key className="h-4 w-4" />
           </div>
           <h2 className="text-sm font-semibold">GitHub Token</h2>
@@ -182,6 +235,43 @@ export function SettingsPage() {
           )}
         </div>
       </section>
+    </div>
+  );
+}
+
+function NumField({
+  label,
+  hint,
+  value,
+  step,
+  min,
+  max,
+  onChange,
+}: {
+  label: string;
+  hint?: string;
+  value: number | undefined;
+  step: string;
+  min?: number;
+  max?: number;
+  onChange: (value: number | undefined) => void;
+}) {
+  return (
+    <div className="space-y-1">
+      <label className="text-xs font-medium text-muted-foreground">{label}</label>
+      <Input
+        type="number"
+        value={value ?? ""}
+        step={step}
+        min={min}
+        max={max}
+        onChange={(e) => {
+          const n = Number(e.target.value);
+          onChange(e.target.value === "" || !Number.isFinite(n) ? undefined : n);
+        }}
+        className="font-mono"
+      />
+      {hint && <p className="text-[11px] text-muted-foreground">{hint}</p>}
     </div>
   );
 }

@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import type { ChatMessage } from "./chat";
+import type { ChatMessage, GenOptions } from "./chat";
 
 export interface StoredChat {
   id: string;
@@ -11,6 +11,7 @@ export interface StoredChat {
   messages: ChatMessage[];
   createdAt: number;
   lastActivity: number;
+  options?: GenOptions;
 }
 
 export interface ChatSummary {

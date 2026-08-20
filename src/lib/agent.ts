@@ -1,3 +1,5 @@
+import type { GenOptions } from "./genOptions";
+
 export type AgentEvent =
   | { type: "status"; message: string }
   | { type: "model"; content: string }
@@ -229,11 +231,12 @@ export async function createChatSession(
   repoUrl: string,
   model: string,
   ollamaUrl: string,
+  options?: GenOptions,
 ): Promise<ChatSessionInfo> {
   const res = await fetch(`${strip(serverUrl)}/api/chat/sessions`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ repoUrl, model, ollamaUrl }),
+    body: JSON.stringify({ repoUrl, model, ollamaUrl, options }),
   });
   if (!res.ok) {
     const text = await res.text().catch(() => "");

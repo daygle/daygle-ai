@@ -10,6 +10,16 @@ export interface ChatMessage {
   tool_name?: string;
 }
 
+/** User-tunable Ollama generation parameters, applied per request. */
+export interface GenOptions {
+  temperature?: number;
+  num_ctx?: number;
+  top_p?: number;
+  top_k?: number;
+  repeat_penalty?: number;
+  keep_alive?: string;
+}
+
 export interface ChatSession {
   id: string;
   repoUrl: string;
@@ -19,6 +29,7 @@ export interface ChatSession {
   messages: ChatMessage[];
   createdAt: number;
   lastActivity: number;
+  options?: GenOptions;
 }
 
 export type ChatEvent =
@@ -133,8 +144,15 @@ export async function* streamChat(
   session.messages.push({ role: "user", content: userMessage });
 
   const MAX_STEPS = 20;
-  const temperature = 0.3;
-  const numCtx = 16384;
+  // User-tunable generation options, falling back to sensible defaults.
+  const opts = session.options ?? {};
+  const genOptions: Record<string, number> = {
+    temperature: opts.temperature ?? 0.3,
+    num_ctx: opts.num_ctx ?? 16384,
+  };
+  if (typeof opts.top_p === "number") genOptions.top_p = opts.top_p;
+  if (typeof opts.top_k === "number") genOptions.top_k = opts.top_k;
+  if (typeof opts.repeat_penalty === "number") genOptions.repeat_penalty = opts.repeat_penalty;
 
   for (let step = 0; step < MAX_STEPS; step++) {
     if (signal?.aborted) return;
@@ -149,7 +167,8 @@ export async function* streamChat(
         messages: session.messages,
         tools: hasRepo ? TOOL_DEFINITIONS : undefined,
         stream: true,
-        options: { temperature, num_ctx: numCtx },
+        keep_alive: opts.keep_alive,
+        options: genOptions,
       }),
       signal,
     });

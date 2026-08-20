@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { CancelledError, runAgentLoop, runReview, type AgentConfig, type AgentEvent } from "./agent";
-import { ChatSession, streamChat, type ChatEvent } from "./chat";
+import { ChatSession, streamChat, type ChatEvent, type GenOptions } from "./chat";
 import { ChatHistoryStore, deriveTitle } from "./chat-history";
 import {
   changedFiles,
@@ -113,6 +113,7 @@ function persistChat(session: ChatSession): void {
     messages: session.messages,
     createdAt: session.createdAt,
     lastActivity: session.lastActivity,
+    options: session.options,
   });
 }
 
@@ -143,6 +144,7 @@ async function rehydrateChat(id: string): Promise<ChatSession | null> {
     messages: stored.messages,
     createdAt: stored.createdAt,
     lastActivity: Date.now(),
+    options: stored.options,
   };
   chatSessions.set(id, session);
   return session;
@@ -577,7 +579,7 @@ const server = http.createServer((req, res) => {
     }
 
     if (req.method === "POST" && url.pathname === "/api/chat/sessions") {
-      let body: { repoUrl?: string; model?: string; ollamaUrl?: string };
+      let body: { repoUrl?: string; model?: string; ollamaUrl?: string; options?: GenOptions };
       try {
         body = JSON.parse(await readBody(req)) as typeof body;
       } catch {
@@ -613,6 +615,7 @@ const server = http.createServer((req, res) => {
         messages: [],
         createdAt: Date.now(),
         lastActivity: Date.now(),
+        options: body.options,
       };
       chatSessions.set(id, session);
       sendJson(res, 200, { id, repoUrl: session.repoUrl });
