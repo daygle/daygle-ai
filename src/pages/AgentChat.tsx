@@ -6,6 +6,7 @@ import {
   type ChatEvent,
 } from "../lib/agent";
 import { useOllama } from "../context/OllamaProvider";
+import { listModels } from "../lib/ollama";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 
@@ -90,7 +91,8 @@ export function AgentChatPage() {
   });
 
   const [repoUrl, setRepoUrl] = useState("");
-  const [model, setModel] = useState("qwen2.5-coder:7b");
+  const [models, setModels] = useState<string[]>([]);
+  const [model, setModel] = useState("");
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatBubble[]>([]);
   const [input, setInput] = useState("");
@@ -104,6 +106,16 @@ export function AgentChatPage() {
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
+
+  useEffect(() => {
+    listModels(ollamaUrl)
+      .then((m) => {
+        const names = m.map((model) => model.name);
+        setModels(names);
+        if (!model && names.length > 0) setModel(names[0]);
+      })
+      .catch(() => {});
+  }, [ollamaUrl, model]);
 
   async function handleConnect() {
     if (!repoUrl.trim()) return;
@@ -227,9 +239,10 @@ export function AgentChatPage() {
                 onChange={(e) => setModel(e.target.value)}
                 className="flex-1 rounded-md border border-border bg-background px-3 py-2 text-sm"
               >
-                <option value="qwen2.5-coder:7b">qwen2.5-coder:7b</option>
-                <option value="llama3.2">llama3.2</option>
-                <option value="qwen2.5:7b">qwen2.5:7b</option>
+                {models.length === 0 && <option value="">Loading models…</option>}
+                {models.map((m) => (
+                  <option key={m} value={m}>{m}</option>
+                ))}
               </select>
               <Button onClick={handleConnect} disabled={loading || !repoUrl.trim()}>
                 {loading ? "Connecting…" : "Connect"}
