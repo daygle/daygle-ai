@@ -151,12 +151,14 @@ export function AgentChatPage() {
       switch (event.type) {
         case "model_delta":
           assistantContent += event.content;
+          // Strip raw JSON tool calls from display
+          const cleaned = assistantContent.replace(/\{\s*"name"\s*:\s*"[^"]+"\s*,\s*"arguments"\s*:\s*\{[^}]*\}\s*\}/g, "").trim();
           setMessages((prev) => {
             const last = prev[prev.length - 1];
             if (last?.id === assistantId && last.role === "assistant") {
-              return [...prev.slice(0, -1), { ...last, content: assistantContent, streaming: true }];
+              return [...prev.slice(0, -1), { ...last, content: cleaned, streaming: true }];
             }
-            return [...prev, { id: assistantId, role: "assistant", content: assistantContent, streaming: true }];
+            return [...prev, { id: assistantId, role: "assistant", content: cleaned, streaming: true }];
           });
           break;
 

@@ -179,13 +179,19 @@ export async function* streamChat(
       toolCalls = parseTextToolCalls(content);
     }
 
+    // Strip raw JSON tool calls from displayed content (they're shown as cards)
+    let displayContent = content;
+    if (toolCalls.length > 0) {
+      displayContent = content.replace(/\{\s*"name"\s*:\s*"[^"]+"\s*,\s*"arguments"\s*:\s*\{[^}]*\}\s*\}/g, "").trim();
+    }
+
     if (content) {
       session.messages.push({ role: "assistant", content, tool_calls: toolCalls.length ? toolCalls : undefined });
     }
 
     // No tool calls — model is done responding
     if (toolCalls.length === 0) {
-      yield { type: "model_done", content };
+      yield { type: "model_done", content: displayContent };
       return;
     }
 
