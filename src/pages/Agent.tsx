@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { Bot, Check, ChevronDown, ChevronRight, Copy, ExternalLink, FileEdit, GitBranch, Loader2, MessageSquarePlus, Rocket, Search, Send, Square, Terminal, Trash2, User, X } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -252,6 +252,7 @@ export function AgentPage() {
   const [connected, setConnected] = useState(false);
   const [history, setHistory] = useState<ChatSummary[]>([]);
   const [taskOpen, setTaskOpen] = useState(false);
+  const [confirmDeleteChat, setConfirmDeleteChat] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const stickToBottomRef = useRef(true);
@@ -375,10 +376,14 @@ export function AgentPage() {
   }
 
   async function removeChat(id: string) {
+    // Optimistically drop it so the list updates instantly…
+    setHistory((prev) => prev.filter((c) => c.id !== id));
     try {
       await deleteChatSession(agentUrl, id);
     } catch {
-      // ignore
+      // …and restore it if the delete didn't take.
+      refreshHistory();
+      return;
     }
     if (id === sessionId) startNewChat();
     else refreshHistory();
@@ -523,64 +528,125 @@ export function AgentPage() {
 
   // --- Connect screen ---
   if (!connected) {
+    const noModels = models.length === 0;
     return (
-      <div className="flex h-full items-center justify-center">
-        <div className="w-full max-w-lg space-y-4 rounded-xl border border-border bg-card p-6">
-          <div className="flex items-center gap-2">
-            <Bot className="h-5 w-5 text-accent" />
-            <h1 className="text-lg font-semibold">Agent</h1>
-          </div>
-          <p className="text-sm text-muted-foreground">
-            Chat with your local model. Add a repository to have it read, edit, and run code — or
-            hand it a whole task to complete and open a PR.
-          </p>
-          <div className="space-y-3">
-            <Input
-              value={repoUrl}
-              onChange={(e) => setRepoUrl(e.target.value)}
-              placeholder="Repository URL (optional) — https://github.com/owner/repo"
-              className="font-mono"
-              onKeyDown={(e) => e.key === "Enter" && handleConnect()}
-            />
-            <div className="flex gap-2">
-              <select
-                value={model}
-                onChange={(e) => setModel(e.target.value)}
-                className="flex-1 rounded-md border border-border bg-background px-3 py-2 text-sm"
-              >
-                {models.length === 0 && <option value="">Loading models…</option>}
-                {models.map((m) => (
-                  <option key={m} value={m}>{m}</option>
-                ))}
-              </select>
-              <Button onClick={handleConnect} disabled={loading || !model}>
-                {loading ? "Starting…" : repoUrl.trim() ? "Connect" : "Start chat"}
-              </Button>
+      <div className="flex min-h-full items-center justify-center py-10">
+        <div className="w-full max-w-xl overflow-hidden rounded-2xl border border-border bg-card shadow-xl">
+          {/* Header */}
+          <div className="border-b border-border bg-gradient-to-b from-accent/10 to-transparent px-6 pb-5 pt-6">
+            <div className="flex items-center gap-3">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-accent/15 text-accent">
+                <Bot className="h-5 w-5" />
+              </div>
+              <div>
+                <h1 className="text-lg font-semibold tracking-tight">Agent</h1>
+                <p className="text-xs text-muted-foreground">Powered by your local Ollama models</p>
+              </div>
+            </div>
+            <div className="mt-4 flex flex-wrap gap-1.5">
+              <span className="inline-flex items-center gap-1 rounded-full border border-border bg-background px-2.5 py-1 text-[11px] text-muted-foreground">
+                <MessageSquarePlus className="h-3 w-3" /> Chat
+              </span>
+              <span className="inline-flex items-center gap-1 rounded-full border border-border bg-background px-2.5 py-1 text-[11px] text-muted-foreground">
+                <GitBranch className="h-3 w-3" /> Read &amp; edit a repo
+              </span>
+              <span className="inline-flex items-center gap-1 rounded-full border border-border bg-background px-2.5 py-1 text-[11px] text-muted-foreground">
+                <Rocket className="h-3 w-3" /> Run a task → PR
+              </span>
             </div>
           </div>
 
+          {/* Form */}
+          <div className="space-y-4 px-6 py-5">
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-muted-foreground">Repository <span className="font-normal opacity-70">(optional)</span></label>
+              <div className="relative">
+                <GitBranch className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  value={repoUrl}
+                  onChange={(e) => setRepoUrl(e.target.value)}
+                  placeholder="https://github.com/owner/repo"
+                  className="pl-9 font-mono"
+                  onKeyDown={(e) => e.key === "Enter" && handleConnect()}
+                />
+              </div>
+              <p className="text-[11px] text-muted-foreground">Leave blank to just chat with the model.</p>
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-muted-foreground">Model</label>
+              <div className="flex gap-2">
+                <select
+                  value={model}
+                  onChange={(e) => setModel(e.target.value)}
+                  disabled={noModels}
+                  className="flex-1 rounded-md border border-border bg-background px-3 py-2 text-sm disabled:opacity-60"
+                >
+                  {noModels && <option value="">No models found</option>}
+                  {models.map((m) => (
+                    <option key={m} value={m}>{m}</option>
+                  ))}
+                </select>
+                <Button onClick={handleConnect} disabled={loading || !model} className="shrink-0">
+                  {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : repoUrl.trim() ? <GitBranch className="h-4 w-4" /> : <MessageSquarePlus className="h-4 w-4" />}
+                  {loading ? "Starting…" : repoUrl.trim() ? "Connect" : "Start chat"}
+                </Button>
+              </div>
+              {noModels && (
+                <p className="text-[11px] text-amber-400/90">
+                  No models detected. Pull one on the{" "}
+                  <Link to="/models" className="underline">Models</Link> page, or check the server in{" "}
+                  <Link to="/settings" className="underline">Settings</Link>.
+                </p>
+              )}
+            </div>
+          </div>
+
+          {/* Recent chats */}
           {history.length > 0 && (
-            <div className="space-y-2 border-t border-border pt-4">
-              <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Recent chats</p>
-              <div className="max-h-64 space-y-1 overflow-y-auto">
+            <div className="border-t border-border px-6 py-5">
+              <p className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">Recent chats</p>
+              <div className="max-h-72 space-y-1.5 overflow-y-auto">
                 {history.map((chat) => (
                   <div
                     key={chat.id}
-                    className="group flex items-center gap-2 rounded-lg border border-border bg-background px-3 py-2 hover:border-accent/50"
+                    className="group flex items-center gap-2 rounded-lg border border-border bg-background px-3 py-2.5 transition-colors hover:border-accent/50"
                   >
+                    <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground">
+                      {chat.repoUrl ? <GitBranch className="h-3.5 w-3.5" /> : <MessageSquarePlus className="h-3.5 w-3.5" />}
+                    </div>
                     <button onClick={() => resumeChat(chat.id)} className="min-w-0 flex-1 text-left">
                       <p className="truncate text-sm">{chat.title}</p>
                       <p className="truncate text-[11px] text-muted-foreground">
                         {(chat.repoUrl ? chat.repoUrl.replace(/^https?:\/\/(www\.)?github\.com\//, "") : "Chat")} · {chat.messageCount} msgs · {relativeTime(chat.lastActivity)}
                       </p>
                     </button>
-                    <button
-                      onClick={() => removeChat(chat.id)}
-                      className="rounded p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-muted hover:text-destructive group-hover:opacity-100"
-                      title="Delete chat"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </button>
+                    {confirmDeleteChat === chat.id ? (
+                      <div className="flex shrink-0 items-center gap-1">
+                        <button
+                          onClick={() => { removeChat(chat.id); setConfirmDeleteChat(null); }}
+                          className="rounded p-1 text-destructive hover:bg-destructive/10"
+                          title="Confirm delete"
+                        >
+                          <Check className="h-3.5 w-3.5" />
+                        </button>
+                        <button
+                          onClick={() => setConfirmDeleteChat(null)}
+                          className="rounded p-1 text-muted-foreground hover:bg-muted"
+                          title="Cancel"
+                        >
+                          <X className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        onClick={() => setConfirmDeleteChat(chat.id)}
+                        className="shrink-0 rounded p-1 text-muted-foreground opacity-60 transition hover:bg-muted hover:text-destructive hover:opacity-100"
+                        title="Delete chat"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    )}
                   </div>
                 ))}
               </div>
