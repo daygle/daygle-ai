@@ -162,19 +162,21 @@ export function AgentChatPage() {
           });
           break;
 
-        case "model_done":
+        case "model_done": {
+          const finalCleaned = assistantContent.replace(/\{\s*"name"\s*:\s*"[^"]+"\s*,\s*"arguments"\s*:\s*\{[^}]*\}\s*\}/g, "").trim();
           setMessages((prev) => {
             const last = prev[prev.length - 1];
             if (last?.id === assistantId && last.role === "assistant") {
-              return [...prev.slice(0, -1), { ...last, content: assistantContent, streaming: false }];
+              return [...prev.slice(0, -1), { ...last, content: finalCleaned || event.content, streaming: false }];
             }
-            if (assistantContent) {
-              return [...prev, { id: assistantId, role: "assistant", content: assistantContent, streaming: false }];
+            if (finalCleaned || event.content) {
+              return [...prev, { id: assistantId, role: "assistant", content: finalCleaned || event.content, streaming: false }];
             }
             return prev;
           });
           setStreaming(false);
           break;
+        }
 
         case "tool_start": {
           const toolId = `${assistantId}-tool-${event.name}-${Date.now()}`;
