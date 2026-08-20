@@ -6,8 +6,15 @@ import type { SandboxRunner } from "./sandbox";
 export interface ChatMessage {
   role: "system" | "user" | "assistant" | "tool";
   content: string;
+  images?: string[];
+  imageMimeTypes?: string[];
   tool_calls?: Array<{ function: { name: string; arguments: Record<string, unknown> } }>;
   tool_name?: string;
+}
+
+export interface ChatImage {
+  data: string;
+  mimeType: string;
 }
 
 /** User-tunable Ollama generation parameters, applied per request. */
@@ -236,6 +243,7 @@ export async function* streamChat(
   approve?: CommandApprover,
   sandbox?: SandboxRunner,
   signal?: AbortSignal,
+  image?: ChatImage,
 ): AsyncGenerator<ChatEvent> {
   // A session with a checkout gets the tool-using coding prompt; a repo-less
   // session is a plain conversation (no tools).
@@ -243,7 +251,11 @@ export async function* streamChat(
   if (!session.messages.some((m) => m.role === "system")) {
     session.messages.unshift({ role: "system", content: hasRepo ? SYSTEM_PROMPT : CHAT_ONLY_SYSTEM_PROMPT });
   }
-  session.messages.push({ role: "user", content: userMessage });
+  session.messages.push({
+    role: "user",
+    content: userMessage,
+    ...(image ? { images: [image.data], imageMimeTypes: [image.mimeType] } : {}),
+  });
 
   const MAX_STEPS = 20;
   // User-tunable generation options, falling back to sensible defaults.
@@ -266,7 +278,11 @@ export async function* streamChat(
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         model: session.model,
-        messages: session.messages,
+        messages: session.messages.map((message) => {
+          const { imageMimeTypes, ...ollamaMessage } = message;
+          void imageMimeTypes;
+          return ollamaMessage;
+        }),
         tools: hasRepo ? TOOL_DEFINITIONS : undefined,
         stream: true,
         keep_alive: opts.keep_alive,

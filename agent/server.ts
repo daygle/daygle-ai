@@ -24,7 +24,7 @@ import {
   parseRepo,
 } from "./github";
 import { detectSandbox, type SandboxRunner } from "./sandbox";
-import type { CommandApprover } from "./tools";
+import { runTool, type CommandApprover } from "./tools";
 import { HistoryStore, type StoredJob } from "./history";
 import { runQaGate, type QaResult } from "./qa";
 import { checkModelUpdate } from "./updates";
@@ -175,7 +175,7 @@ function persist(job: Job): void {
 
 const CORS_HEADERS: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
+  "Access-Control-Allow-Methods": "GET, POST, PATCH, DELETE, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type",
 };
 
@@ -220,15 +220,25 @@ function makeApprover(job: Job): (command: string) => Promise<"approve" | "deny"
   };
 }
 
-function readBody(req: IncomingMessage): Promise<string> {
+function readBody(req: IncomingMessage, maxBytes = 1_000_000): Promise<string> {
   return new Promise((resolve, reject) => {
     let data = "";
+    let rejected = false;
     req.on("data", (chunk: Buffer) => {
+      if (rejected) return;
       data += chunk.toString();
-      if (data.length > 1_000_000) req.destroy();
+      if (data.length > maxBytes) {
+        rejected = true;
+        reject(new Error("Request body is too large."));
+        req.destroy();
+      }
     });
-    req.on("end", () => resolve(data));
-    req.on("error", reject);
+    req.on("end", () => {
+      if (!rejected) resolve(data);
+    });
+    req.on("error", (err) => {
+      if (!rejected) reject(err);
+    });
   });
 }
 
@@ -536,6 +546,40 @@ const server = http.createServer((req, res) => {
       return;
     }
 
+    const chatWorkspaceMatch = url.pathname.match(/^\/api\/chat\/sessions\/([^/]+)\/workspace$/);
+    if (chatWorkspaceMatch && req.method === "GET") {
+      const sessionId = chatWorkspaceMatch[1];
+      let session = chatSessions.get(sessionId);
+      if (!session) {
+        try {
+          session = (await rehydrateChat(sessionId)) ?? undefined;
+        } catch (err) {
+          sendJson(res, 400, { error: `Failed to restore chat: ${err instanceof Error ? err.message : String(err)}` });
+          return;
+        }
+      }
+      if (!session) {
+        sendJson(res, 404, { error: "Chat not found." });
+        return;
+      }
+      if (!session.root) {
+        sendJson(res, 200, { files: [], changedFiles: [], stat: "", diff: "" });
+        return;
+      }
+      try {
+        const filesResult = await runTool(session.root, "list_files", {});
+        const { stat, diff } = await workingDiff(session.root);
+        const changed = await changedFiles(session.root);
+        const files = filesResult === "(empty)"
+          ? []
+          : filesResult.split(/\r?\n/).filter(Boolean);
+        sendJson(res, 200, { files, changedFiles: changed, stat, diff });
+      } catch (err) {
+        sendJson(res, 400, { error: err instanceof Error ? err.message : String(err) });
+      }
+      return;
+    }
+
     const chatIdMatch = url.pathname.match(/^\/api\/chat\/sessions\/([^/]+)$/);
     if (chatIdMatch && req.method === "GET") {
       const id = chatIdMatch[1];
@@ -663,9 +707,9 @@ const server = http.createServer((req, res) => {
           return;
         }
       }
-      let body: { message?: string };
+      let body: { message?: string; image?: { data?: string; mimeType?: string } };
       try {
-        body = JSON.parse(await readBody(req)) as typeof body;
+        body = JSON.parse(await readBody(req, 12_000_000)) as typeof body;
       } catch {
         sendJson(res, 400, { error: "Invalid JSON body." });
         return;
@@ -673,6 +717,18 @@ const server = http.createServer((req, res) => {
       if (!body.message?.trim()) {
         sendJson(res, 400, { error: "message is required." });
         return;
+      }
+      let image: { data: string; mimeType: string } | undefined;
+      if (body.image?.data || body.image?.mimeType) {
+        if (!body.image.data || !body.image.mimeType?.startsWith("image/")) {
+          sendJson(res, 400, { error: "A valid image attachment is required." });
+          return;
+        }
+        if (body.image.data.length > 10_000_000) {
+          sendJson(res, 413, { error: "Image attachment is too large." });
+          return;
+        }
+        image = { data: body.image.data, mimeType: body.image.mimeType };
       }
       session.lastActivity = Date.now();
       // Stream the response as SSE
@@ -724,7 +780,7 @@ const server = http.createServer((req, res) => {
       });
 
       try {
-        for await (const event of streamChat(session, body.message.trim(), approve, sandbox ?? undefined, controller.signal)) {
+        for await (const event of streamChat(session, body.message.trim(), approve, sandbox ?? undefined, controller.signal, image)) {
           res.write(`data: ${JSON.stringify(event)}\n\n`);
         }
       } catch (err) {

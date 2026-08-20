@@ -190,8 +190,15 @@ export interface ChatSummary {
 export interface StoredChatMessage {
   role: "system" | "user" | "assistant" | "tool";
   content: string;
+  images?: string[];
+  imageMimeTypes?: string[];
   tool_calls?: Array<{ function: { name: string; arguments: Record<string, unknown> } }>;
   tool_name?: string;
+}
+
+export interface ChatImage {
+  data: string;
+  mimeType: string;
 }
 
 export interface StoredChat {
@@ -203,6 +210,13 @@ export interface StoredChat {
   messages: StoredChatMessage[];
   createdAt: number;
   lastActivity: number;
+}
+
+export interface ChatWorkspace {
+  files: string[];
+  changedFiles: string[];
+  stat: string;
+  diff: string;
 }
 
 /** Lists past chat conversations (persisted transcripts), newest first. */
@@ -224,6 +238,12 @@ export async function getChatSession(serverUrl: string, id: string): Promise<Sto
 export async function deleteChatSession(serverUrl: string, id: string): Promise<void> {
   const res = await fetch(`${strip(serverUrl)}/api/chat/sessions/${id}`, { method: "DELETE" });
   if (!res.ok) throw new Error(`Failed to delete chat (${res.status})`);
+}
+
+export async function getChatWorkspace(serverUrl: string, sessionId: string): Promise<ChatWorkspace> {
+  const res = await fetch(`${strip(serverUrl)}/api/chat/sessions/${sessionId}/workspace`);
+  if (!res.ok) throw new Error(`Failed to load workspace (${res.status})`);
+  return (await res.json()) as ChatWorkspace;
 }
 
 export async function createChatSession(
@@ -250,12 +270,13 @@ export function sendChatMessage(
   sessionId: string,
   message: string,
   onEvent: (event: ChatEvent) => void,
+  image?: ChatImage,
 ): () => void {
   const controller = new AbortController();
   fetch(`${strip(serverUrl)}/api/chat/sessions/${sessionId}/messages`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ message }),
+    body: JSON.stringify({ message, image }),
     signal: controller.signal,
   })
     .then(async (res) => {

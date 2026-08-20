@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ChangeEvent } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { Bot, Check, ChevronDown, ChevronRight, Copy, ExternalLink, FileEdit, GitBranch, Loader2, MessageSquarePlus, Rocket, Search, Send, Square, Terminal, Trash2, User, X } from "lucide-react";
+import { Bot, Check, ChevronDown, ChevronRight, Copy, Eye, ExternalLink, FileEdit, Files, Folder, GitBranch, GitCompare, ImagePlus, ListTodo, Loader2, MessageSquarePlus, PanelRightClose, PanelRightOpen, RefreshCw, Rocket, Search, Send, Square, StickyNote, Terminal, Trash2, User, X } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
@@ -8,6 +8,7 @@ import {
   createChatSession,
   deleteChatSession,
   getChatSession,
+  getChatWorkspace,
   listChatSessions,
   openAgentEvents,
   resolveApproval,
@@ -16,7 +17,9 @@ import {
   updateChatModel,
   type AgentEvent,
   type ChatEvent,
+  type ChatImage,
   type ChatSummary,
+  type ChatWorkspace,
   type StoredChatMessage,
 } from "../lib/agent";
 import { useOllama } from "../context/OllamaProvider";
@@ -56,6 +59,8 @@ interface ChatBubble {
   question?: string;
   options?: Array<{ label: string; description?: string }>;
   selectedOption?: string;
+  imageData?: string;
+  imageMimeType?: string;
 }
 
 let nextId = 0;
@@ -158,7 +163,13 @@ function bubblesFromMessages(messages: StoredChatMessage[]): ChatBubble[] {
   const toolQueue: Array<{ name: string; args: Record<string, unknown> }> = [];
   for (const m of messages) {
     if (m.role === "user") {
-      bubbles.push({ id: uid(), role: "user", content: m.content });
+      bubbles.push({
+        id: uid(),
+        role: "user",
+        content: m.content,
+        imageData: m.images?.[0],
+        imageMimeType: m.imageMimeTypes?.[0],
+      });
     } else if (m.role === "assistant") {
       const text = stripToolJson(m.content);
       if (text) bubbles.push({ id: uid(), role: "assistant", content: text });
@@ -241,6 +252,170 @@ function CopyButton({ text }: { text: string }) {
   );
 }
 
+type WorkspaceTab = "queue" | "files" | "changes" | "preview" | "terminal" | "notes";
+
+interface QueuedMessage {
+  text: string;
+  image?: ChatImage;
+  imageName?: string;
+}
+
+function WorkspacePanel({
+  tab,
+  onTabChange,
+  queue,
+  onRemoveQueueItem,
+  onClearQueue,
+  workspace,
+  messages,
+  notes,
+  onNotesChange,
+  onRefresh,
+  refreshing,
+}: {
+  tab: WorkspaceTab;
+  onTabChange: (tab: WorkspaceTab) => void;
+  queue: QueuedMessage[];
+  onRemoveQueueItem: (index: number) => void;
+  onClearQueue: () => void;
+  workspace: ChatWorkspace;
+  messages: ChatBubble[];
+  notes: string;
+  onNotesChange: (notes: string) => void;
+  onRefresh: () => void;
+  refreshing: boolean;
+}) {
+  const tabs: Array<{ id: WorkspaceTab; label: string; icon: typeof ListTodo; count?: number }> = [
+    { id: "queue", label: "Queue", icon: ListTodo, count: queue.length },
+    { id: "files", label: "Files", icon: Files, count: workspace.files.length || undefined },
+    { id: "changes", label: "Changes", icon: GitCompare, count: workspace.changedFiles.length || undefined },
+    { id: "preview", label: "Preview", icon: Eye },
+    { id: "terminal", label: "Terminal", icon: Terminal },
+    { id: "notes", label: "Notes", icon: StickyNote },
+  ];
+  const terminalEntries = messages.filter((message) => message.role === "tool" && message.toolName === "run_command");
+
+  return (
+    <aside className="flex h-full w-[360px] max-w-[42vw] shrink-0 flex-col border-l border-border bg-card">
+      <div className="scrollbar-thin flex overflow-x-auto border-b border-border px-1">
+        {tabs.map(({ id, label, icon: Icon, count }) => (
+          <button
+            key={id}
+            onClick={() => onTabChange(id)}
+            className={`flex shrink-0 items-center gap-1.5 border-b-2 px-2.5 py-3 text-[11px] transition-colors ${
+              tab === id ? "border-accent bg-muted text-foreground" : "border-transparent text-muted-foreground hover:bg-muted/60 hover:text-foreground"
+            }`}
+          >
+            <Icon className="h-3.5 w-3.5" />
+            <span>{label}</span>
+            {count !== undefined && count > 0 && <span className="rounded-full bg-muted px-1.5 text-[10px]">{count}</span>}
+          </button>
+        ))}
+      </div>
+
+      <div className="flex items-center justify-between border-b border-border px-3 py-2">
+        <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{tabs.find((item) => item.id === tab)?.label}</span>
+        <button onClick={onRefresh} className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground" title="Refresh workspace">
+          <RefreshCw className={`h-3.5 w-3.5 ${refreshing ? "animate-spin" : ""}`} />
+        </button>
+      </div>
+
+      <div className="scrollbar-thin min-h-0 flex-1 overflow-y-auto p-3">
+        {tab === "queue" && (
+          queue.length === 0 ? (
+            <div className="flex h-full min-h-40 flex-col items-center justify-center text-center text-xs text-muted-foreground">
+              <ListTodo className="mb-2 h-7 w-7 opacity-40" />
+              <p>No queued messages</p>
+              <p className="mt-1 max-w-[220px] text-[11px] opacity-70">Messages sent while the agent is working will run here in order.</p>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between text-[11px] text-muted-foreground">
+                <span>{queue.length} message{queue.length === 1 ? "" : "s"} waiting</span>
+                <button onClick={onClearQueue} className="text-destructive hover:underline">Clear all</button>
+              </div>
+              {queue.map((message, index) => (
+                <div key={`${message.text}-${index}`} className="group rounded-lg border border-border bg-background p-2.5">
+                  <div className="flex items-start gap-2">
+                    <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-accent/15 text-[10px] text-accent">{index + 1}</span>
+                    <div className="min-w-0 flex-1">
+                      <p className="whitespace-pre-wrap text-xs leading-relaxed">{message.text}</p>
+                      {message.image && <p className="mt-1 flex items-center gap-1 text-[10px] text-accent"><ImagePlus className="h-3 w-3" /> {message.imageName || "Image attachment"}</p>}
+                    </div>
+                    <button onClick={() => onRemoveQueueItem(index)} className="rounded p-0.5 text-muted-foreground opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100" title="Remove from queue">
+                      <X className="h-3 w-3" />
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )
+        )}
+
+        {tab === "files" && (
+          workspace.files.length === 0 ? (
+            <div className="py-8 text-center text-xs text-muted-foreground">Connect a repository to browse files.</div>
+          ) : (
+            <div className="space-y-0.5">
+              {workspace.files.slice(0, 600).map((file) => (
+                <div key={file} className="flex items-center gap-2 rounded px-2 py-1.5 text-xs text-muted-foreground hover:bg-muted hover:text-foreground">
+                  {file.endsWith("/") ? <Folder className="h-3.5 w-3.5 shrink-0 text-amber-400" /> : <FileEdit className="h-3.5 w-3.5 shrink-0 text-emerald-400" />}
+                  <span className="truncate font-mono">{file}</span>
+                </div>
+              ))}
+              {workspace.files.length > 600 && <p className="px-2 pt-2 text-[11px] text-muted-foreground">Showing the first 600 files.</p>}
+            </div>
+          )
+        )}
+
+        {tab === "changes" && (
+          workspace.diff ? (
+            <div>
+              <p className="mb-2 text-[11px] text-muted-foreground">{workspace.stat || "Working directory changes"}</p>
+              <DiffView diff={workspace.diff} />
+            </div>
+          ) : <div className="py-8 text-center text-xs text-muted-foreground">No working directory changes.</div>
+        )}
+
+        {tab === "preview" && (
+          <div className="flex h-full min-h-48 flex-col items-center justify-center text-center text-xs text-muted-foreground">
+            <Eye className="mb-2 h-7 w-7 opacity-40" />
+            <p>Preview</p>
+            <p className="mt-1 max-w-[230px] text-[11px] opacity-70">Start the project’s dev server with a tool command, then open its local URL here when preview support is connected.</p>
+          </div>
+        )}
+
+        {tab === "terminal" && (
+          terminalEntries.length === 0 ? (
+            <div className="py-8 text-center text-xs text-muted-foreground">Command output will appear here.</div>
+          ) : (
+            <div className="space-y-2">
+              {terminalEntries.map((entry) => (
+                <div key={entry.id} className="overflow-hidden rounded-lg border border-border bg-background">
+                  <div className="flex items-center gap-2 border-b border-border px-2.5 py-2 font-mono text-[11px] text-amber-300">
+                    <Terminal className="h-3 w-3" />
+                    <span className="truncate">{String(entry.toolArgs?.command ?? "command")}</span>
+                  </div>
+                  <pre className="max-h-48 overflow-auto px-2.5 py-2 font-mono text-[10px] leading-relaxed text-muted-foreground">{entry.toolResult || "Running…"}</pre>
+                </div>
+              ))}
+            </div>
+          )
+        )}
+
+        {tab === "notes" && (
+          <textarea
+            value={notes}
+            onChange={(event) => onNotesChange(event.target.value)}
+            placeholder="Keep notes while you work…"
+            className="min-h-64 w-full resize-none rounded-lg border border-border bg-background p-3 text-xs leading-relaxed text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring/60"
+          />
+        )}
+      </div>
+    </aside>
+  );
+}
+
 export function AgentPage() {
   const { baseUrl: ollamaUrl } = useOllama();
   const [agentUrl] = useState(() => {
@@ -258,18 +433,50 @@ export function AgentPage() {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatBubble[]>([]);
   const [input, setInput] = useState("");
+  const [imageAttachment, setImageAttachment] = useState<ChatImage | null>(null);
+  const [imageAttachmentName, setImageAttachmentName] = useState("");
   const [loading, setLoading] = useState(false);
   const [streaming, setStreaming] = useState(false);
   const [statusText, setStatusText] = useState("");
   const [connected, setConnected] = useState(false);
   const [history, setHistory] = useState<ChatSummary[]>([]);
+  const [queuedMessages, setQueuedMessages] = useState<QueuedMessage[]>([]);
+  const [workspace, setWorkspace] = useState<ChatWorkspace>({ files: [], changedFiles: [], stat: "", diff: "" });
+  const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>("queue");
+  const [workspaceOpen, setWorkspaceOpen] = useState(true);
+  const [workspaceRefreshing, setWorkspaceRefreshing] = useState(false);
+  const [notes, setNotes] = useState("");
+  const [autoSendQueued, setAutoSendQueued] = useState(false);
   const [taskOpen, setTaskOpen] = useState(false);
   const [confirmDeleteChat, setConfirmDeleteChat] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const imageInputRef = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const stickToBottomRef = useRef(true);
   const abortRef = useRef<() => void>();
   const toolResultsRef = useRef<Map<string, string>>(new Map());
+
+  const refreshWorkspace = useCallback(async () => {
+    if (!sessionId) {
+      setWorkspace({ files: [], changedFiles: [], stat: "", diff: "" });
+      return;
+    }
+    setWorkspaceRefreshing(true);
+    try {
+      setWorkspace(await getChatWorkspace(agentUrl, sessionId));
+    } catch {
+      // A chat-only session has no workspace; keep the empty state.
+    } finally {
+      setWorkspaceRefreshing(false);
+    }
+  }, [agentUrl, sessionId]);
+
+  useEffect(() => {
+    void refreshWorkspace();
+    if (!sessionId) return;
+    const timer = window.setInterval(() => void refreshWorkspace(), 4000);
+    return () => window.clearInterval(timer);
+  }, [refreshWorkspace, sessionId]);
 
   // Only auto-scroll when the user is already near the bottom, so scrolling up
   // to read earlier output isn't yanked back down on every streamed token.
@@ -382,6 +589,10 @@ export function AgentPage() {
     setSessionRepo("");
     setMessages([]);
     setInput("");
+    removeImageAttachment();
+    setQueuedMessages([]);
+    setWorkspace({ files: [], stat: "", diff: "" });
+    setNotes("");
     setStreaming(false);
     rememberSession(null);
     refreshHistory();
@@ -401,12 +612,55 @@ export function AgentPage() {
     else refreshHistory();
   }
 
-  const handleSend = useCallback(() => {
-    if (!input.trim() || !sessionId || streaming) return;
+  function handleImageSelected(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      setMessages((prev) => [...prev, { id: uid(), role: "assistant", content: "Please choose an image file." }]);
+      return;
+    }
+    if (file.size > 6 * 1024 * 1024) {
+      setMessages((prev) => [...prev, { id: uid(), role: "assistant", content: "That image is too large. Please choose an image under 6 MB." }]);
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = typeof reader.result === "string" ? reader.result : "";
+      const comma = result.indexOf(",");
+      if (comma < 0) return;
+      setImageAttachment({ data: result.slice(comma + 1), mimeType: file.type });
+      setImageAttachmentName(file.name);
+    };
+    reader.readAsDataURL(file);
+  }
 
-    const userMsg = input.trim();
+  function removeImageAttachment() {
+    setImageAttachment(null);
+    setImageAttachmentName("");
+  }
+
+  const handleSend = useCallback(() => {
+    if ((!input.trim() && !imageAttachment) || !sessionId) return;
+
+    const userMsg = input.trim() || "Please describe this image.";
+    const userImage = imageAttachment;
+    const userImageName = imageAttachmentName;
     setInput("");
-    setMessages((prev) => [...prev, { id: uid(), role: "user", content: userMsg }]);
+    removeImageAttachment();
+    if (streaming) {
+      setQueuedMessages((prev) => [...prev, { text: userMsg, image: userImage ?? undefined, imageName: userImageName || undefined }]);
+      setWorkspaceTab("queue");
+      setWorkspaceOpen(true);
+      return;
+    }
+    setMessages((prev) => [...prev, {
+      id: uid(),
+      role: "user",
+      content: userMsg,
+      imageData: userImage?.data,
+      imageMimeType: userImage?.mimeType,
+    }]);
     setStreaming(true);
     setStatusText("Thinking…");
     toolResultsRef.current.clear();
@@ -531,10 +785,28 @@ export function AgentPage() {
           setStatusText("");
           break;
       }
-    });
+    }, userImage ?? undefined);
 
     abortRef.current = cancel;
-  }, [input, sessionId, streaming, agentUrl]);
+  }, [imageAttachment, imageAttachmentName, input, sessionId, streaming, agentUrl]);
+
+  // Once the active response finishes, move the next queued message into the
+  // composer and submit it through the same normal send path.
+  useEffect(() => {
+    if (streaming || !sessionId || queuedMessages.length === 0 || autoSendQueued) return;
+    const next = queuedMessages[0];
+    setInput(next.text);
+    setImageAttachment(next.image ?? null);
+    setImageAttachmentName(next.imageName ?? "");
+    setQueuedMessages((prev) => prev.slice(1));
+    setAutoSendQueued(true);
+  }, [autoSendQueued, queuedMessages, sessionId, streaming]);
+
+  useEffect(() => {
+    if (!autoSendQueued || streaming || !input.trim()) return;
+    setAutoSendQueued(false);
+    handleSend();
+  }, [autoSendQueued, handleSend, input, streaming]);
 
   function handleStop() {
     abortRef.current?.();
@@ -819,8 +1091,9 @@ export function AgentPage() {
 
   // --- Chat screen ---
   return (
-    <div className="flex h-full flex-col">
-      <header className="flex items-center gap-2 border-b border-border px-4 py-3">
+    <div className="flex h-[calc(100dvh-6rem)] min-w-0 overflow-hidden md:h-[calc(100dvh-4rem)]">
+      <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+        <header className="flex items-center gap-2 border-b border-border px-4 py-3">
         <Bot className="h-4 w-4 text-accent" />
         <span className="text-sm font-medium">Agent</span>
         {sessionRepo ? (
@@ -840,19 +1113,6 @@ export function AgentPage() {
           </span>
         )}
         <div className="ml-auto flex items-center gap-2">
-          {models.length > 0 && (
-            <select
-              value={model}
-              onChange={(e) => handleModelSwitch(e.target.value)}
-              disabled={streaming}
-              className="rounded-md border border-border bg-background px-2 py-1 text-xs disabled:opacity-60"
-              title="Switch model"
-            >
-              {models.map((m) => (
-                <option key={m} value={m}>{m}</option>
-              ))}
-            </select>
-          )}
           {sessionRepo && (
             <Button variant="outline" size="sm" onClick={() => setTaskOpen(true)} disabled={streaming}>
               <Rocket className="mr-1 h-3.5 w-3.5" /> Run task → PR
@@ -861,10 +1121,17 @@ export function AgentPage() {
           <Button variant="outline" size="sm" onClick={startNewChat} disabled={streaming}>
             <MessageSquarePlus className="mr-1 h-3.5 w-3.5" /> New chat
           </Button>
+          <button
+            onClick={() => setWorkspaceOpen((open) => !open)}
+            className="rounded p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground"
+            title={workspaceOpen ? "Close workspace panel" : "Open workspace panel"}
+          >
+            {workspaceOpen ? <PanelRightClose className="h-4 w-4" /> : <PanelRightOpen className="h-4 w-4" />}
+          </button>
         </div>
-      </header>
+        </header>
 
-      <div ref={scrollRef} onScroll={handleScroll} className="flex-1 overflow-y-auto px-4 py-6">
+        <div ref={scrollRef} onScroll={handleScroll} className="min-h-0 flex-1 overflow-y-auto px-4 py-6">
         <div className="mx-auto max-w-3xl space-y-6">
           {messages.map((msg) => (
             <div key={msg.id}>
@@ -874,6 +1141,13 @@ export function AgentPage() {
                     <User className="h-3.5 w-3.5" />
                   </div>
                   <div className="min-w-0 flex-1 pt-0.5">
+                    {msg.imageData && (
+                      <img
+                        src={`data:${msg.imageMimeType || "image/*"};base64,${msg.imageData}`}
+                        alt="Uploaded attachment"
+                        className="mb-2 max-h-64 max-w-sm rounded-lg border border-border object-contain"
+                      />
+                    )}
                     <p className="whitespace-pre-wrap text-sm">{msg.content}</p>
                     {msg.content && <CopyButton text={msg.content} />}
                   </div>
@@ -992,27 +1266,86 @@ export function AgentPage() {
         </div>
       </div>
 
-      <div className="border-t border-border px-4 py-3">
-        <div className="mx-auto max-w-3xl flex gap-2">
-          <Input
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && handleSend()}
-            placeholder={streaming ? "Thinking…" : "Ask about the code, request changes…"}
-            disabled={streaming}
-            className="flex-1"
-          />
-          {streaming ? (
-            <Button variant="destructive" size="icon" onClick={handleStop}>
-              <Square className="h-4 w-4" />
-            </Button>
-          ) : (
-            <Button size="icon" onClick={handleSend} disabled={!input.trim()}>
-              <Send className="h-4 w-4" />
-            </Button>
-          )}
+        <div className="sticky bottom-0 z-20 border-t border-border bg-background/95 px-4 py-3 backdrop-blur">
+          <div className="mx-auto max-w-3xl space-y-2">
+            {imageAttachment && (
+              <div className="flex items-center gap-2 rounded-lg border border-border bg-background p-2">
+                <img
+                  src={`data:${imageAttachment.mimeType};base64,${imageAttachment.data}`}
+                  alt="Selected attachment"
+                  className="h-12 w-12 rounded object-cover"
+                />
+                <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">{imageAttachmentName || "Image attachment"}</span>
+                <button onClick={removeImageAttachment} className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground" title="Remove image">
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            )}
+            <div className="flex gap-2">
+              <input ref={imageInputRef} type="file" accept="image/*" className="hidden" onChange={handleImageSelected} />
+              <Button variant="outline" size="icon" onClick={() => imageInputRef.current?.click()} title="Upload image">
+                <ImagePlus className="h-4 w-4" />
+              </Button>
+              <Input
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && handleSend()}
+                placeholder={streaming ? "Type a message to queue…" : "Ask about the code, request changes…"}
+                className="flex-1"
+              />
+              <Button size="icon" onClick={handleSend} disabled={!input.trim() && !imageAttachment} title={streaming ? "Queue message" : "Send message"}>
+                <Send className="h-4 w-4" />
+              </Button>
+              {streaming && (
+                <Button variant="destructive" size="icon" onClick={handleStop} title="Stop response">
+                  <Square className="h-4 w-4" />
+                </Button>
+              )}
+            </div>
+            <div className="flex items-center gap-2 pl-1">
+              <label htmlFor="agent-model" className="text-[11px] text-muted-foreground">Model</label>
+              <select
+                id="agent-model"
+                value={model}
+                onChange={(e) => handleModelSwitch(e.target.value)}
+                disabled={streaming || models.length === 0}
+                className="min-w-0 max-w-full rounded-md border border-border bg-background px-2 py-1 text-xs text-foreground disabled:opacity-60"
+                title="Switch model"
+              >
+                {models.length === 0 && <option value="">No models found</option>}
+                {models.map((m) => (
+                  <option key={m} value={m}>{m}</option>
+                ))}
+              </select>
+              {streaming && <span className="text-[11px] text-muted-foreground">Model switching is disabled while responding.</span>}
+            </div>
+          </div>
         </div>
-      </div>
+      </main>
+
+      {workspaceOpen ? (
+        <WorkspacePanel
+          tab={workspaceTab}
+          onTabChange={setWorkspaceTab}
+          queue={queuedMessages}
+          onRemoveQueueItem={(index) => setQueuedMessages((prev) => prev.filter((_, itemIndex) => itemIndex !== index))}
+          onClearQueue={() => setQueuedMessages([])}
+          workspace={workspace}
+          messages={messages}
+          notes={notes}
+          onNotesChange={setNotes}
+          onRefresh={() => void refreshWorkspace()}
+          refreshing={workspaceRefreshing}
+        />
+      ) : (
+        <button
+          onClick={() => setWorkspaceOpen(true)}
+          className="flex w-9 shrink-0 items-center justify-center border-l border-border bg-card text-muted-foreground hover:bg-muted hover:text-foreground"
+          title="Open workspace panel"
+        >
+          <PanelRightOpen className="h-4 w-4" />
+        </button>
+      )}
 
       <TaskRunnerModal
         open={taskOpen}
