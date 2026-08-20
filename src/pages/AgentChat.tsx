@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Bot, GitBranch, Loader2, Send, Square, Terminal, User } from "lucide-react";
+import { Bot, ChevronDown, ChevronRight, Copy, FileEdit, GitBranch, Loader2, Search, Send, Square, Terminal, User } from "lucide-react";
 import {
   createChatSession,
   sendChatMessage,
@@ -9,15 +9,79 @@ import { useOllama } from "../context/OllamaProvider";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 
-interface DisplayMessage {
-  role: "user" | "assistant" | "tool" | "status";
+interface ChatBubble {
+  id: number;
+  role: "user" | "assistant" | "tool";
   content: string;
   toolName?: string;
+  toolArgs?: Record<string, unknown>;
+  toolResult?: string;
+  streaming?: boolean;
+}
+
+let nextId = 0;
+function uid() { return ++nextId; }
+
+function ToolCall({ name, args, result }: { name: string; args: Record<string, unknown>; result?: string }) {
+  const [expanded, setExpanded] = useState(false);
+
+  const icon = name === "run_command"
+    ? <Terminal className="h-3.5 w-3.5 text-amber-400" />
+    : name === "search"
+      ? <Search className="h-3.5 w-3.5 text-blue-400" />
+      : <FileEdit className="h-3.5 w-3.5 text-emerald-400" />;
+
+  const label = name === "read_file" && args.path ? `Read ${args.path}`
+    : name === "list_files" && args.path ? `List ${args.path}`
+    : name === "search" && args.pattern ? `Search "${args.pattern}"`
+    : name === "write_file" && args.path ? `Write ${args.path}`
+    : name === "run_command" && args.command ? `${args.command}`
+    : name;
+
+  return (
+    <div className="my-1 rounded-lg border border-border bg-background">
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs"
+      >
+        {icon}
+        <span className="font-medium text-muted-foreground">{label}</span>
+        {result !== undefined && (
+          expanded
+            ? <ChevronDown className="ml-auto h-3 w-3 text-muted-foreground" />
+            : <ChevronRight className="ml-auto h-3 w-3 text-muted-foreground" />
+        )}
+      </button>
+      {expanded && result && (
+        <pre className="max-h-60 overflow-auto border-t border-border px-3 py-2 font-mono text-[11px] leading-relaxed text-muted-foreground">
+          {result}
+        </pre>
+      )}
+    </div>
+  );
+}
+
+function CopyButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      onClick={() => {
+        navigator.clipboard.writeText(text);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1500);
+      }}
+      className="ml-2 rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+      title="Copy"
+    >
+      <Copy className="h-3 w-3" />
+      {copied && <span className="ml-1 text-[10px] text-accent">copied</span>}
+    </button>
+  );
 }
 
 export function AgentChatPage() {
   const { baseUrl: ollamaUrl } = useOllama();
-  const [agentUrl, setAgentUrl] = useState(() => {
+  const [agentUrl] = useState(() => {
     try {
       return localStorage.getItem("daygle.agentUrl") ?? "http://localhost:8787";
     } catch {
@@ -28,13 +92,14 @@ export function AgentChatPage() {
   const [repoUrl, setRepoUrl] = useState("");
   const [model, setModel] = useState("qwen2.5-coder:7b");
   const [sessionId, setSessionId] = useState<string | null>(null);
-  const [messages, setMessages] = useState<DisplayMessage[]>([]);
+  const [messages, setMessages] = useState<ChatBubble[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [streaming, setStreaming] = useState(false);
   const [connected, setConnected] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<() => void>();
+  const toolResultsRef = useRef<Map<string, string>>(new Map());
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -48,11 +113,10 @@ export function AgentChatPage() {
       setSessionId(session.id);
       setConnected(true);
       setMessages([
-        { role: "status", content: `Connected to ${repoUrl}` },
-        { role: "assistant", content: "Repo cloned and ready. What would you like to do?" },
+        { id: uid(), role: "assistant", content: `Connected to **${repoUrl}**. I've cloned the repo and I'm ready to help. What would you like me to do?` },
       ]);
     } catch (err) {
-      setMessages([{ role: "status", content: `Error: ${err instanceof Error ? err.message : String(err)}` }]);
+      setMessages([{ id: uid(), role: "assistant", content: `Failed to connect: ${err instanceof Error ? err.message : String(err)}` }]);
     } finally {
       setLoading(false);
     }
@@ -63,54 +127,67 @@ export function AgentChatPage() {
 
     const userMsg = input.trim();
     setInput("");
-    setMessages((prev) => [...prev, { role: "user", content: userMsg }]);
+    setMessages((prev) => [...prev, { id: uid(), role: "user", content: userMsg }]);
     setStreaming(true);
+    toolResultsRef.current.clear();
 
+    let assistantId = uid();
     let assistantContent = "";
+    const pendingTools = new Map<string, { name: string; args: Record<string, unknown>; result?: string }>();
 
     const cancel = sendChatMessage(agentUrl, sessionId, userMsg, (event: ChatEvent) => {
       switch (event.type) {
-        case "status":
-          setMessages((prev) => [...prev, { role: "status", content: event.message }]);
-          break;
         case "model_delta":
           assistantContent += event.content;
           setMessages((prev) => {
             const last = prev[prev.length - 1];
-            if (last?.role === "assistant") {
-              return [...prev.slice(0, -1), { ...last, content: assistantContent }];
+            if (last?.id === assistantId && last.role === "assistant") {
+              return [...prev.slice(0, -1), { ...last, content: assistantContent, streaming: true }];
             }
-            return [...prev, { role: "assistant", content: assistantContent }];
+            return [...prev, { id: assistantId, role: "assistant", content: assistantContent, streaming: true }];
           });
           break;
+
         case "model_done":
+          setMessages((prev) => {
+            const last = prev[prev.length - 1];
+            if (last?.id === assistantId && last.role === "assistant") {
+              return [...prev.slice(0, -1), { ...last, content: assistantContent, streaming: false }];
+            }
+            if (assistantContent) {
+              return [...prev, { id: assistantId, role: "assistant", content: assistantContent, streaming: false }];
+            }
+            return prev;
+          });
           setStreaming(false);
           break;
+
         case "tool_start": {
-          const args = event.args;
-          let desc = event.name;
-          if (event.name === "read_file" && args.path) desc = `read_file(${args.path})`;
-          else if (event.name === "list_files" && args.path) desc = `list_files(${args.path})`;
-          else if (event.name === "search" && args.pattern) desc = `search(${args.pattern})`;
-          else if (event.name === "write_file" && args.path) desc = `write_file(${args.path})`;
-          else if (event.name === "run_command" && args.command) desc = `run_command(${args.command})`;
+          const toolId = `${assistantId}-tool-${event.name}-${Date.now()}`;
+          pendingTools.set(toolId, { name: event.name, args: event.args });
           setMessages((prev) => [
             ...prev,
-            { role: "tool", content: desc, toolName: event.name },
+            { id: toolId, role: "tool", content: "", toolName: event.name, toolArgs: event.args },
           ]);
           break;
         }
+
         case "tool_result":
           setMessages((prev) => {
-            const last = prev[prev.length - 1];
-            if (last?.role === "tool" && last.toolName === event.name) {
-              return [...prev.slice(0, -1), { ...last, content: `${last.content}\n${event.result.slice(0, 500)}` }];
+            // Find the last tool message without a result
+            for (let i = prev.length - 1; i >= 0; i--) {
+              if (prev[i].role === "tool" && prev[i].toolName === event.name && !prev[i].toolResult) {
+                const updated = [...prev];
+                updated[i] = { ...updated[i], toolResult: event.result };
+                return updated;
+              }
             }
-            return [...prev, { role: "tool", content: `${event.name}: ${event.result.slice(0, 500)}`, toolName: event.name }];
+            return prev;
           });
           break;
+
         case "error":
-          setMessages((prev) => [...prev, { role: "status", content: `Error: ${event.message}` }]);
+          setMessages((prev) => [...prev, { id: uid(), role: "assistant", content: `Error: ${event.message}` }]);
           setStreaming(false);
           break;
       }
@@ -122,9 +199,9 @@ export function AgentChatPage() {
   function handleStop() {
     abortRef.current?.();
     setStreaming(false);
-    setMessages((prev) => [...prev, { role: "status", content: "Stopped." }]);
   }
 
+  // --- Connect screen ---
   if (!connected) {
     return (
       <div className="flex h-full items-center justify-center">
@@ -134,7 +211,7 @@ export function AgentChatPage() {
             <h1 className="text-lg font-semibold">Agent Chat</h1>
           </div>
           <p className="text-sm text-muted-foreground">
-            Connect to a repository for an interactive coding session with the AI agent.
+            Connect to a repository for an interactive coding session with the AI.
           </p>
           <div className="space-y-3">
             <Input
@@ -164,6 +241,7 @@ export function AgentChatPage() {
     );
   }
 
+  // --- Chat screen ---
   return (
     <div className="flex h-full flex-col">
       <header className="flex items-center gap-2 border-b border-border px-4 py-3">
@@ -173,40 +251,45 @@ export function AgentChatPage() {
         <span className="max-w-md truncate text-xs text-muted-foreground">{repoUrl}</span>
       </header>
 
-      <div className="flex-1 overflow-y-auto px-4 py-4">
-        <div className="space-y-4">
-          {messages.map((msg, i) => (
-            <div key={i} className="flex gap-3">
+      <div className="flex-1 overflow-y-auto px-4 py-6">
+        <div className="mx-auto max-w-3xl space-y-6">
+          {messages.map((msg) => (
+            <div key={msg.id}>
               {msg.role === "user" && (
-                <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-accent/20 text-accent">
-                  <User className="h-3.5 w-3.5" />
+                <div className="flex gap-3">
+                  <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-accent/20 text-accent">
+                    <User className="h-3.5 w-3.5" />
+                  </div>
+                  <div className="min-w-0 flex-1 pt-0.5">
+                    <p className="whitespace-pre-wrap text-sm">{msg.content}</p>
+                  </div>
                 </div>
               )}
+
               {msg.role === "assistant" && (
-                <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-accent/20 text-accent">
-                  <Bot className="h-3.5 w-3.5" />
+                <div className="flex gap-3">
+                  <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-accent/20 text-accent">
+                    <Bot className="h-3.5 w-3.5" />
+                  </div>
+                  <div className="min-w-0 flex-1 pt-0.5">
+                    <p className="whitespace-pre-wrap text-sm">{msg.content}</p>
+                    {msg.content && <CopyButton text={msg.content} />}
+                    {msg.streaming && (
+                      <span className="ml-1 inline-block h-4 w-1.5 animate-pulse bg-accent" />
+                    )}
+                  </div>
                 </div>
               )}
-              {msg.role === "tool" && (
-                <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-amber-500/20 text-amber-400">
-                  <Terminal className="h-3.5 w-3.5" />
+
+              {msg.role === "tool" && msg.toolName && (
+                <div className="ml-10">
+                  <ToolCall
+                    name={msg.toolName}
+                    args={msg.toolArgs ?? {}}
+                    result={msg.toolResult}
+                  />
                 </div>
               )}
-              {msg.role === "status" && (
-                <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground">
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                </div>
-              )}
-              <div className="min-w-0 flex-1">
-                {msg.role === "tool" && msg.toolName && (
-                  <span className="mb-1 inline-block rounded bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-400">
-                    {msg.toolName}
-                  </span>
-                )}
-                <p className={`whitespace-pre-wrap text-sm ${msg.role === "status" ? "text-muted-foreground" : ""}`}>
-                  {msg.content}
-                </p>
-              </div>
             </div>
           ))}
           <div ref={messagesEndRef} />
@@ -214,12 +297,12 @@ export function AgentChatPage() {
       </div>
 
       <div className="border-t border-border px-4 py-3">
-        <div className="flex gap-2">
+        <div className="mx-auto max-w-3xl flex gap-2">
           <Input
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && handleSend()}
-            placeholder={streaming ? "Agent is working…" : "Ask about the code, request changes…"}
+            placeholder={streaming ? "Thinking…" : "Ask about the code, request changes…"}
             disabled={streaming}
             className="flex-1"
           />
