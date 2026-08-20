@@ -13,6 +13,7 @@ import {
   openAgentEvents,
   resolveApproval,
   sendChatMessage,
+  updateChatModel,
   startAgentJob,
   type AgentEvent,
   type ChatEvent,
@@ -454,7 +455,7 @@ export function AgentPage() {
   const [autoSendQueued, setAutoSendQueued] = useState(false);
   const [taskOpen, setTaskOpen] = useState(false);
   const [confirmDeleteChat, setConfirmDeleteChat] = useState<string | null>(null);
-  const [chatSwitcherOpen, setChatSwitcherOpen] = useState(false);
+  const [chatsSidebarOpen, setChatsSidebarOpen] = useState(true);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -574,7 +575,6 @@ export function AgentPage() {
   }
 
   async function resumeChat(id: string, opts?: { silent?: boolean }) {
-    setChatSwitcherOpen(false);
     setQueuedMessages([]);
     setAutoSendQueued(false);
     removeImageAttachment();
@@ -601,14 +601,28 @@ export function AgentPage() {
   }
 
   function switchChat(id: string) {
-    if (id === sessionId) {
-      setChatSwitcherOpen(false);
-      return;
-    }
+    if (id === sessionId) return;
     abortRef.current?.();
     setStreaming(false);
     setStatusText("");
     void resumeChat(id);
+  }
+
+  async function handleModelChange(next: string) {
+    if (!next || next === model) return;
+    setModel(next);
+    if (!sessionId) return; // connect screen handles its own picker
+    try {
+      await updateChatModel(agentUrl, sessionId, next);
+      setHistory((prev) =>
+        prev.map((chat) => (chat.id === sessionId ? { ...chat, model: next } : chat)),
+      );
+    } catch (err) {
+      setMessages((prev) => [
+        ...prev,
+        { id: uid(), role: "assistant", content: `Failed to update model: ${err instanceof Error ? err.message : String(err)}` },
+      ]);
+    }
   }
 
   function startNewChat() {
@@ -620,10 +634,9 @@ export function AgentPage() {
     setInput("");
     removeImageAttachment();
     setQueuedMessages([]);
-    setWorkspace({ files: [], stat: "", diff: "" });
+    setWorkspace({ files: [], changedFiles: [], stat: "", diff: "" });
     setNotes("");
     setStreaming(false);
-    setChatSwitcherOpen(false);
     rememberSession(null);
     refreshHistory();
   }
@@ -1114,52 +1127,107 @@ export function AgentPage() {
 
   // --- Chat screen ---
   return (
-    <div className="flex h-[calc(100dvh-4rem)] min-w-0 overflow-hidden md:h-[100dvh]">
+    <div className="flex h-[100dvh] min-w-0 overflow-hidden">
+      {/* Left: chat list sidebar */}
+      {chatsSidebarOpen && (
+        <aside className="flex w-64 shrink-0 flex-col border-r border-border bg-card/40">
+          <div className="flex items-center justify-between gap-2 border-b border-border px-3 py-3">
+            <span className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+              <MessageSquarePlus className="h-3.5 w-3.5" />
+              Chats
+            </span>
+            <div className="flex items-center gap-0.5">
+              <button
+                onClick={startNewChat}
+                className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+                title="New chat"
+              >
+                <MessageSquarePlus className="h-3.5 w-3.5" />
+              </button>
+              <button
+                onClick={() => setChatsSidebarOpen(false)}
+                className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+                title="Hide chat list"
+              >
+                <PanelRightClose className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          </div>
+          <div className="scrollbar-thin min-h-0 flex-1 overflow-y-auto p-2">
+            {chatItems.length === 0 ? (
+              <p className="px-2 py-6 text-center text-xs text-muted-foreground">No chats yet. Start one to begin.</p>
+            ) : (
+              chatItems.map((chat) => {
+                const isActive = chat.id === sessionId;
+                return (
+                  <div
+                    key={chat.id}
+                    className={`group mb-1 flex items-center gap-2 rounded-md border px-2 py-2 transition-colors ${isActive ? "border-accent/50 bg-accent/10" : "border-transparent hover:bg-muted/60"}`}
+                  >
+                    <button
+                      onClick={() => switchChat(chat.id)}
+                      className="flex min-w-0 flex-1 items-start gap-2 text-left"
+                    >
+                      {chat.repoUrl
+                        ? (<GitBranch className={`mt-0.5 h-3.5 w-3.5 shrink-0 ${isActive ? "text-accent" : "text-muted-foreground"}`} />)
+                        : (<MessageSquarePlus className={`mt-0.5 h-3.5 w-3.5 shrink-0 ${isActive ? "text-accent" : "text-muted-foreground"}`} />)}
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-xs font-medium text-foreground">{chat.title}</span>
+                        <span className="block truncate text-[10px] text-muted-foreground">
+                          {(chat.repoUrl || "Chat")}{chat.model ? ` · ${chat.model}` : ""} · {relativeTime(chat.lastActivity)}
+                        </span>
+                      </span>
+                      {isActive && <span className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full bg-accent" />}
+                    </button>
+                    {confirmDeleteChat === chat.id ? (
+                      <div className="flex shrink-0 items-center gap-0.5">
+                        <button
+                          onClick={() => { removeChat(chat.id); setConfirmDeleteChat(null); }}
+                          className="rounded p-1 text-destructive hover:bg-destructive/10"
+                          title="Confirm delete"
+                        >
+                          <Check className="h-3 w-3" />
+                        </button>
+                        <button
+                          onClick={() => setConfirmDeleteChat(null)}
+                          className="rounded p-1 text-muted-foreground hover:bg-muted"
+                          title="Cancel"
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        onClick={() => setConfirmDeleteChat(chat.id)}
+                        className="shrink-0 rounded p-1 text-muted-foreground opacity-0 transition hover:bg-muted hover:text-destructive group-hover:opacity-100"
+                        title="Delete chat"
+                      >
+                        <Trash2 className="h-3 w-3" />
+                      </button>
+                    )}
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </aside>
+      )}
+      {!chatsSidebarOpen && (
+        <button
+          onClick={() => setChatsSidebarOpen(true)}
+          className="flex w-9 shrink-0 items-center justify-center border-r border-border bg-card text-muted-foreground hover:bg-muted hover:text-foreground"
+          title="Show chat list"
+        >
+          <PanelRightOpen className="h-4 w-4 rotate-180" />
+        </button>
+      )}
       <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
         <header className="flex items-center gap-2 border-b border-border px-4 py-3">
         <Bot className="h-4 w-4 text-accent" />
         <span className="text-sm font-medium">Agent</span>
-        <div className="relative">
-          <button
-            onClick={() => setChatSwitcherOpen((open) => !open)}
-            className="flex max-w-xs items-center gap-1 rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
-            title="Switch active chat"
-          >
-            <MessageSquarePlus className="h-3.5 w-3.5 text-accent" />
-            <span className="max-w-[180px] truncate">{activeChatTitle}</span>
-            <ChevronDown className={`h-3 w-3 transition-transform ${chatSwitcherOpen ? "rotate-180" : ""}`} />
-          </button>
-          {chatSwitcherOpen && (
-            <div className="absolute left-0 top-full z-50 mt-2 w-80 max-w-[calc(100vw-2rem)] overflow-hidden rounded-lg border border-border bg-card shadow-xl">
-              <div className="flex items-center justify-between border-b border-border px-3 py-2">
-                <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Active chats</span>
-                <button onClick={() => { startNewChat(); }} className="flex items-center gap-1 text-[11px] text-accent hover:underline">
-                  <MessageSquarePlus className="h-3 w-3" /> New chat
-                </button>
-              </div>
-              <div className="scrollbar-thin max-h-80 overflow-y-auto p-1.5">
-                {chatItems.length === 0 ? (
-                  <p className="px-2 py-4 text-center text-xs text-muted-foreground">No saved chats yet.</p>
-                ) : (
-                  chatItems.slice(0, 20).map((chat) => (
-                    <button
-                      key={chat.id}
-                      onClick={() => switchChat(chat.id)}
-                      className={`flex w-full items-start gap-2 rounded-md px-2.5 py-2 text-left hover:bg-muted ${chat.id === sessionId ? "bg-muted" : ""}`}
-                    >
-                      <MessageSquarePlus className={`mt-0.5 h-3.5 w-3.5 shrink-0 ${chat.id === sessionId ? "text-accent" : "text-muted-foreground"}`} />
-                      <span className="min-w-0 flex-1">
-                        <span className="block truncate text-xs text-foreground">{chat.title}</span>
-                        <span className="block truncate text-[10px] text-muted-foreground">{chat.repoUrl || "Chat"} · {relativeTime(chat.lastActivity)}</span>
-                      </span>
-                      {chat.id === sessionId && <span className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full bg-accent" />}
-                    </button>
-                  ))
-                )}
-              </div>
-            </div>
-          )}
-        </div>
+        <span className="max-w-xs truncate text-xs text-muted-foreground">
+          {activeChatTitle}
+        </span>
         {sessionRepo ? (
           <>
             <GitBranch className="ml-1 h-3 w-3 text-muted-foreground" />
@@ -1182,9 +1250,6 @@ export function AgentPage() {
               <Rocket className="mr-1 h-3.5 w-3.5" /> Run task → PR
             </Button>
           )}
-          <Button variant="outline" size="sm" onClick={startNewChat} disabled={streaming}>
-            <MessageSquarePlus className="mr-1 h-3.5 w-3.5" /> New chat
-          </Button>
           <button
             onClick={() => setWorkspaceOpen((open) => !open)}
             className="rounded p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground"
@@ -1365,6 +1430,26 @@ export function AgentPage() {
                   <Square className="h-4 w-4" />
                 </Button>
               )}
+            </div>
+            <div className="flex items-center gap-2 rounded-md border border-border bg-card px-2.5 py-1.5">
+              <label htmlFor="chat-model-select" className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                Model
+              </label>
+              <select
+                id="chat-model-select"
+                value={model}
+                onChange={(e) => void handleModelChange(e.target.value)}
+                disabled={streaming || models.length === 0}
+                className="flex-1 rounded-md border border-input bg-background px-2 py-1 text-xs disabled:opacity-60"
+              >
+                {models.length === 0 && <option value="">No models detected</option>}
+                {models.map((m) => (
+                  <option key={m} value={m}>{m}</option>
+                ))}
+              </select>
+              <span className="text-[10px] text-muted-foreground">
+                Per-chat. Default in Settings.
+              </span>
             </div>
           </div>
         </div>

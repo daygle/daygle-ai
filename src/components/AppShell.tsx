@@ -71,7 +71,7 @@ export function AppShell() {
       </header>
 
       <main className="md:pl-60">
-        <div className={isAgentRoute ? "p-0" : "mx-auto max-w-6xl p-4 md:p-8"}>
+        <div className={isAgentRoute ? "h-[100dvh]" : "mx-auto max-w-6xl p-4 md:p-8"}>
           <Outlet />
         </div>
       </main>
