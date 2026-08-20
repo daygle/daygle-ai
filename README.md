@@ -16,7 +16,31 @@ It includes a self-hosted coding agent: point it at a GitHub repo, describe a ta
 
 ## Installation
 
-### Prerequisites
+### One-line install (Debian 13)
+
+On a fresh Debian 13 (trixie) machine, install everything — system packages,
+Bun, the bundled Ollama, the app (cloned + built), and systemd services — with:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/daygle/daygle-ai/main/scripts/install-debian.sh | sudo bash
+```
+
+It installs to `/opt/daygle-ai`, starts `daygle-ui` (`:5173`), `daygle-agent`
+(`:8787`), and `daygle-ollama` (`:11434`) as systemd services, and pulls
+`qwen2.5-coder:7b`. Re-run it any time to update. Override defaults with env vars:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/daygle/daygle-ai/main/scripts/install-debian.sh \
+  | sudo DAYGLE_MODEL=llama3.2 DAYGLE_REF=main bash
+```
+
+Available variables: `DAYGLE_DIR`, `DAYGLE_REPO`, `DAYGLE_REF`, `DAYGLE_MODEL`
+(set to `""` to skip pulling), `DAYGLE_SERVICES` (`0` to skip systemd). Open the
+UI from the machine itself (`http://localhost:5173`) or by the server's IP — the
+browser talks to Ollama and the agent directly, so it can't reach `localhost` on
+a *different* computer.
+
+### Prerequisites (manual install)
 
 | Tool  | Why                                           | Install                                                      |
 | ----- | --------------------------------------------- | ------------------------------------------------------------ |

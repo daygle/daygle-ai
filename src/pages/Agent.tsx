@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { Bot, Check, ChevronDown, ChevronRight, Copy, ExternalLink, FileEdit, GitBranch, MessageSquarePlus, Rocket, Search, Send, Square, Terminal, Trash2, User, X } from "lucide-react";
+import { Bot, Check, ChevronDown, ChevronRight, Copy, ExternalLink, FileEdit, GitBranch, Loader2, MessageSquarePlus, Rocket, Search, Send, Square, Terminal, Trash2, User, X } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
@@ -24,6 +24,18 @@ import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Textarea } from "../components/ui/textarea";
 import { Modal } from "../components/ui/modal";
+
+/** Human-readable "working" label for the running-indicator, per tool. */
+function toolStatus(name: string): string {
+  switch (name) {
+    case "search": return "Searching the code…";
+    case "read_file": return "Reading files…";
+    case "list_files": return "Exploring the repo…";
+    case "write_file": return "Writing changes…";
+    case "run_command": return "Running a command…";
+    default: return "Working…";
+  }
+}
 
 interface ChatBubble {
   id: number | string;
@@ -236,6 +248,7 @@ export function AgentPage() {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [streaming, setStreaming] = useState(false);
+  const [statusText, setStatusText] = useState("");
   const [connected, setConnected] = useState(false);
   const [history, setHistory] = useState<ChatSummary[]>([]);
   const [taskOpen, setTaskOpen] = useState(false);
@@ -378,6 +391,7 @@ export function AgentPage() {
     setInput("");
     setMessages((prev) => [...prev, { id: uid(), role: "user", content: userMsg }]);
     setStreaming(true);
+    setStatusText("Thinking…");
     toolResultsRef.current.clear();
 
     let assistantId = uid();
@@ -386,6 +400,10 @@ export function AgentPage() {
 
     const cancel = sendChatMessage(agentUrl, sessionId, userMsg, (event: ChatEvent) => {
       switch (event.type) {
+        case "status":
+          setStatusText(event.message);
+          break;
+
         case "model_delta": {
           assistantContent += event.content;
           const cleaned = stripToolJson(assistantContent);
@@ -420,6 +438,7 @@ export function AgentPage() {
             return prev;
           });
           setStreaming(false);
+          setStatusText("");
           break;
         }
 
@@ -434,6 +453,7 @@ export function AgentPage() {
               .filter((m) => !(m.role === "assistant" && !m.content));
             return [...finalized, { id: toolId, role: "tool", content: "", toolName: event.name, toolArgs: event.args }];
           });
+          setStatusText(toolStatus(event.name));
           // Subsequent model text belongs to a fresh turn (a new bubble after the tool).
           assistantId = uid();
           assistantContent = "";
@@ -452,6 +472,7 @@ export function AgentPage() {
             }
             return prev;
           });
+          setStatusText("Thinking…");
           break;
 
         case "approval_requested":
@@ -474,6 +495,7 @@ export function AgentPage() {
         case "error":
           setMessages((prev) => [...prev, { id: uid(), role: "assistant", content: `Error: ${event.message}` }]);
           setStreaming(false);
+          setStatusText("");
           break;
       }
     });
@@ -484,6 +506,7 @@ export function AgentPage() {
   function handleStop() {
     abortRef.current?.();
     setStreaming(false);
+    setStatusText("");
     // Clear the blinking cursor on whatever bubble was mid-stream.
     setMessages((prev) => prev.map((m) => (m.streaming ? { ...m, streaming: false } : m)));
   }
@@ -584,6 +607,12 @@ export function AgentPage() {
         ) : (
           <span className="text-xs text-muted-foreground">Chat</span>
         )}
+        {streaming && (
+          <span className="ml-2 flex items-center gap-1.5 rounded-full bg-accent/10 px-2 py-0.5 text-[11px] font-medium text-accent">
+            <Loader2 className="h-3 w-3 animate-spin" />
+            {statusText || "Working…"}
+          </span>
+        )}
         <div className="ml-auto flex items-center gap-2">
           {sessionRepo && (
             <Button variant="outline" size="sm" onClick={() => setTaskOpen(true)} disabled={streaming}>
@@ -666,6 +695,26 @@ export function AgentPage() {
               )}
             </div>
           ))}
+
+          {(() => {
+            // Show a "working" indicator while streaming, except when an assistant
+            // bubble is actively typing (its blinking cursor already signals activity).
+            const last = messages[messages.length - 1];
+            const typing = last?.role === "assistant" && last.streaming && !!last.content;
+            if (!streaming || typing) return null;
+            return (
+              <div className="flex gap-3">
+                <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-accent/20 text-accent">
+                  <Bot className="h-3.5 w-3.5" />
+                </div>
+                <div className="flex items-center gap-2 pt-1 text-sm text-muted-foreground">
+                  <Loader2 className="h-3.5 w-3.5 animate-spin text-accent" />
+                  <span className="animate-pulse">{statusText || "Thinking…"}</span>
+                </div>
+              </div>
+            );
+          })()}
+
           <div ref={messagesEndRef} />
         </div>
       </div>

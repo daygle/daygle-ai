@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { CheckCircle2, CircleAlert, Key, PlugZap, Server, TerminalSquare } from "lucide-react";
+import { CheckCircle2, CircleAlert, Key, PlugZap, Server } from "lucide-react";
 import { useOllama } from "../context/OllamaProvider";
 import { describeError, getVersion } from "../lib/ollama";
 import { getGithubToken, saveGithubToken } from "../lib/agent";
@@ -115,7 +115,7 @@ export function SettingsPage() {
           <div className="mt-4 flex items-center gap-2 rounded-lg border border-border bg-background p-3 text-xs">
             <span
               className={
-                checking
+                checking || connected === null
                   ? "h-2 w-2 rounded-full bg-amber-400"
                   : connected
                     ? "h-2 w-2 rounded-full bg-accent"
@@ -123,7 +123,7 @@ export function SettingsPage() {
               }
             />
             <span className="text-muted-foreground">
-              {checking
+              {checking || connected === null
                 ? "Checking connection…"
                 : connected
                   ? `Connected to ${baseUrl}${version && version !== "unknown" ? ` (v${version})` : ""}`
@@ -137,46 +137,14 @@ export function SettingsPage() {
 
       <section className="space-y-4">
         <div className="flex items-center gap-2">
-          <TerminalSquare className="h-4 w-4 text-accent" />
-          <h2 className="text-sm font-semibold">Getting your server ready</h2>
-        </div>
-
-        <div className="space-y-3">
-          <SetupBlock
-            title="1 · Start the bundled server"
-            description="Runs the project-local Ollama on 0.0.0.0:11434, stores models in .ollama/models, and allows the browser origin automatically:"
-            code="bun run ollama"
-          />
-          <SetupBlock
-            title="2 · Install Ollama (first time)"
-            description="Downloads the official Ollama binary into .ollama/ — no system install. On Linux you'll need zstd (sudo apt-get install zstd):"
-            code="bun run ollama:install"
-          />
-          <SetupBlock
-            title="3 · Pull a model"
-            description="Grab a model from the CLI, or just use the Models page in daygle:"
-            code=".ollama/bin/ollama pull llama3.2"
-          />
-        </div>
-
-        <div className="rounded-lg border border-amber-400/30 bg-amber-400/10 p-4 text-xs leading-relaxed text-amber-200/90">
-          <strong className="font-semibold text-amber-200">Heads up:</strong> daygle talks to Ollama directly from your
-          browser, so run both on the same machine. If you use daygle from a hosted sandbox or another device, it can't
-          reach <code className="font-mono">localhost</code> on your computer — run <code className="font-mono">bun run dev</code>{" "}
-          locally, or expose your server with a tunnel (e.g. Tailscale or ngrok).
-        </div>
-      </section>
-
-      <section className="space-y-4">
-        <div className="flex items-center gap-2">
           <Key className="h-4 w-4 text-accent" />
           <h2 className="text-sm font-semibold">GitHub Token</h2>
         </div>
 
         <div className="rounded-xl border border-border bg-card p-5">
           <p className="text-xs text-muted-foreground">
-            A personal access token lets the agent clone private repos and open pull requests. Create one at
-            <a href="https://github.com/settings/tokens" target="_blank" rel="noreferrer" className="text-accent underline">github.com/settings/tokens</a>
+            A personal access token lets the agent clone private repos and open pull requests. Create one at{" "}
+            <a href="https://github.com/settings/tokens" target="_blank" rel="noreferrer" className="text-accent underline">github.com/settings/tokens</a>{" "}
             with <strong>repo</strong> scope.
           </p>
           <div className="mt-3 flex flex-col gap-2 sm:flex-row">
@@ -199,18 +167,6 @@ export function SettingsPage() {
           )}
         </div>
       </section>
-    </div>
-  );
-}
-
-function SetupBlock({ title, description, code }: { title: string; description: string; code: string }) {
-  return (
-    <div className="rounded-xl border border-border bg-card p-4">
-      <h3 className="text-sm font-medium">{title}</h3>
-      <p className="mt-1 text-xs text-muted-foreground">{description}</p>
-      <pre className="mt-3 overflow-x-auto rounded-md border border-border bg-background p-3 font-mono text-xs text-accent">
-        {code}
-      </pre>
     </div>
   );
 }

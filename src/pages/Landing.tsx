@@ -38,10 +38,10 @@ const FEATURES = [
 ];
 
 const STEPS = [
-  { n: "01", title: "Run Ollama", body: "Install Ollama and start the server with `ollama serve`." },
+  { n: "01", title: "Run Ollama", body: "Start your Ollama server (daygle bundles one, or use your own)." },
   { n: "02", title: "Point daygle at it", body: "Enter your server URL in Settings — http://localhost:11434 by default." },
   { n: "03", title: "Pull a model", body: "Grab qwen2.5-coder, llama3.2, deepseek-r1 or any model you like." },
-  { n: "04", title: "Chat & build", body: "Test models in the playground and iterate toward your own agent." },
+  { n: "04", title: "Chat & build", body: "Open the Agent page to chat, work in a repo, or run a task end-to-end." },
 ];
 
 const FAMILIES = ["llama", "qwen", "deepseek", "mistral", "gemma", "phi", "codellama"];
@@ -121,7 +121,7 @@ export function Landing() {
             </Link>
             <Link to="/settings">
               <Button size="lg" variant="outline">
-                Read the setup guide
+                Configure your server
               </Button>
             </Link>
           </motion.div>
