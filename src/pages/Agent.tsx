@@ -1196,7 +1196,7 @@ export function AgentPage() {
 
   // --- Chat screen ---
   return (
-    <div className="flex h-[100dvh] min-w-0 overflow-hidden">
+    <div className="flex h-full min-w-0 overflow-hidden">
       {/* Left: chat list sidebar */}
       {chatsSidebarOpen && (
         <aside className="flex w-64 shrink-0 flex-col border-r border-border bg-card/40">
