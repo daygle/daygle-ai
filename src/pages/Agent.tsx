@@ -327,6 +327,7 @@ interface QueuedMessage {
 function WorkspacePanel({
   tab,
   onTabChange,
+  hasRepo,
   queue,
   onRemoveQueueItem,
   onClearQueue,
@@ -340,6 +341,7 @@ function WorkspacePanel({
 }: {
   tab: WorkspaceTab;
   onTabChange: (tab: WorkspaceTab) => void;
+  hasRepo: boolean;
   queue: QueuedMessage[];
   onRemoveQueueItem: (index: number) => void;
   onClearQueue: () => void;
@@ -351,7 +353,10 @@ function WorkspacePanel({
   onRefresh: () => void;
   refreshing: boolean;
 }) {
-  const tabs: Array<{ id: WorkspaceTab; label: string; icon: typeof ListTodo; count?: number }> = [
+  // Files / Changes / Preview / Terminal only make sense with a checkout; a
+  // repo-less chat gets just Queue and Notes.
+  const repoOnly = new Set<WorkspaceTab>(["files", "changes", "preview", "terminal"]);
+  const allTabs: Array<{ id: WorkspaceTab; label: string; icon: typeof ListTodo; count?: number }> = [
     { id: "queue", label: "Queue", icon: ListTodo, count: queue.length },
     { id: "files", label: "Files", icon: Files, count: workspace.files.length || undefined },
     { id: "changes", label: "Changes", icon: GitCompare, count: workspace.changedFiles.length || undefined },
@@ -359,19 +364,26 @@ function WorkspacePanel({
     { id: "terminal", label: "Terminal", icon: Terminal },
     { id: "notes", label: "Notes", icon: StickyNote },
   ];
+  const tabs = hasRepo ? allTabs : allTabs.filter((item) => !repoOnly.has(item.id));
+  // Fall back to Queue if the selected tab isn't available (e.g. repo tabs on a
+  // plain chat) so the body never renders a hidden tab's content.
+  const activeTab: WorkspaceTab = tabs.some((item) => item.id === tab) ? tab : "queue";
   const terminalEntries = messages.filter((message) => message.role === "tool" && message.toolName === "run_command");
+  const showRefresh = activeTab === "files" || activeTab === "changes";
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
 
   return (
     <aside className="flex h-full w-[360px] max-w-[42vw] shrink-0 flex-col border-l border-border bg-card">
-      <div className="scrollbar-thin flex overflow-x-auto border-b border-border px-1">
+      <div role="tablist" className="scrollbar-thin flex overflow-x-auto border-b border-border px-1">
         {tabs.map(({ id, label, icon: Icon, count }) => (
           <button
             key={id}
+            role="tab"
+            aria-selected={activeTab === id}
             onClick={() => onTabChange(id)}
             className={`flex shrink-0 items-center gap-1.5 border-b-2 px-2.5 py-3 text-[11px] transition-colors ${
-              tab === id ? "border-accent bg-muted text-foreground" : "border-transparent text-muted-foreground hover:bg-muted/60 hover:text-foreground"
+              activeTab === id ? "border-accent bg-muted text-foreground" : "border-transparent text-muted-foreground hover:bg-muted/60 hover:text-foreground"
             }`}
           >
             <Icon className="h-3.5 w-3.5" />
@@ -382,14 +394,16 @@ function WorkspacePanel({
       </div>
 
       <div className="flex items-center justify-between border-b border-border px-3 py-2">
-        <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{tabs.find((item) => item.id === tab)?.label}</span>
-        <button onClick={onRefresh} className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground" title="Refresh workspace">
-          <RefreshCw className={`h-3.5 w-3.5 ${refreshing ? "animate-spin" : ""}`} />
-        </button>
+        <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{tabs.find((item) => item.id === activeTab)?.label}</span>
+        {showRefresh && (
+          <button onClick={onRefresh} className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground" title="Refresh from the workspace">
+            <RefreshCw className={`h-3.5 w-3.5 ${refreshing ? "animate-spin" : ""}`} />
+          </button>
+        )}
       </div>
 
       <div className="scrollbar-thin min-h-0 flex-1 overflow-y-auto p-3">
-        {tab === "queue" && (
+        {activeTab === "queue" && (
           queue.length === 0 ? (
             <div className="flex h-full min-h-40 flex-col items-center justify-center text-center text-xs text-muted-foreground">
               <ListTodo className="mb-2 h-7 w-7 opacity-40" />
@@ -484,9 +498,11 @@ function WorkspacePanel({
           )
         )}
 
-        {tab === "files" && (
+        {activeTab === "files" && (
           workspace.files.length === 0 ? (
-            <div className="py-8 text-center text-xs text-muted-foreground">Connect a repository to browse files.</div>
+            <div className="py-8 text-center text-xs text-muted-foreground">
+              {hasRepo ? "No files to show yet — try refreshing." : "Connect a repository to browse files."}
+            </div>
           ) : (
             <div className="space-y-0.5">
               {workspace.files.slice(0, 600).map((file) => (
@@ -500,7 +516,7 @@ function WorkspacePanel({
           )
         )}
 
-        {tab === "changes" && (
+        {activeTab === "changes" && (
           workspace.diff ? (
             <div>
               <p className="mb-2 text-[11px] text-muted-foreground">{workspace.stat || "Working directory changes"}</p>
@@ -509,7 +525,7 @@ function WorkspacePanel({
           ) : <div className="py-8 text-center text-xs text-muted-foreground">No working directory changes.</div>
         )}
 
-        {tab === "preview" && (
+        {activeTab === "preview" && (
           <div className="flex h-full min-h-48 flex-col items-center justify-center text-center text-xs text-muted-foreground">
             <Eye className="mb-2 h-7 w-7 opacity-40" />
             <p>Preview</p>
@@ -517,7 +533,7 @@ function WorkspacePanel({
           </div>
         )}
 
-        {tab === "terminal" && (
+        {activeTab === "terminal" && (
           terminalEntries.length === 0 ? (
             <div className="py-8 text-center text-xs text-muted-foreground">Command output will appear here.</div>
           ) : (
@@ -535,7 +551,7 @@ function WorkspacePanel({
           )
         )}
 
-        {tab === "notes" && (
+        {activeTab === "notes" && (
           <textarea
             value={notes}
             onChange={(event) => onNotesChange(event.target.value)}
@@ -607,11 +623,24 @@ export function AgentPage() {
   }, [agentUrl, sessionId]);
 
   useEffect(() => {
-    void refreshWorkspace();
     if (!sessionId) return;
+    void refreshWorkspace();
+    // Only poll when the panel is actually open and there's a repo to inspect —
+    // a repo-less chat has no workspace, and a closed panel shows nothing.
+    if (!workspaceOpen || !sessionRepo) return;
     const timer = window.setInterval(() => void refreshWorkspace(), 4000);
     return () => window.clearInterval(timer);
-  }, [refreshWorkspace, sessionId]);
+  }, [refreshWorkspace, sessionId, workspaceOpen, sessionRepo]);
+
+  // Default the workspace panel open for repo sessions (Files/Changes/Terminal
+  // are useful) and closed for plain chats (only Queue/Notes apply), once per
+  // session. Manual toggles and the queue auto-open still take over afterward.
+  const panelDefaultedRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!sessionId || panelDefaultedRef.current === sessionId) return;
+    panelDefaultedRef.current = sessionId;
+    setWorkspaceOpen(Boolean(sessionRepo));
+  }, [sessionId, sessionRepo]);
 
   // Only auto-scroll when the user is already near the bottom, so scrolling up
   // to read earlier output isn't yanked back down on every streamed token.
@@ -1684,6 +1713,7 @@ export function AgentPage() {
         <WorkspacePanel
           tab={workspaceTab}
           onTabChange={setWorkspaceTab}
+          hasRepo={Boolean(sessionRepo)}
           queue={queuedMessages}
           onRemoveQueueItem={(index) => setQueuedMessages((prev) => prev.filter((_, itemIndex) => itemIndex !== index))}
           onClearQueue={() => setQueuedMessages([])}
