@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { CancelledError, runAgentLoop, runReview, type AgentConfig, type AgentEvent } from "./agent";
 import { ChatSession, streamChat, type ChatEvent } from "./chat";
+import { ChatHistoryStore, deriveTitle } from "./chat-history";
 import {
   changedFiles,
   cloneRepo,
@@ -110,6 +111,49 @@ const chatSweeper = setInterval(() => {
 chatSweeper.unref?.();
 
 const historyStore = new HistoryStore(path.join(os.homedir(), ".daygle", "history"));
+const chatHistoryStore = new ChatHistoryStore(path.join(os.homedir(), ".daygle", "chat-history"));
+
+function persistChat(session: ChatSession): void {
+  chatHistoryStore.save({
+    id: session.id,
+    repoUrl: session.repoUrl,
+    model: session.model,
+    ollamaUrl: session.ollamaUrl,
+    title: deriveTitle(session.messages),
+    messages: session.messages,
+    createdAt: session.createdAt,
+    lastActivity: session.lastActivity,
+  });
+}
+
+/**
+ * Restore a persisted chat into memory when its in-memory session has expired.
+ * Re-clones the repo so the conversation can continue against a fresh checkout.
+ */
+async function rehydrateChat(id: string): Promise<ChatSession | null> {
+  const stored = chatHistoryStore.load(id);
+  if (!stored) return null;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "daygle-chat-"));
+  try {
+    const token = loadGithubToken() || undefined;
+    await cloneRepo(stored.repoUrl, dir, token);
+  } catch (err) {
+    fs.rmSync(dir, { recursive: true, force: true });
+    throw err;
+  }
+  const session: ChatSession = {
+    id: stored.id,
+    repoUrl: stored.repoUrl,
+    root: dir,
+    model: stored.model,
+    ollamaUrl: stored.ollamaUrl,
+    messages: stored.messages,
+    createdAt: stored.createdAt,
+    lastActivity: Date.now(),
+  };
+  chatSessions.set(id, session);
+  return session;
+}
 
 function toStored(job: Job): StoredJob {
   return {
@@ -507,6 +551,51 @@ const server = http.createServer((req, res) => {
     }
 
     // ---- Chat sessions (interactive agent chat) ----
+    if (req.method === "GET" && url.pathname === "/api/chat/sessions") {
+      sendJson(res, 200, { sessions: chatHistoryStore.list() });
+      return;
+    }
+
+    const chatIdMatch = url.pathname.match(/^\/api\/chat\/sessions\/([^/]+)$/);
+    if (chatIdMatch && req.method === "GET") {
+      const id = chatIdMatch[1];
+      const live = chatSessions.get(id);
+      const chat = live
+        ? {
+            id: live.id,
+            repoUrl: live.repoUrl,
+            model: live.model,
+            ollamaUrl: live.ollamaUrl,
+            title: deriveTitle(live.messages),
+            messages: live.messages,
+            createdAt: live.createdAt,
+            lastActivity: live.lastActivity,
+          }
+        : chatHistoryStore.load(id);
+      if (!chat) {
+        sendJson(res, 404, { error: "Chat not found." });
+        return;
+      }
+      sendJson(res, 200, { chat });
+      return;
+    }
+
+    if (chatIdMatch && req.method === "DELETE") {
+      const id = chatIdMatch[1];
+      const live = chatSessions.get(id);
+      if (live) {
+        chatSessions.delete(id);
+        try {
+          fs.rmSync(live.root, { recursive: true, force: true });
+        } catch {
+          // best effort
+        }
+      }
+      chatHistoryStore.delete(id);
+      sendJson(res, 200, { ok: true });
+      return;
+    }
+
     if (req.method === "POST" && url.pathname === "/api/chat/sessions") {
       let body: { repoUrl?: string; model?: string; ollamaUrl?: string };
       try {
@@ -547,10 +636,19 @@ const server = http.createServer((req, res) => {
     const chatMatch = url.pathname.match(/^\/api\/chat\/sessions\/([^/]+)(?:\/messages)?$/);
     if (chatMatch && req.method === "POST") {
       const sessionId = chatMatch[1];
-      const session = chatSessions.get(sessionId);
+      let session = chatSessions.get(sessionId);
       if (!session) {
-        sendJson(res, 404, { error: "Chat session not found." });
-        return;
+        // Session expired from memory — restore it from disk if we have a transcript.
+        try {
+          session = (await rehydrateChat(sessionId)) ?? undefined;
+        } catch (err) {
+          sendJson(res, 400, { error: `Failed to restore chat: ${err instanceof Error ? err.message : String(err)}` });
+          return;
+        }
+        if (!session) {
+          sendJson(res, 404, { error: "Chat session not found." });
+          return;
+        }
       }
       let body: { message?: string };
       try {
@@ -616,12 +714,14 @@ const server = http.createServer((req, res) => {
         for await (const event of streamChat(session, body.message.trim(), approve, sandbox ?? undefined, controller.signal)) {
           res.write(`data: ${JSON.stringify(event)}\n\n`);
         }
-        session.lastActivity = Date.now();
       } catch (err) {
         if (!(err instanceof Error && err.name === "AbortError")) {
           res.write(`data: ${JSON.stringify({ type: "error", message: err instanceof Error ? err.message : String(err) })}\n\n`);
         }
       }
+      // Persist the transcript so the conversation survives restarts / TTL eviction.
+      session.lastActivity = Date.now();
+      persistChat(session);
       res.end();
       return;
     }

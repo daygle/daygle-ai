@@ -255,6 +255,55 @@ export interface ChatSessionInfo {
   repoUrl: string;
 }
 
+export interface ChatSummary {
+  id: string;
+  repoUrl: string;
+  model: string;
+  title: string;
+  messageCount: number;
+  createdAt: number;
+  lastActivity: number;
+}
+
+export interface StoredChatMessage {
+  role: "system" | "user" | "assistant" | "tool";
+  content: string;
+  tool_calls?: Array<{ function: { name: string; arguments: Record<string, unknown> } }>;
+  tool_name?: string;
+}
+
+export interface StoredChat {
+  id: string;
+  repoUrl: string;
+  model: string;
+  ollamaUrl: string;
+  title: string;
+  messages: StoredChatMessage[];
+  createdAt: number;
+  lastActivity: number;
+}
+
+/** Lists past chat conversations (persisted transcripts), newest first. */
+export async function listChatSessions(serverUrl: string): Promise<ChatSummary[]> {
+  const res = await fetch(`${strip(serverUrl)}/api/chat/sessions`);
+  if (!res.ok) throw new Error(`Failed to list chats (${res.status})`);
+  const data = (await res.json()) as { sessions: ChatSummary[] };
+  return data.sessions ?? [];
+}
+
+/** Loads a single conversation's full transcript for display / resuming. */
+export async function getChatSession(serverUrl: string, id: string): Promise<StoredChat> {
+  const res = await fetch(`${strip(serverUrl)}/api/chat/sessions/${id}`);
+  if (!res.ok) throw new Error(`Failed to load chat (${res.status})`);
+  const data = (await res.json()) as { chat: StoredChat };
+  return data.chat;
+}
+
+export async function deleteChatSession(serverUrl: string, id: string): Promise<void> {
+  const res = await fetch(`${strip(serverUrl)}/api/chat/sessions/${id}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(`Failed to delete chat (${res.status})`);
+}
+
 export async function createChatSession(
   serverUrl: string,
   repoUrl: string,

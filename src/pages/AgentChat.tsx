@@ -1,12 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Bot, Check, ChevronDown, ChevronRight, Copy, FileEdit, GitBranch, Search, Send, Square, Terminal, User, X } from "lucide-react";
+import { Bot, Check, ChevronDown, ChevronRight, Copy, FileEdit, GitBranch, MessageSquarePlus, Search, Send, Square, Terminal, Trash2, User, X } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
   createChatSession,
+  deleteChatSession,
+  getChatSession,
+  listChatSessions,
   resolveApproval,
   sendChatMessage,
   type ChatEvent,
+  type ChatSummary,
+  type StoredChatMessage,
 } from "../lib/agent";
 import { useOllama } from "../context/OllamaProvider";
 import { listModels } from "../lib/ollama";
@@ -30,6 +35,17 @@ interface ChatBubble {
 
 let nextId = 0;
 function uid() { return ++nextId; }
+
+function relativeTime(ts: number): string {
+  const s = Math.max(0, Math.round((Date.now() - ts) / 1000));
+  if (s < 60) return "just now";
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.round(m / 60);
+  if (h < 24) return `${h}h ago`;
+  const d = Math.round(h / 24);
+  return `${d}d ago`;
+}
 
 /**
  * Remove raw tool-call JSON that some models emit as plain text instead of
@@ -103,6 +119,35 @@ function Markdown({ children }: { children: string }) {
       </ReactMarkdown>
     </div>
   );
+}
+
+/** Rebuilds display bubbles from a stored transcript when resuming a chat. */
+function bubblesFromMessages(messages: StoredChatMessage[]): ChatBubble[] {
+  const bubbles: ChatBubble[] = [];
+  const toolQueue: Array<{ name: string; args: Record<string, unknown> }> = [];
+  for (const m of messages) {
+    if (m.role === "user") {
+      bubbles.push({ id: uid(), role: "user", content: m.content });
+    } else if (m.role === "assistant") {
+      const text = stripToolJson(m.content);
+      if (text) bubbles.push({ id: uid(), role: "assistant", content: text });
+      for (const call of m.tool_calls ?? []) {
+        toolQueue.push({ name: call.function.name, args: call.function.arguments ?? {} });
+      }
+    } else if (m.role === "tool") {
+      const meta = toolQueue.shift();
+      bubbles.push({
+        id: uid(),
+        role: "tool",
+        content: "",
+        toolName: m.tool_name ?? meta?.name ?? "tool",
+        toolArgs: meta?.args ?? {},
+        toolResult: m.content,
+      });
+    }
+    // system messages are internal and not displayed
+  }
+  return bubbles;
 }
 
 function ToolCall({ name, args, result, diff }: { name: string; args: Record<string, unknown>; result?: string; diff?: string }) {
@@ -184,6 +229,7 @@ export function AgentChatPage() {
   const [loading, setLoading] = useState(false);
   const [streaming, setStreaming] = useState(false);
   const [connected, setConnected] = useState(false);
+  const [history, setHistory] = useState<ChatSummary[]>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const stickToBottomRef = useRef(true);
@@ -214,12 +260,39 @@ export function AgentChatPage() {
       .catch(() => {});
   }, [ollamaUrl, model]);
 
+  const refreshHistory = useCallback(() => {
+    listChatSessions(agentUrl).then(setHistory).catch(() => {});
+  }, [agentUrl]);
+
+  // Load the conversation list, and auto-resume the last open chat on refresh.
+  useEffect(() => {
+    refreshHistory();
+    let lastId: string | null = null;
+    try {
+      lastId = localStorage.getItem("daygle.chatSessionId");
+    } catch {
+      lastId = null;
+    }
+    if (lastId) void resumeChat(lastId, { silent: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  function rememberSession(id: string | null) {
+    try {
+      if (id) localStorage.setItem("daygle.chatSessionId", id);
+      else localStorage.removeItem("daygle.chatSessionId");
+    } catch {
+      // ignore storage errors
+    }
+  }
+
   async function handleConnect() {
     if (!repoUrl.trim()) return;
     setLoading(true);
     try {
       const session = await createChatSession(agentUrl, repoUrl.trim(), model, ollamaUrl);
       setSessionId(session.id);
+      rememberSession(session.id);
       setConnected(true);
       setMessages([
         { id: uid(), role: "assistant", content: `Connected to **${repoUrl}**. I've cloned the repo and I'm ready to help. What would you like me to do?` },
@@ -229,6 +302,49 @@ export function AgentChatPage() {
     } finally {
       setLoading(false);
     }
+  }
+
+  async function resumeChat(id: string, opts?: { silent?: boolean }) {
+    setLoading(true);
+    try {
+      const chat = await getChatSession(agentUrl, id);
+      setSessionId(chat.id);
+      rememberSession(chat.id);
+      setRepoUrl(chat.repoUrl);
+      if (chat.model) setModel(chat.model);
+      setMessages(bubblesFromMessages(chat.messages));
+      setConnected(true);
+    } catch (err) {
+      if (!opts?.silent) {
+        setMessages([{ id: uid(), role: "assistant", content: `Failed to open chat: ${err instanceof Error ? err.message : String(err)}` }]);
+        setConnected(true);
+      } else {
+        rememberSession(null); // stale id from a pruned chat
+      }
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function startNewChat() {
+    abortRef.current?.();
+    setConnected(false);
+    setSessionId(null);
+    setMessages([]);
+    setInput("");
+    setStreaming(false);
+    rememberSession(null);
+    refreshHistory();
+  }
+
+  async function removeChat(id: string) {
+    try {
+      await deleteChatSession(agentUrl, id);
+    } catch {
+      // ignore
+    }
+    if (id === sessionId) startNewChat();
+    else refreshHistory();
   }
 
   const handleSend = useCallback(() => {
@@ -394,6 +510,34 @@ export function AgentChatPage() {
               </Button>
             </div>
           </div>
+
+          {history.length > 0 && (
+            <div className="space-y-2 border-t border-border pt-4">
+              <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Recent chats</p>
+              <div className="max-h-64 space-y-1 overflow-y-auto">
+                {history.map((chat) => (
+                  <div
+                    key={chat.id}
+                    className="group flex items-center gap-2 rounded-lg border border-border bg-background px-3 py-2 hover:border-accent/50"
+                  >
+                    <button onClick={() => resumeChat(chat.id)} className="min-w-0 flex-1 text-left">
+                      <p className="truncate text-sm">{chat.title}</p>
+                      <p className="truncate text-[11px] text-muted-foreground">
+                        {chat.repoUrl.replace(/^https?:\/\/(www\.)?github\.com\//, "")} · {chat.messageCount} msgs · {relativeTime(chat.lastActivity)}
+                      </p>
+                    </button>
+                    <button
+                      onClick={() => removeChat(chat.id)}
+                      className="rounded p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-muted hover:text-destructive group-hover:opacity-100"
+                      title="Delete chat"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       </div>
     );
@@ -407,6 +551,9 @@ export function AgentChatPage() {
         <span className="text-sm font-medium">Agent Chat</span>
         <GitBranch className="ml-1 h-3 w-3 text-muted-foreground" />
         <span className="max-w-md truncate text-xs text-muted-foreground">{repoUrl}</span>
+        <Button variant="outline" size="sm" onClick={startNewChat} className="ml-auto" disabled={streaming}>
+          <MessageSquarePlus className="mr-1 h-3.5 w-3.5" /> New chat
+        </Button>
       </header>
 
       <div ref={scrollRef} onScroll={handleScroll} className="flex-1 overflow-y-auto px-4 py-6">
