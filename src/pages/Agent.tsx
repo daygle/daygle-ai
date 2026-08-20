@@ -85,6 +85,8 @@ function stripToolJson(text: string): string {
     .replace(/```(?:json|tool_code)?/gi, "")
     // drop complete { "name": ..., "arguments": {...} } objects (non-greedy, multi-line)
     .replace(/\{\s*"name"\s*:\s*"[^"]+"\s*,\s*"arguments"\s*:\s*\{[\s\S]*?\}\s*\}/g, "")
+    // drop example output objects like { "file": "...", "line": 12 }
+    .replace(/\{\s*"file"\s*:\s*"[^"]+"\s*,\s*"line"\s*:\s*\d+\s*\}/g, "")
     // drop bash-style tool calls like: bash list_files("src") or list_files()
     .replace(/(?:bash\s+)?(?:list_files|read_file|search|write_file|run_command)\s*\([^)]*\)/gi, "")
     // drop bash cd patterns like: bash cd web vite

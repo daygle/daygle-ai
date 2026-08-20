@@ -358,6 +358,8 @@ export async function* streamChat(
       displayContent = content
         .replace(/```(?:json|tool_code)?/gi, "")
         .replace(/\{\s*"name"\s*:\s*"[^"]+"\s*,\s*"arguments"\s*:\s*\{[\s\S]*?\}\s*\}/g, "")
+        // Strip example output objects like: { "file": "...", "line": 12 }
+        .replace(/\{\s*"file"\s*:\s*"[^"]+"\s*,\s*"line"\s*:\s*\d+\s*\}/g, "")
         // Strip bash-style tool calls like: bash list_files("src")
         .replace(/(?:bash\s+)?(?:list_files|read_file|search|write_file|run_command)\s*\([^)]*\)/gi, "")
         // Strip bash cd patterns like: bash cd web vite
