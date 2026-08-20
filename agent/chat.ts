@@ -81,18 +81,22 @@ function lineDiff(oldText: string, newText: string): string {
 const TOOL_NAMES = new Set(["list_files", "read_file", "search", "write_file", "run_command"]);
 
 /**
- * Fallback: parse tool calls that models output as raw JSON text
+ * Fallback: parse tool calls that models output as raw text
  * instead of using Ollama's structured tool_calls format.
  * Handles patterns like:
  *   {"name": "list_files", "arguments": {"path": "/"}}
  *   ```json{"name": "read_file", "arguments": {"path": "src/main.ts"}}```
+ *   bash list_files("src")
+ *   list_files("src")
+ *   list_files({path: "src"})
  */
 function parseTextToolCalls(text: string): Array<{ function: { name: string; arguments: Record<string, unknown> } }> {
   const calls: Array<{ function: { name: string; arguments: Record<string, unknown> } }> = [];
-  // Match JSON objects that look like tool calls
-  const regex = /\{\s*"name"\s*:\s*"([^"]+)"\s*,\s*"arguments"\s*:\s*(\{[^}]*\})\s*\}/g;
+
+  // First: try to match JSON objects that look like tool calls
+  const jsonRegex = /\{\s*"name"\s*:\s*"([^"]+)"\s*,\s*"arguments"\s*:\s*(\{[^}]*\})\s*\}/g;
   let match;
-  while ((match = regex.exec(text)) !== null) {
+  while ((match = jsonRegex.exec(text)) !== null) {
     const name = match[1];
     if (!TOOL_NAMES.has(name)) continue;
     try {
@@ -102,6 +106,62 @@ function parseTextToolCalls(text: string): Array<{ function: { name: string; arg
       // skip malformed args
     }
   }
+
+  // Second: if no JSON calls found, try to match bash-style calls like:
+  //   bash list_files("src")
+  //   list_files("src")
+  //   list_files({path: "src"})
+  if (calls.length === 0) {
+    const bashRegex = /(?:bash\s+)?([a-z_]+)\s*\(([^)]*)\)/gi;
+    while ((match = bashRegex.exec(text)) !== null) {
+      const name = match[1].toLowerCase();
+      if (!TOOL_NAMES.has(name)) continue;
+
+      let args: Record<string, unknown> = {};
+      const argStr = match[2].trim();
+
+      if (argStr) {
+        // Try JSON object format: {path: "src"} or {"path": "src"}
+        const objMatch = argStr.match(/^\{(.*)\}$/);
+        if (objMatch) {
+          try {
+            // Try to parse as JSON (handle unquoted keys)
+            const jsonStr = objMatch[1].replace(/([a-z_]+):/gi, '"$1":');
+            args = JSON.parse(`{${jsonStr}}`) as Record<string, unknown>;
+          } catch {
+            // Try simpler key=value parsing
+            const kvPairs = objMatch[1].split(',');
+            for (const kv of kvPairs) {
+              const [key, ...valueParts] = kv.split(':');
+              if (key) {
+                const value = valueParts.join(':').trim().replace(/^['"]|['"]$/g, '');
+                args[key.trim()] = value;
+              }
+            }
+          }
+        } else {
+          // Simple string argument: list_files("src")
+          const strMatch = argStr.match(/^['"](.*)['"]$/);
+          if (strMatch) {
+            // First positional arg maps to the main parameter
+            if (name === 'list_files' || name === 'read_file') args.path = strMatch[1];
+            else if (name === 'search') args.pattern = strMatch[1];
+            else if (name === 'write_file') args.path = strMatch[1];
+            else if (name === 'run_command') args.command = strMatch[1];
+          } else {
+            // Unquoted string
+            if (name === 'list_files' || name === 'read_file') args.path = argStr;
+            else if (name === 'search') args.pattern = argStr;
+            else if (name === 'write_file') args.path = argStr;
+            else if (name === 'run_command') args.command = argStr;
+          }
+        }
+      }
+
+      calls.push({ function: { name, arguments: args } });
+    }
+  }
+
   return calls;
 }
 
@@ -111,7 +171,16 @@ You have tools to inspect and edit the code — listing files, reading files, se
 
 CRITICAL: Never write a tool call as text or code. Do NOT type things like "list_files()", "bash list_files()", or a JSON/code snippet describing a call — that does nothing. To use a tool you must invoke it through the tool interface, not print it. When you are not calling a tool, just talk normally.
 
+Available tools:
+- list_files(path) — list files/directories under a path
+- read_file(path, start_line?, end_line?) — read a file with numbered lines
+- search(pattern, path?) — regex-search files for patterns
+- write_file(path, content) — create or overwrite a file
+- run_command(command) — run a shell command (tests, typecheck, etc.)
+
 A good turn reads like: one short sentence about what you're doing ("Let me look at the project structure."), then the real tool call, then your reply once the result comes back.
+
+IMPORTANT: You must call tools using the proper function call format, NOT by writing "bash function_name()" as text.
 
 Be concise. Read and understand before editing. Make the smallest change that solves the problem.`;
 
@@ -239,12 +308,14 @@ export async function* streamChat(
       toolCalls = parseTextToolCalls(content);
     }
 
-    // Strip raw JSON tool calls from displayed content (they're shown as cards)
+    // Strip raw tool calls from displayed content (they're shown as cards)
     let displayContent = content;
     if (toolCalls.length > 0) {
       displayContent = content
         .replace(/```(?:json|tool_code)?/gi, "")
         .replace(/\{\s*"name"\s*:\s*"[^"]+"\s*,\s*"arguments"\s*:\s*\{[\s\S]*?\}\s*\}/g, "")
+        // Strip bash-style tool calls like: bash list_files("src")
+        .replace(/(?:bash\s+)?(?:list_files|read_file|search|write_file|run_command)\s*\([^)]*\)/gi, "")
         .trim();
     }
 
