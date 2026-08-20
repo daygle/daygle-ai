@@ -414,6 +414,21 @@ export async function resolveApproval(
   if (!res.ok) throw new Error(`Failed to resolve approval (${res.status})`);
 }
 
+/**
+ * Cancels an in-flight chat generation server-side. Works even when this client
+ * isn't the one attached to the stream (e.g. after navigating away and back).
+ */
+export async function cancelChat(serverUrl: string, sessionId: string): Promise<boolean> {
+  try {
+    const res = await fetch(`${strip(serverUrl)}/api/chat/sessions/${sessionId}/cancel`, { method: "POST" });
+    if (!res.ok) return false;
+    const data = (await res.json()) as { cancelled?: boolean };
+    return Boolean(data.cancelled);
+  } catch {
+    return false;
+  }
+}
+
 export async function updateChatModel(
   serverUrl: string,
   sessionId: string,

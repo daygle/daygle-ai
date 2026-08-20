@@ -38,6 +38,12 @@ let sandbox: SandboxRunner | null = null;
 
 const chatSessions = new Map<string, ChatSession>();
 
+// Cancel handles for in-flight chat generations, keyed by session id, so a
+// /cancel request (or a disconnect) can stop a run even when the streaming
+// client is gone — e.g. the user navigated away and clicks Stop from a
+// reconnected view.
+const activeChatRuns = new Map<string, () => void>();
+
 function loadGithubToken(): string {
   try {
     return fs.readFileSync(TOKEN_PATH, "utf8").trim();
@@ -589,6 +595,16 @@ const server = http.createServer((req, res) => {
       return;
     }
 
+    // Cancel an in-flight chat generation for a session. Works regardless of
+    // which client (or none) is currently attached to the stream.
+    const chatCancelMatch = url.pathname.match(/^\/api\/chat\/sessions\/([^/]+)\/cancel$/);
+    if (chatCancelMatch && req.method === "POST") {
+      const cancel = activeChatRuns.get(chatCancelMatch[1]);
+      if (cancel) cancel();
+      sendJson(res, 200, { ok: true, cancelled: Boolean(cancel) });
+      return;
+    }
+
     const chatWorkspaceMatch = url.pathname.match(/^\/api\/chat\/sessions\/([^/]+)\/workspace$/);
     if (chatWorkspaceMatch && req.method === "GET") {
       const sessionId = chatWorkspaceMatch[1];
@@ -925,9 +941,10 @@ const server = http.createServer((req, res) => {
         });
       };
 
-      req.on("close", () => {
+      // Stops this run: aborts generation and releases any waiting approvals so
+      // the generator doesn't hang. Shared by client disconnect and /cancel.
+      const cancelRun = () => {
         controller.abort();
-        // Release any approvals still waiting so the generator doesn't hang.
         for (const id of localApprovals) {
           const pending = pendingApprovals.get(id);
           if (pending) {
@@ -936,11 +953,14 @@ const server = http.createServer((req, res) => {
             pending.resolve("deny");
           }
         }
-      });
+      };
+      req.on("close", cancelRun);
 
       // Mark the session busy so a client that navigated away and came back can
-      // detect the in-flight generation and reconnect to it (see getChatSession).
+      // detect the in-flight generation and reconnect to it (see getChatSession),
+      // and register a cancel handle so Stop works from a reconnected view.
       session.busy = true;
+      activeChatRuns.set(sessionId, cancelRun);
       try {
         for await (const event of streamChat(session, body.message.trim(), approve, sandbox ?? undefined, controller.signal, image)) {
           res.write(`data: ${JSON.stringify(event)}\n\n`);
@@ -951,6 +971,7 @@ const server = http.createServer((req, res) => {
         }
       } finally {
         session.busy = false;
+        if (activeChatRuns.get(sessionId) === cancelRun) activeChatRuns.delete(sessionId);
       }
       // Persist the transcript so the conversation survives restarts / TTL eviction.
       session.lastActivity = Date.now();

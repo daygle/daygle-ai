@@ -5,6 +5,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
   cancelAgentJob,
+  cancelChat,
   createChatSession,
   deleteChatSession,
   getChatSession,
@@ -1048,7 +1049,11 @@ export function AgentPage() {
   }, [autoSendQueued, handleSend, input, streaming]);
 
   function handleStop() {
+    // Abort our own stream if we own it, and ask the server to stop the run —
+    // the latter also covers a generation we only reconnected to (busy-poll),
+    // where we no longer hold the original stream handle.
     abortRef.current?.();
+    if (sessionId) void cancelChat(agentUrl, sessionId);
     stopBusyPoll();
     setStreaming(false);
     setStatusText("");
