@@ -20,6 +20,7 @@ import {
 } from "../lib/agent";
 import { useOllama } from "../context/OllamaProvider";
 import { listModels } from "../lib/ollama";
+import { loadGenOptions } from "../lib/genOptions";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Textarea } from "../components/ui/textarea";
@@ -318,7 +319,7 @@ export function AgentPage() {
     const repo = repoUrl.trim();
     setLoading(true);
     try {
-      const session = await createChatSession(agentUrl, repo, model, ollamaUrl);
+      const session = await createChatSession(agentUrl, repo, model, ollamaUrl, loadGenOptions());
       setSessionId(session.id);
       setSessionRepo(repo);
       rememberSession(session.id);
