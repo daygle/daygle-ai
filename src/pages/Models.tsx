@@ -149,7 +149,7 @@ export function ModelsPage() {
         </p>
       </header>
 
-      {!connected && (
+      {connected === false && (
         <div className="flex items-start gap-3 rounded-lg border border-destructive/40 bg-destructive/10 p-4 text-sm text-destructive">
           <CircleAlert className="mt-0.5 h-4 w-4 shrink-0" />
           <div>
@@ -266,7 +266,7 @@ export function ModelsPage() {
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {sortedModels.map((model) => (
               <div
-                key={model.digest}
+                key={model.name}
                 className="group flex flex-col gap-3 rounded-xl border border-border bg-card p-4 transition-colors hover:border-border/80"
               >
                 <div className="flex items-start justify-between gap-2">

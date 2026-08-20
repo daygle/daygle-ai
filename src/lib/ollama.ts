@@ -15,23 +15,11 @@ export interface OllamaModel {
   details?: OllamaModelDetails;
 }
 
-export interface ChatMessage {
-  role: "system" | "user" | "assistant";
-  content: string;
-}
-
 export interface PullProgress {
   status: string;
   completed?: number;
   total?: number;
   percent?: number;
-}
-
-export interface ChatDoneInfo {
-  doneReason?: string;
-  evalCount?: number;
-  promptEvalCount?: number;
-  totalDuration?: number;
 }
 
 export class OllamaError extends Error {
@@ -86,15 +74,6 @@ export async function listModels(baseUrl: string): Promise<OllamaModel[]> {
   const res = await fetch(`${normalizeBaseUrl(baseUrl)}/api/tags`);
   if (!res.ok) {
     throw new OllamaError(`Failed to list models (${res.status}).`, res.status);
-  }
-  const data = (await res.json()) as { models?: OllamaModel[] };
-  return data.models ?? [];
-}
-
-export async function getRunningModels(baseUrl: string): Promise<OllamaModel[]> {
-  const res = await fetch(`${normalizeBaseUrl(baseUrl)}/api/ps`);
-  if (!res.ok) {
-    throw new OllamaError(`Failed to read running models (${res.status}).`, res.status);
   }
   const data = (await res.json()) as { models?: OllamaModel[] };
   return data.models ?? [];
@@ -183,60 +162,4 @@ export async function pullModel(
     for (const line of lines) emit(line);
   }
   if (buffer.trim()) emit(buffer);
-}
-
-export async function streamChat(
-  baseUrl: string,
-  model: string,
-  messages: ChatMessage[],
-  onDelta: (delta: string) => void,
-  onDone: (info: ChatDoneInfo) => void,
-  signal?: AbortSignal,
-): Promise<void> {
-  const res = await fetch(`${normalizeBaseUrl(baseUrl)}/api/chat`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ model, messages, stream: true }),
-    signal,
-  });
-
-  if (!res.ok || !res.body) {
-    throw new OllamaError(parseErrorText(await res.text().catch(() => "")) || `Chat failed (${res.status}).`, res.status);
-  }
-
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split("\n");
-    buffer = lines.pop() ?? "";
-    for (const line of lines) {
-      if (!line.trim()) continue;
-      let event: Record<string, unknown>;
-      try {
-        event = JSON.parse(line) as Record<string, unknown>;
-      } catch {
-        continue;
-      }
-      if (event.error) {
-        throw new OllamaError(String(event.error));
-      }
-      const message = event.message as { content?: unknown } | undefined;
-      if (message && typeof message.content === "string") {
-        onDelta(message.content);
-      }
-      if (event.done) {
-        onDone({
-          doneReason: typeof event.done_reason === "string" ? event.done_reason : undefined,
-          evalCount: typeof event.eval_count === "number" ? event.eval_count : undefined,
-          promptEvalCount: typeof event.prompt_eval_count === "number" ? event.prompt_eval_count : undefined,
-          totalDuration: typeof event.total_duration === "number" ? event.total_duration : undefined,
-        });
-      }
-    }
-  }
 }

@@ -115,7 +115,7 @@ export function SettingsPage() {
           <div className="mt-4 flex items-center gap-2 rounded-lg border border-border bg-background p-3 text-xs">
             <span
               className={
-                checking
+                checking || connected === null
                   ? "h-2 w-2 rounded-full bg-amber-400"
                   : connected
                     ? "h-2 w-2 rounded-full bg-accent"
@@ -123,7 +123,7 @@ export function SettingsPage() {
               }
             />
             <span className="text-muted-foreground">
-              {checking
+              {checking || connected === null
                 ? "Checking connection…"
                 : connected
                   ? `Connected to ${baseUrl}${version && version !== "unknown" ? ` (v${version})` : ""}`
@@ -143,8 +143,8 @@ export function SettingsPage() {
 
         <div className="rounded-xl border border-border bg-card p-5">
           <p className="text-xs text-muted-foreground">
-            A personal access token lets the agent clone private repos and open pull requests. Create one at
-            <a href="https://github.com/settings/tokens" target="_blank" rel="noreferrer" className="text-accent underline">github.com/settings/tokens</a>
+            A personal access token lets the agent clone private repos and open pull requests. Create one at{" "}
+            <a href="https://github.com/settings/tokens" target="_blank" rel="noreferrer" className="text-accent underline">github.com/settings/tokens</a>{" "}
             with <strong>repo</strong> scope.
           </p>
           <div className="mt-3 flex flex-col gap-2 sm:flex-row">
