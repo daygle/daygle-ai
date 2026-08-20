@@ -216,6 +216,8 @@ export interface StoredChat {
   messages: StoredChatMessage[];
   createdAt: number;
   lastActivity: number;
+  /** True when a generation is still streaming server-side (reconnect to it). */
+  busy?: boolean;
 }
 
 export interface ChatWorkspace {

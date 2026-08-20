@@ -752,6 +752,7 @@ const server = http.createServer((req, res) => {
             messages: live.messages,
             createdAt: live.createdAt,
             lastActivity: live.lastActivity,
+            busy: Boolean(live.busy),
           }
         : chatHistoryStore.load(id);
       if (!chat) {
@@ -937,6 +938,9 @@ const server = http.createServer((req, res) => {
         }
       });
 
+      // Mark the session busy so a client that navigated away and came back can
+      // detect the in-flight generation and reconnect to it (see getChatSession).
+      session.busy = true;
       try {
         for await (const event of streamChat(session, body.message.trim(), approve, sandbox ?? undefined, controller.signal, image)) {
           res.write(`data: ${JSON.stringify(event)}\n\n`);
@@ -945,6 +949,8 @@ const server = http.createServer((req, res) => {
         if (!(err instanceof Error && err.name === "AbortError")) {
           res.write(`data: ${JSON.stringify({ type: "error", message: err instanceof Error ? err.message : String(err) })}\n\n`);
         }
+      } finally {
+        session.busy = false;
       }
       // Persist the transcript so the conversation survives restarts / TTL eviction.
       session.lastActivity = Date.now();
