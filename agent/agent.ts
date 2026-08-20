@@ -225,7 +225,7 @@ export async function runAgentLoop(opts: {
 
   for (let step = 0; step < maxSteps; step++) {
     throwIfCancelled();
-    emit({ type: "status", message: `Thinking… (step ${step + 1}/${maxSteps})` });
+    emit({ type: "status", message: `Thinking… (Step ${step + 1}/${maxSteps})` });
     const { content, toolCalls } = await chatOnce(ollamaUrl, model, messages, TOOL_DEFINITIONS, {
       temperature,
       numCtx,

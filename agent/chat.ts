@@ -259,7 +259,7 @@ export async function* streamChat(
   for (let step = 0; step < MAX_STEPS; step++) {
     if (signal?.aborted) return;
 
-    yield { type: "status", message: `Thinking… (step ${step + 1})` };
+    yield { type: "status", message: `Thinking… (Step ${step + 1})` };
 
     const res = await fetch(`${session.ollamaUrl.replace(/\/+$/, "")}/api/chat`, {
       method: "POST",
