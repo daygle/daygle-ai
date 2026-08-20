@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ChangeEvent } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { Bot, Check, ChevronDown, ChevronRight, Copy, Eye, ExternalLink, FileEdit, Files, Folder, GitBranch, GitCompare, ImagePlus, ListTodo, Loader2, MessageSquarePlus, PanelRightClose, PanelRightOpen, RefreshCw, Rocket, Search, Send, Square, StickyNote, Terminal, Trash2, User, X } from "lucide-react";
+import { Bot, Check, ChevronDown, ChevronRight, ChevronUp, Copy, Eye, ExternalLink, FileEdit, Files, Folder, GitBranch, GitCompare, GripVertical, ImagePlus, ListTodo, Loader2, MessageSquarePlus, PanelRightClose, PanelRightOpen, RefreshCw, Rocket, Search, Send, Square, StickyNote, Terminal, Trash2, User, X } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
@@ -261,6 +261,7 @@ function CopyButton({ text }: { text: string }) {
 type WorkspaceTab = "queue" | "files" | "changes" | "preview" | "terminal" | "notes";
 
 interface QueuedMessage {
+  id: number;
   text: string;
   image?: ChatImage;
   imageName?: string;
@@ -272,6 +273,7 @@ function WorkspacePanel({
   queue,
   onRemoveQueueItem,
   onClearQueue,
+  onReorderQueue,
   workspace,
   messages,
   notes,
@@ -284,6 +286,7 @@ function WorkspacePanel({
   queue: QueuedMessage[];
   onRemoveQueueItem: (index: number) => void;
   onClearQueue: () => void;
+  onReorderQueue: (from: number, to: number) => void;
   workspace: ChatWorkspace;
   messages: ChatBubble[];
   notes: string;
@@ -300,6 +303,8 @@ function WorkspacePanel({
     { id: "notes", label: "Notes", icon: StickyNote },
   ];
   const terminalEntries = messages.filter((message) => message.role === "tool" && message.toolName === "run_command");
+  const [dragIndex, setDragIndex] = useState<number | null>(null);
+  const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
 
   return (
     <aside className="flex h-full w-[360px] max-w-[42vw] shrink-0 flex-col border-l border-border bg-card">
@@ -340,20 +345,84 @@ function WorkspacePanel({
                 <span>{queue.length} message{queue.length === 1 ? "" : "s"} waiting</span>
                 <button onClick={onClearQueue} className="text-destructive hover:underline">Clear all</button>
               </div>
-              {queue.map((message, index) => (
-                <div key={`${message.text}-${index}`} className="group rounded-lg border border-border bg-background p-2.5">
-                  <div className="flex items-start gap-2">
-                    <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-accent/15 text-[10px] text-accent">{index + 1}</span>
-                    <div className="min-w-0 flex-1">
-                      <p className="whitespace-pre-wrap text-xs leading-relaxed">{message.text}</p>
-                      {message.image && <p className="mt-1 flex items-center gap-1 text-[10px] text-accent"><ImagePlus className="h-3 w-3" /> {message.imageName || "Image attachment"}</p>}
+              {queue.map((message, index) => {
+                const isDragging = dragIndex === index;
+                const isDropTarget = dragOverIndex === index && dragIndex !== null && dragIndex !== index;
+                return (
+                  <div
+                    key={message.id}
+                    draggable
+                    onDragStart={(event) => {
+                      event.dataTransfer.effectAllowed = "move";
+                      event.dataTransfer.setData("text/plain", String(message.id));
+                      setDragIndex(index);
+                    }}
+                    onDragEnter={() => {
+                      if (dragIndex === null || dragIndex === index) return;
+                      setDragOverIndex(index);
+                    }}
+                    onDragOver={(event) => {
+                      if (dragIndex === null || dragIndex === index) return;
+                      event.preventDefault();
+                      event.dataTransfer.dropEffect = "move";
+                    }}
+                    onDrop={(event) => {
+                      event.preventDefault();
+                      if (dragIndex === null || dragIndex === index) {
+                        setDragIndex(null);
+                        setDragOverIndex(null);
+                        return;
+                      }
+                      onReorderQueue(dragIndex, index);
+                      setDragIndex(null);
+                      setDragOverIndex(null);
+                    }}
+                    onDragEnd={() => {
+                      setDragIndex(null);
+                      setDragOverIndex(null);
+                    }}
+                    className={`group rounded-lg border bg-background p-2.5 transition-colors ${isDropTarget ? "border-accent bg-accent/5" : "border-border"} ${isDragging ? "opacity-50" : ""}`}
+                  >
+                    <div className="flex items-start gap-2">
+                      <button
+                        type="button"
+                        aria-label="Drag to reorder"
+                        className="flex h-5 w-4 shrink-0 cursor-grab items-center justify-center rounded text-muted-foreground/60 transition-opacity hover:text-foreground active:cursor-grabbing"
+                      >
+                        <GripVertical className="h-3.5 w-3.5" />
+                      </button>
+                      <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-accent/15 text-[10px] text-accent">{index + 1}</span>
+                      <div className="min-w-0 flex-1">
+                        <p className="whitespace-pre-wrap text-xs leading-relaxed">{message.text}</p>
+                        {message.image && <p className="mt-1 flex items-center gap-1 text-[10px] text-accent"><ImagePlus className="h-3 w-3" /> {message.imageName || "Image attachment"}</p>}
+                      </div>
+                      <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+                        <button
+                          onClick={() => index > 0 && onReorderQueue(index, index - 1)}
+                          disabled={index === 0}
+                          className="rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-30 disabled:hover:bg-transparent"
+                          title="Move up"
+                          aria-label="Move up"
+                        >
+                          <ChevronUp className="h-3 w-3" />
+                        </button>
+                        <button
+                          onClick={() => index < queue.length - 1 && onReorderQueue(index, index + 1)}
+                          disabled={index === queue.length - 1}
+                          className="rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-30 disabled:hover:bg-transparent"
+                          title="Move down"
+                          aria-label="Move down"
+                        >
+                          <ChevronDown className="h-3 w-3" />
+                        </button>
+                        <button onClick={() => onRemoveQueueItem(index)} className="rounded p-0.5 text-muted-foreground hover:text-destructive" title="Remove from queue" aria-label="Remove from queue">
+                          <X className="h-3 w-3" />
+                        </button>
+                      </div>
                     </div>
-                    <button onClick={() => onRemoveQueueItem(index)} className="rounded p-0.5 text-muted-foreground opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100" title="Remove from queue">
-                      <X className="h-3 w-3" />
-                    </button>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )
         )}
@@ -692,7 +761,7 @@ export function AgentPage() {
     setInput("");
     removeImageAttachment();
     if (streaming) {
-      setQueuedMessages((prev) => [...prev, { text: userMsg, image: userImage ?? undefined, imageName: userImageName || undefined }]);
+      setQueuedMessages((prev) => [...prev, { id: uid(), text: userMsg, image: userImage ?? undefined, imageName: userImageName || undefined }]);
       setWorkspaceTab("queue");
       setWorkspaceOpen(true);
       return;
@@ -1462,6 +1531,13 @@ export function AgentPage() {
           queue={queuedMessages}
           onRemoveQueueItem={(index) => setQueuedMessages((prev) => prev.filter((_, itemIndex) => itemIndex !== index))}
           onClearQueue={() => setQueuedMessages([])}
+          onReorderQueue={(from, to) => setQueuedMessages((prev) => {
+            if (from === to || from < 0 || to < 0 || from >= prev.length || to >= prev.length) return prev;
+            const next = prev.slice();
+            const [moved] = next.splice(from, 1);
+            next.splice(to, 0, moved);
+            return next;
+          })}
           workspace={workspace}
           messages={messages}
           notes={notes}
