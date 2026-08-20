@@ -128,12 +128,15 @@ journalctl -u daygle-ui -f
 - **Chat / everyday:** `llama3.2` (light) or `qwen2.5:7b`
 - **Agent (tool-calling):** `qwen2.5-coder:7b` — the best small model for structured tool calls; larger coder models (14b/32b) are stronger if you have the RAM
 
-### Agent pages
+### Agent page
 
-There are two agent modes:
+A single **Agent** page covers three ways of working, chosen by how you start:
 
-- **Agent** — one-shot task runner: give it a task, it clones the repo, makes changes, and opens a PR.
-- **Agent Chat** — interactive chat: connect to a repo and have a conversation with the AI. Ask questions, request changes, get explanations — all with file access tools.
+- **Just chat** — start with no repository to talk to your local model (no file access).
+- **Repo chat** — connect a repository to have a conversation with file-access tools: ask questions, request changes, get explanations, with inline command approval and write diffs.
+- **Run a task → PR** — from a connected repo, hand the agent a whole task; it works autonomously (multi-step loop → self-review → QA → commit) and opens a pull request.
+
+Conversations are saved and can be resumed from the "Recent chats" list.
 
 ## Bundled Ollama
 
@@ -180,8 +183,6 @@ Then open **Agent** in the UI, paste a repo URL and a task (e.g. "Review the cod
 The run log streams the model's output token-by-token, and a **Changes** panel shows the working-tree diff live as files are edited — new files included, with a per-file `+/-` breakdown. **Advanced options** lets you tune temperature, context window, max steps, override the system prompt per job, and enable an **AI review gate** by picking a review model: after the agent finishes, that model reviews the diff before anything is committed — if it requests changes, the agent runs up to two fix rounds, and the review is included in the pull request body.
 
 Every job also runs a **QA verification gate** before anything is committed: it installs dependencies, auto-detects `typecheck` / `test` / `build` from `package.json` (or use the **QA command** field to override), and sends failures back to the agent for up to two fix rounds. The result is included in the pull request body.
-
-A **Workspace** panel keeps a persistent checkout (`~/.daygle/workspaces/`): connect a repo, then **Pull**, **Commit**, **Push**, and **Open PR** right from the UI, with a live diff and working-tree status. Tick **Run in the connected workspace** on a job to have the agent work in that checkout and leave changes uncommitted for you to review and deliver manually.
 
 > **Sandboxed commands.** The agent runs shell commands in the cloned repo on your machine. Destructive, network, and credential-accessing commands are hard-blocked; read-only inspection runs automatically; everything else (tests, builds, installs) pauses for your **Approve/Deny** click in the Agent page before it runs. Still, only point it at repos you trust and review the diff before merging.
 
@@ -243,9 +244,7 @@ src/
   pages/
     Landing.tsx            marketing page
     Models.tsx             pull / manage / inspect models
-    Chat.tsx               streaming chat playground
-    Agent.tsx              repo agent: task in, pull request out
-    AgentChat.tsx          interactive agent chat with tool access
+    Agent.tsx              unified agent: plain chat, repo chat (tools), or task → PR
     Settings.tsx           server URL + setup guide
 
 agent/
@@ -256,8 +255,8 @@ agent/
   sandbox.ts              bubblewrap / Docker / Podman runners
   history.ts              disk-backed run history
   updates.ts              model update detection (digest comparison)
-  workspace.ts            persistent repo checkout + git actions
   chat.ts                 interactive agent chat with tool-calling
+  chat-history.ts         persisted chat transcripts (list / load / resume)
   server.ts               HTTP + SSE job server
 ```
 
@@ -270,4 +269,3 @@ agent/
 - [x] Streaming model output and per-job tuning knobs
 - [x] AI review gate (separate reviewer model) + enforced QA verification
 - [x] Model update detection (digest comparison via the agent server)
-- [x] Persistent workspace with pull / commit / push / PR actions

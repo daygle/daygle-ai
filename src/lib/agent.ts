@@ -25,7 +25,6 @@ export interface AgentConfig {
   maxReviewRounds?: number;
   qaCommand?: string;
   maxQaRounds?: number;
-  workspace?: boolean;
 }
 
 export interface AgentJobRequest {
@@ -134,85 +133,6 @@ export async function checkModelUpdates(
   if (!res.ok) throw new Error(`Failed to check model updates (${res.status})`);
   const data = (await res.json()) as { results: ModelUpdateInfo[] };
   return data.results ?? [];
-}
-
-export interface WorkspaceStatus {
-  connected: boolean;
-  repoUrl?: string;
-  owner?: string;
-  repo?: string;
-  branch?: string;
-  changedFiles?: string[];
-  diffStat?: string;
-  diff?: string;
-  lastCommit?: { hash: string; message: string; date: string } | null;
-}
-
-export async function workspaceStatus(serverUrl: string): Promise<WorkspaceStatus> {
-  const res = await fetch(`${strip(serverUrl)}/api/workspace`);
-  if (!res.ok) throw new Error(`Failed to read workspace (${res.status})`);
-  return (await res.json()) as WorkspaceStatus;
-}
-
-export async function connectWorkspace(serverUrl: string, repoUrl: string): Promise<WorkspaceStatus> {
-  const res = await fetch(`${strip(serverUrl)}/api/workspace/connect`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ repoUrl }),
-  });
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`Failed to connect workspace (${res.status}) ${text}`);
-  }
-  return (await res.json()) as WorkspaceStatus;
-}
-
-export async function pullWorkspace(serverUrl: string): Promise<WorkspaceStatus> {
-  const res = await fetch(`${strip(serverUrl)}/api/workspace/pull`, { method: "POST" });
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`Pull failed (${res.status}) ${text}`);
-  }
-  return (await res.json()) as WorkspaceStatus;
-}
-
-export async function commitWorkspace(serverUrl: string, message: string): Promise<WorkspaceStatus> {
-  const res = await fetch(`${strip(serverUrl)}/api/workspace/commit`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ message }),
-  });
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`Commit failed (${res.status}) ${text}`);
-  }
-  return (await res.json()) as WorkspaceStatus;
-}
-
-export async function pushWorkspace(serverUrl: string): Promise<WorkspaceStatus> {
-  const res = await fetch(`${strip(serverUrl)}/api/workspace/push`, { method: "POST" });
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`Push failed (${res.status}) ${text}`);
-  }
-  return (await res.json()) as WorkspaceStatus;
-}
-
-export async function openWorkspacePr(
-  serverUrl: string,
-  title: string,
-  body?: string,
-): Promise<{ prUrl: string }> {
-  const res = await fetch(`${strip(serverUrl)}/api/workspace/pr`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ title, body }),
-  });
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`PR failed (${res.status}) ${text}`);
-  }
-  return (await res.json()) as { prUrl: string };
 }
 
 export async function listAgentHistory(serverUrl: string): Promise<AgentRunSummary[]> {
