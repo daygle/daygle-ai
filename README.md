@@ -184,8 +184,6 @@ The run log streams the model's output token-by-token, and a **Changes** panel s
 
 Every job also runs a **QA verification gate** before anything is committed: it installs dependencies, auto-detects `typecheck` / `test` / `build` from `package.json` (or use the **QA command** field to override), and sends failures back to the agent for up to two fix rounds. The result is included in the pull request body.
 
-A **Workspace** panel keeps a persistent checkout (`~/.daygle/workspaces/`): connect a repo, then **Pull**, **Commit**, **Push**, and **Open PR** right from the UI, with a live diff and working-tree status. Tick **Run in the connected workspace** on a job to have the agent work in that checkout and leave changes uncommitted for you to review and deliver manually.
-
 > **Sandboxed commands.** The agent runs shell commands in the cloned repo on your machine. Destructive, network, and credential-accessing commands are hard-blocked; read-only inspection runs automatically; everything else (tests, builds, installs) pauses for your **Approve/Deny** click in the Agent page before it runs. Still, only point it at repos you trust and review the diff before merging.
 
 **Cancellation & history.** A running job can be stopped from the Agent page (the **Stop** button aborts the loop and kills in-flight commands). Every run is persisted to `~/.daygle/history`, listed in the Agent page's **Run history** panel, and clickable to replay its full log.
@@ -257,8 +255,8 @@ agent/
   sandbox.ts              bubblewrap / Docker / Podman runners
   history.ts              disk-backed run history
   updates.ts              model update detection (digest comparison)
-  workspace.ts            persistent repo checkout + git actions
   chat.ts                 interactive agent chat with tool-calling
+  chat-history.ts         persisted chat transcripts (list / load / resume)
   server.ts               HTTP + SSE job server
 ```
 
@@ -271,4 +269,3 @@ agent/
 - [x] Streaming model output and per-job tuning knobs
 - [x] AI review gate (separate reviewer model) + enforced QA verification
 - [x] Model update detection (digest comparison via the agent server)
-- [x] Persistent workspace with pull / commit / push / PR actions

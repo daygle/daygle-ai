@@ -42,7 +42,6 @@ export interface AgentConfig {
   maxReviewRounds?: number;
   qaCommand?: string;
   maxQaRounds?: number;
-  workspace?: boolean;
 }
 
 const DEFAULT_MAX_STEPS = 40;

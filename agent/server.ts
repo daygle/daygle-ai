@@ -28,16 +28,6 @@ import type { CommandApprover } from "./tools";
 import { HistoryStore, type StoredJob } from "./history";
 import { runQaGate, type QaResult } from "./qa";
 import { checkModelUpdate } from "./updates";
-import {
-  commitWorkspace,
-  connectWorkspace,
-  currentBranch,
-  openWorkspacePr,
-  pullWorkspace,
-  pushWorkspace,
-  statusWorkspace,
-  type WorkspaceStatus,
-} from "./workspace";
 
 const PORT = Number(process.env.PORT ?? 8787);
 const HOST = process.env.HOST ?? "0.0.0.0";
@@ -45,8 +35,6 @@ const HOST = process.env.HOST ?? "0.0.0.0";
 const TOKEN_PATH = path.join(os.homedir(), ".daygle", "github-token");
 
 let sandbox: SandboxRunner | null = null;
-
-let workspace: { repoUrl: string; dir: string } | null = null;
 
 const chatSessions = new Map<string, ChatSession>();
 
@@ -268,7 +256,6 @@ async function executeJob(job: Job): Promise<void> {
   const throwIfCancelled = () => {
     if (signal.aborted) throw new CancelledError();
   };
-  const workspaceMode = !!job.config?.workspace;
   let workDir = "";
   let tempWorkDir = false;
 
@@ -301,35 +288,26 @@ async function executeJob(job: Job): Promise<void> {
     let base = "";
     let branch = "";
 
-    if (workspaceMode) {
-      if (!workspace) {
-        throw new Error("No workspace connected — connect a repo in the Workspace panel first.");
-      }
-      workDir = workspace.dir;
-      const wb = await currentBranch(workDir).catch(() => "");
-      emit({ type: "status", message: `Working in persistent workspace ${workspace.repoUrl} (branch: ${wb || "?"})…` });
+    appMode = githubAppAvailable();
+    if (appMode) {
+      const parsed = parseRepo(job.repoUrl);
+      repoOwner = parsed.owner;
+      repoName = parsed.repo;
+      emit({ type: "status", message: "Requesting repo-scoped GitHub App token…" });
+      token = await createInstallationToken(repoOwner);
     } else {
-      appMode = githubAppAvailable();
-      if (appMode) {
-        const parsed = parseRepo(job.repoUrl);
-        repoOwner = parsed.owner;
-        repoName = parsed.repo;
-        emit({ type: "status", message: "Requesting repo-scoped GitHub App token…" });
-        token = await createInstallationToken(repoOwner);
-      } else {
-        token = loadGithubToken() || undefined;
-      }
-
-      emit({ type: "status", message: `Cloning ${job.repoUrl}…` });
-      workDir = fs.mkdtempSync(path.join(os.tmpdir(), "daygle-"));
-      tempWorkDir = true;
-      await cloneRepo(job.repoUrl, workDir, token);
-
-      base = job.baseBranch || (await detectDefaultBranch(job.repoUrl, token));
-      branch = `daygle/${slugify(job.task)}-${Date.now().toString(36)}`;
-      emit({ type: "status", message: `Branch ${branch} (base ${base})` });
-      await createBranch(workDir, branch);
+      token = loadGithubToken() || undefined;
     }
+
+    emit({ type: "status", message: `Cloning ${job.repoUrl}…` });
+    workDir = fs.mkdtempSync(path.join(os.tmpdir(), "daygle-"));
+    tempWorkDir = true;
+    await cloneRepo(job.repoUrl, workDir, token);
+
+    base = job.baseBranch || (await detectDefaultBranch(job.repoUrl, token));
+    branch = `daygle/${slugify(job.task)}-${Date.now().toString(36)}`;
+    emit({ type: "status", message: `Branch ${branch} (base ${base})` });
+    await createBranch(workDir, branch);
 
     emit({
       type: "status",
@@ -356,14 +334,9 @@ async function executeJob(job: Job): Promise<void> {
       publish(job, { type: "diff", stat, diff });
     } catch {
       // final snapshot is best-effort
-    }    const changed = await changedFiles(workDir);
-    if (workspaceMode) {
-      // Leave changes uncommitted — the user delivers from the Workspace panel.
-      job.summary = summary;
-      job.status = "done";
-      job.finishedAt = Date.now();
-      publish(job, { type: "done", summary, changedFiles: changed, pending: changed.length > 0 });
-    } else if (changed.length > 0) {
+    }
+    const changed = await changedFiles(workDir);
+    if (changed.length > 0) {
       // ---- QA verification gate (harness-run): install deps, run typecheck/test/build,
       // and send failures back to the agent for fix rounds. ----
       const maxQaRounds = Math.max(0, Math.min(5, job.config?.maxQaRounds ?? 2));
@@ -736,73 +709,6 @@ const server = http.createServer((req, res) => {
       session.lastActivity = Date.now();
       persistChat(session);
       res.end();
-      return;
-    }
-
-    if (url.pathname.startsWith("/api/workspace")) {
-      if (req.method === "GET" && url.pathname === "/api/workspace") {
-        if (!workspace) {
-          sendJson(res, 200, { connected: false } as WorkspaceStatus);
-          return;
-        }
-        sendJson(res, 200, await statusWorkspace(workspace.repoUrl, workspace.dir));
-        return;
-      }
-
-      if (req.method === "POST" && url.pathname === "/api/workspace/connect") {
-        let body: { repoUrl?: string };
-        try {
-          body = JSON.parse(await readBody(req)) as { repoUrl?: string };
-        } catch {
-          sendJson(res, 400, { error: "Invalid JSON body." });
-          return;
-        }
-        if (!body.repoUrl?.trim()) {
-          sendJson(res, 400, { error: "repoUrl is required." });
-          return;
-        }
-        try {
-          const status = await connectWorkspace(body.repoUrl.trim());
-          workspace = { repoUrl: status.repoUrl ?? body.repoUrl.trim(), dir: status.dir ?? "" };
-          sendJson(res, 200, status);
-        } catch (err) {
-          sendJson(res, 400, { error: err instanceof Error ? err.message : String(err) });
-        }
-        return;
-      }
-
-      if (!workspace) {
-        sendJson(res, 409, { error: "No workspace connected. Connect a repo in the Workspace panel first." });
-        return;
-      }
-      const dir = workspace.dir;
-      const repoUrl = workspace.repoUrl;
-      try {
-        if (req.method === "POST" && url.pathname === "/api/workspace/pull") {
-          await pullWorkspace(dir);
-        } else if (req.method === "POST" && url.pathname === "/api/workspace/commit") {
-          const body = JSON.parse(await readBody(req)) as { message?: string };
-          if (!body.message?.trim()) {
-            sendJson(res, 400, { error: "message is required." });
-            return;
-          }
-          await commitWorkspace(dir, body.message.trim());
-        } else if (req.method === "POST" && url.pathname === "/api/workspace/push") {
-          await pushWorkspace(dir);
-        } else if (req.method === "POST" && url.pathname === "/api/workspace/pr") {
-          const body = JSON.parse(await readBody(req)) as { title?: string; body?: string };
-          const title = body.title?.trim() || "daygle: workspace changes";
-          const prUrl = await openWorkspacePr(dir, title, body.body?.trim());
-          sendJson(res, 200, { prUrl });
-          return;
-        } else {
-          sendJson(res, 404, { error: "Not found." });
-          return;
-        }
-        sendJson(res, 200, await statusWorkspace(repoUrl, dir));
-      } catch (err) {
-        sendJson(res, 400, { error: err instanceof Error ? err.message : String(err) });
-      }
       return;
     }
 
