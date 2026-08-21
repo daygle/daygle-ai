@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { CheckCircle2, CircleAlert, Cpu, Gauge, Key, PlugZap, RotateCcw, Server, ShieldCheck, SlidersHorizontal } from "lucide-react";
 import { useOllama } from "../context/OllamaProvider";
 import { describeError, getVersion } from "../lib/ollama";
-import { DEFAULT_AGENT_URL, agentHealth, checkSandbox, getGithubToken, saveGithubToken } from "../lib/agent";
+import { DEFAULT_AGENT_URL, agentHealth, checkSandbox, saveGithubToken } from "../lib/agent";
+import { isAllowedOllamaUrl } from "../lib/utils";
 import { DEFAULT_GEN_OPTIONS, loadGenOptions, loadModelPreference, saveGenOptions, saveModelPreference, type GenOptions } from "../lib/genOptions";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
@@ -20,14 +21,10 @@ export function SettingsPage() {
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ ok: boolean; text: string } | null>(null);
 
-  const [agentUrl] = useState(() => {
-    try {
-      return localStorage.getItem("daygle.agentUrl") ?? DEFAULT_AGENT_URL;
-    } catch {
-      return DEFAULT_AGENT_URL;
-    }
-  });
+  // The agent holds GitHub credentials and is intentionally loopback-only.
+  const [agentUrl] = useState(DEFAULT_AGENT_URL);
   const [ghToken, setGhToken] = useState("");
+  const [ghTokenConfigured, setGhTokenConfigured] = useState(false);
   const [ghTokenSaving, setGhTokenSaving] = useState(false);
   const [ghTokenResult, setGhTokenResult] = useState<{ ok: boolean; text: string } | null>(null);
 
@@ -69,17 +66,16 @@ export function SettingsPage() {
     updateGen({ num_thread: undefined, num_batch: undefined, num_gpu: undefined });
   }
 
-  useEffect(() => {
-    getGithubToken(agentUrl).then(setGhToken).catch(() => {});
-  }, [agentUrl]);
-
   const [sandboxName, setSandboxName] = useState<string | null | undefined>(undefined);
   const [sandboxTesting, setSandboxTesting] = useState(false);
   const [sandboxResult, setSandboxResult] = useState<{ ok: boolean; text: string } | null>(null);
 
   useEffect(() => {
     agentHealth(agentUrl)
-      .then((health) => setSandboxName(health.sandbox))
+      .then((health) => {
+        setSandboxName(health.sandbox);
+        setGhTokenConfigured(health.token);
+      })
       .catch(() => setSandboxName(null));
   }, [agentUrl]);
 
@@ -108,6 +104,10 @@ export function SettingsPage() {
   async function handleTest() {
     const target = url.trim();
     if (!target) return;
+    if (!isAllowedOllamaUrl(target)) {
+      setTestResult({ ok: false, text: "Only the local Ollama service or the UI's /api/ollama proxy is allowed." });
+      return;
+    }
     setTesting(true);
     setTestResult(null);
     try {
@@ -121,7 +121,12 @@ export function SettingsPage() {
   }
 
   function handleSave() {
-    setBaseUrl(url.trim());
+    const target = url.trim();
+    if (!isAllowedOllamaUrl(target)) {
+      setTestResult({ ok: false, text: "Only the local Ollama service or the UI's /api/ollama proxy is allowed." });
+      return;
+    }
+    setBaseUrl(target);
     setTestResult(null);
   }
 
@@ -130,7 +135,9 @@ export function SettingsPage() {
     setGhTokenResult(null);
     try {
       await saveGithubToken(agentUrl, ghToken.trim());
-      setGhTokenResult({ ok: true, text: "Token saved." });
+      setGhTokenConfigured(Boolean(ghToken.trim()));
+      setGhToken("");
+      setGhTokenResult({ ok: true, text: ghToken.trim() ? "Token saved on the agent server." : "Token removed from the agent server." });
     } catch (err) {
       setGhTokenResult({ ok: false, text: describeError(err) });
     } finally {
@@ -147,7 +154,7 @@ export function SettingsPage() {
         <div>
           <h1 className="text-xl font-semibold tracking-tight">Settings</h1>
           <p className="text-sm text-muted-foreground">
-            Point daygle at an Ollama server and give the agent a GitHub token.
+Use the local Ollama server and give the agent a GitHub token.
           </p>
         </div>
       </header>
@@ -171,7 +178,7 @@ export function SettingsPage() {
                 id="ollama-url"
                 value={url}
                 onChange={(event) => setUrl(event.target.value)}
-                placeholder="http://localhost:11434"
+                placeholder="http://127.0.0.1:11434"
                 className="pl-9 font-mono"
               />
             </div>
@@ -334,9 +341,9 @@ export function SettingsPage() {
 
         <div className="rounded-2xl border border-border bg-card p-5">
           <p className="text-xs text-muted-foreground">
-            A personal access token lets the agent clone private repos and open pull requests. Create one at{" "}
+            A personal access token lets the agent clone private repos and open pull requests. It is stored only on the local agent server and is never sent back to this browser. Create one at{" "}
             <a href="https://github.com/settings/tokens" target="_blank" rel="noreferrer" className="text-accent underline">github.com/settings/tokens</a>{" "}
-            with <strong>repo</strong> scope.
+            with <strong>repo</strong> scope. Only loopback Ollama URLs are accepted; the agent and Ollama are not remote services.
           </p>
           <div className="mt-3 flex flex-col gap-2 sm:flex-row">
             <div className="relative flex-1">
@@ -353,6 +360,9 @@ export function SettingsPage() {
               {ghTokenSaving ? <Spinner /> : "Save"}
             </Button>
           </div>
+          <p className="mt-3 text-[11px] text-muted-foreground">
+            {ghTokenConfigured ? "A token is configured on the agent server. Enter a new token to replace it, or leave blank and save to remove it." : "No token is configured."}
+          </p>
           {ghTokenResult && (
             <p className={`mt-3 flex items-center gap-1.5 text-xs ${ghTokenResult.ok ? "text-accent" : "text-destructive"}`}>
               {ghTokenResult.ok ? <CheckCircle2 className="h-3.5 w-3.5 shrink-0" /> : <CircleAlert className="h-3.5 w-3.5 shrink-0" />}

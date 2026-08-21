@@ -12,7 +12,7 @@ It includes a self-hosted coding agent: point it at a GitHub repo, describe a ta
 - **Tailwind CSS** (dark, terminal-inspired theme)
 - **Framer Motion** for micro-interactions
 - **React Router** (hash-based, so it works on any static host)
-- Talks directly to the **Ollama REST API** from the browser
+- Talks to local services through the UI's same-origin proxy
 
 ## Installation
 
@@ -25,8 +25,8 @@ Bun, the bundled Ollama, the app (cloned + built), and systemd services - with:
 curl -fsSL https://raw.githubusercontent.com/daygle/daygle-ai/main/scripts/install-debian.sh | sudo bash
 ```
 
-It installs to `/opt/daygle-ai`, starts `daygle-ai-ui` (`:5173`), `daygle-ai-agent`
-(`:8787`), and `daygle-ai-ollama` (`:11434`) as systemd services, and pulls
+It installs to `/opt/daygle-ai`, starts `daygle-ai-ui` (`:5173` on the LAN), `daygle-ai-agent`
+(`127.0.0.1:8787`), and `daygle-ai-ollama` (`127.0.0.1:11434`) as systemd services, and pulls
 `qwen2.5-coder:7b`. Re-run it any time to update. Override defaults with env vars:
 
 ```bash
@@ -35,10 +35,9 @@ curl -fsSL https://raw.githubusercontent.com/daygle/daygle-ai/main/scripts/insta
 ```
 
 Available variables: `DAYGLE_DIR`, `DAYGLE_REPO`, `DAYGLE_REF`, `DAYGLE_MODEL`
-(set to `""` to skip pulling), `DAYGLE_SERVICES` (`0` to skip systemd). Open the
-UI from the machine itself (`http://localhost:5173`) or by the server's IP - the
-browser talks to Ollama and the agent directly, so it can't reach `localhost` on
-a *different* computer.
+(set to `""` to skip pulling), `DAYGLE_SERVICES` (`0` to skip systemd). Open the UI
+at `http://<server-ip>:5173` from the server itself or another trusted LAN machine.
+Only the UI is LAN-facing; Ollama and the agent remain loopback-only behind its proxy.
 
 ### Prerequisites (manual install)
 
@@ -124,12 +123,16 @@ bun run ollama:install   # downloads Ollama into .ollama/ (Linux needs zstd)
 ### Run
 
 ```bash
-bun run ollama           # terminal 1: Ollama server on http://localhost:11434
+bun run ollama           # terminal 1: Ollama server on http://127.0.0.1:11434
 bun run dev              # terminal 2: Daygle AI UI
 bun run agent            # terminal 3: agent server (needed for Agent pages)
 ```
 
-Open the printed URL - Daygle AI defaults its Ollama and agent URLs to the same host the UI is served from (so `http://localhost:11434` locally, or `http://<server-ip>:11434` when you open the UI over the LAN), and should connect to the bundled server immediately. Override either URL in **Settings** if needed. Pull a model from the **Models** page (or `.ollama/bin/ollama pull llama3.2`).
+Open `http://<server-ip>:5173` in a browser on the same server or a trusted LAN
+machine. Daygle AI keeps Ollama (`:11434`) and the agent (`:8787`) on `127.0.0.1`
+and proxies them through the UI, so those credential-bearing services are not
+exposed directly. Pull a model from the **Models** page
+(or `.ollama/bin/ollama pull llama3.2`).
 
 ### Auto-start on boot (systemd)
 
@@ -168,11 +171,13 @@ Ollama lives inside the project:
 
 - **Binary:** `.ollama/bin/ollama`
 - **Models:** `.ollama/models/` (gitignored)
-- **Server:** `bun run ollama` binds to `0.0.0.0:11434` and sets `OLLAMA_ORIGINS="*"` so the browser can reach it (the systemd install uses the same bind, so the UI works from other machines on your LAN)
+- **Server:** `bun run ollama` binds to `127.0.0.1:11434`; the LAN-facing UI proxies browser requests to it
 
 > On Linux, `bun run ollama:install` requires `zstd` to extract the download - `sudo apt-get install zstd`. On Windows, use WSL2 or the official Ollama installer.
 
-You can also point Daygle AI at an existing Ollama elsewhere: set the URL in **Settings**. Prefer a private tunnel (Tailscale/ngrok) over exposing an unauthenticated Ollama port to the internet.
+For safety, the bundled UI accepts its same-origin `/api/ollama` proxy or an
+Ollama endpoint on this machine's loopback interface. Do not expose Ollama itself
+through a tunnel or separate reverse proxy.
 
 **Model updates.** The Models page compares each installed model's digest against the current registry manifest and shows an **Update available** badge with a one-click **Update** button. The check runs through the local agent server (`bun run agent`) because the Ollama registry doesn't send CORS headers the browser could use directly.
 
@@ -181,10 +186,13 @@ You can also point Daygle AI at an existing Ollama elsewhere: set the URL in **S
 The **Agent** page drives a local agent server that does the actual work (the browser can't clone repos or run commands).
 
 ```bash
-bun run agent   # starts the agent server on http://localhost:8787
+bun run agent   # starts the agent server on http://127.0.0.1:8787
 ```
 
-The agent binds `0.0.0.0` (trust-the-LAN) so the browser can reach it from any machine on your network - the same as the Debian installer's `daygle-ai-agent.service`. The agent serves the GitHub token it holds, so keep this box on a network you control; set `HOST=127.0.0.1` if you want to restrict the agent to the machine itself.
+The agent binds to `127.0.0.1` by default and is not directly reachable from the
+LAN. The UI proxies the required API calls to it. The agent never returns the GitHub token to the browser; it reads it server-side for
+jobs. Keep `HOST=127.0.0.1` in deployments, and do not set it to `0.0.0.0` unless
+you have added authentication and a trusted reverse proxy.
 
 **Authentication** - pick one:
 
@@ -235,14 +243,15 @@ Set `DAYGLE_SANDBOX_NETWORK=1` to allow network access inside the sandbox (off b
 | `DAYGLE_SANDBOX_IMAGE` | `node:22-slim` | Docker/Podman image for sandboxed commands (pinned by digest on first use; `image@sha256:...` pins explicitly) |
 | `DAYGLE_SANDBOX_REGISTRIES` | `docker.io` | Comma-separated registries the sandbox image may come from |
 | `OLLAMA_MODELS` | `.ollama/models` | Where Ollama stores model weights |
-| `OLLAMA_HOST` | `0.0.0.0:11434` | Ollama bind address |
-| `OLLAMA_ORIGINS` | `*` | Allowed browser origins (required for the UI) |
-| `PORT` / `HOST` | `8787` / `0.0.0.0` | Agent server bind (set `HOST=127.0.0.1` to restrict to localhost) |
+| `OLLAMA_HOST` | `127.0.0.1:11434` | Ollama bind address; keep loopback-only |
+| `OLLAMA_ORIGINS` | local UI origins | Allowed browser origins; direct browser access is not required when using the UI proxy |
+| `PORT` / `HOST` | `8787` / `127.0.0.1` | Agent server bind; keep loopback-only |
+| `DAYGLE_UI_ORIGINS` | local UI origins | Comma-separated UI origins allowed to call the agent |
 
 ## Troubleshooting
 
 - **`Ollama is not installed`** - run `bun run ollama:install` (or `bun run setup`).
-- **UI can't connect / origin errors** - make sure `bun run ollama` is running with `OLLAMA_ORIGINS="*"` (the bundled script sets this).
+- **UI can't connect** - open `http://<server-ip>:5173` and ensure the UI service is running; the UI proxy connects to loopback Ollama and Agent services.
 - **Agent page says “Agent server not running”** - start it with `bun run agent`.
 - **`zstd: command not found`** (Linux) - `sudo apt-get install zstd`, then re-run setup.
 - **bubblewrap fails with “Operation not permitted”** (Ubuntu) - `sudo sysctl kernel.apparmor_restrict_unprivileged_userns=0`, or let it fall back to Docker.

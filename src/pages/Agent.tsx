@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type ChangeEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type ChangeEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { Bot, Check, ChevronDown, ChevronRight, ChevronUp, CircleAlert, Copy, Eye, ExternalLink, FileEdit, Files, Folder, GitBranch, GitCompare, GripVertical, ImagePlus, ListTodo, Loader2, MessageSquarePlus, PanelRightClose, PanelRightOpen, RefreshCw, Rocket, Search, Send, ShieldCheck, Square, StickyNote, Terminal, Trash2, User, X } from "lucide-react";
 import ReactMarkdown from "react-markdown";
@@ -32,6 +32,7 @@ import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Textarea } from "../components/ui/textarea";
 import { Modal } from "../components/ui/modal";
+import { LOCAL_OLLAMA_URL } from "../lib/utils";
 
 /** Human-readable "working" label for the running-indicator, per tool. */
 function toolStatus(name: string): string {
@@ -86,6 +87,23 @@ function relativeTime(ts: number): string {
   if (h < 24) return `${h}h ago`;
   const d = Math.round(h / 24);
   return `${d}d ago`;
+}
+
+function loadPanelWidth(key: string, fallback: number, min: number, max: number): number {
+  try {
+    const value = Number(localStorage.getItem(key));
+    return Number.isFinite(value) ? Math.min(max, Math.max(min, value)) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function savePanelWidth(key: string, value: number): void {
+  try {
+    localStorage.setItem(key, String(value));
+  } catch {
+    // Ignore storage errors; resizing still works for this session.
+  }
 }
 
 function messageTitle(messages: ChatBubble[]): string {
@@ -385,7 +403,7 @@ function WorkspacePanel({
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
 
   return (
-    <aside className="flex h-full w-[360px] max-w-[42vw] shrink-0 flex-col border-l border-border bg-card">
+    <aside className="flex h-full w-full min-w-0 flex-col border-l border-border bg-card">
       <div role="tablist" className="scrollbar-thin flex overflow-x-auto border-b border-border px-1">
         {tabs.map(({ id, label, icon: Icon, count }) => (
           <button
@@ -577,13 +595,9 @@ function WorkspacePanel({
 
 export function AgentPage() {
   const { baseUrl: ollamaUrl } = useOllama();
-  const [agentUrl] = useState(() => {
-    try {
-      return localStorage.getItem("daygle.agentUrl") ?? DEFAULT_AGENT_URL;
-    } catch {
-      return DEFAULT_AGENT_URL;
-    }
-  });
+  // The agent holds GitHub credentials; never let a persisted LAN URL override
+  // the loopback-only default.
+  const [agentUrl] = useState(DEFAULT_AGENT_URL);
 
   const [repoUrl, setRepoUrl] = useState("");
   const [sessionRepo, setSessionRepo] = useState("");
@@ -603,13 +617,16 @@ export function AgentPage() {
   const [workspace, setWorkspace] = useState<ChatWorkspace>({ files: [], changedFiles: [], stat: "", diff: "" });
   const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>("queue");
   const [workspaceOpen, setWorkspaceOpen] = useState(true);
+  const [workspaceWidth, setWorkspaceWidth] = useState(() => loadPanelWidth("daygle.agent.workspaceWidth", 360, 280, 620));
   const [workspaceRefreshing, setWorkspaceRefreshing] = useState(false);
   const [notes, setNotes] = useState("");
   const [autoSendQueued, setAutoSendQueued] = useState(false);
   const [taskOpen, setTaskOpen] = useState(false);
   const [confirmDeleteChat, setConfirmDeleteChat] = useState<string | null>(null);
   const [chatsSidebarOpen, setChatsSidebarOpen] = useState(true);
+  const [chatsSidebarWidth, setChatsSidebarWidth] = useState(() => loadPanelWidth("daygle.agent.chatsWidth", 256, 220, 420));
   const [verifying, setVerifying] = useState(false);
+  const resizeRef = useRef<{ side: "chats" | "workspace"; startX: number; startWidth: number } | null>(null);
   const verifyAbortRef = useRef<(() => void) | undefined>(undefined);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
@@ -618,6 +635,46 @@ export function AgentPage() {
   const abortRef = useRef<(() => void) | undefined>(undefined);
   const toolResultsRef = useRef<Map<string, string>>(new Map());
   const busyPollRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    const onPointerMove = (event: globalThis.PointerEvent) => {
+      const resize = resizeRef.current;
+      if (!resize) return;
+      const delta = resize.side === "chats" ? event.clientX - resize.startX : resize.startX - event.clientX;
+      if (resize.side === "chats") {
+        const width = Math.min(420, Math.max(220, resize.startWidth + delta));
+        setChatsSidebarWidth(width);
+        savePanelWidth("daygle.agent.chatsWidth", width);
+      } else {
+        const width = Math.min(620, Math.max(280, resize.startWidth + delta));
+        setWorkspaceWidth(width);
+        savePanelWidth("daygle.agent.workspaceWidth", width);
+      }
+    };
+    const stopResize = () => {
+      resizeRef.current = null;
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    };
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", stopResize);
+    return () => {
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", stopResize);
+      stopResize();
+    };
+  }, []);
+
+  function startResize(side: "chats" | "workspace", event: ReactPointerEvent) {
+    event.preventDefault();
+    resizeRef.current = {
+      side,
+      startX: event.clientX,
+      startWidth: side === "chats" ? chatsSidebarWidth : workspaceWidth,
+    };
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+  }
 
   const refreshWorkspace = useCallback(async () => {
     if (!sessionId) {
@@ -727,7 +784,7 @@ export function AgentPage() {
     const repo = repoUrl.trim();
     setLoading(true);
     try {
-      const session = await createChatSession(agentUrl, repo, model, ollamaUrl, loadGenOptions());
+      const session = await createChatSession(agentUrl, repo, model, LOCAL_OLLAMA_URL, loadGenOptions());
       setSessionId(session.id);
       setSessionRepo(repo);
       rememberSession(session.id);
@@ -1418,7 +1475,10 @@ export function AgentPage() {
     <div className="flex h-full min-w-0 overflow-hidden">
       {/* Left: chat list sidebar */}
       {chatsSidebarOpen && (
-        <aside className="flex w-64 shrink-0 flex-col border-r border-border bg-card/40">
+        <aside
+          style={{ width: `${chatsSidebarWidth}px` }}
+          className="relative flex shrink-0 flex-col border-r border-border bg-card/40"
+        >
           <div className="flex items-center justify-between gap-2 border-b border-border px-3 py-3">
             <span className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
               <MessageSquarePlus className="h-3.5 w-3.5" />
@@ -1498,6 +1558,15 @@ export function AgentPage() {
               })
             )}
           </div>
+          <button
+            type="button"
+            onPointerDown={(event) => startResize("chats", event)}
+            className="absolute right-0 top-0 z-20 flex h-full w-2 translate-x-1/2 cursor-col-resize touch-none items-center justify-center text-muted-foreground/30 hover:text-accent"
+            title="Resize chat list"
+            aria-label="Resize chat list"
+          >
+            <GripVertical className="h-5 w-5" />
+          </button>
         </aside>
       )}
       {!chatsSidebarOpen && (
@@ -1774,7 +1843,8 @@ export function AgentPage() {
       </main>
 
       {workspaceOpen ? (
-        <WorkspacePanel
+        <div style={{ width: `${workspaceWidth}px` }} className="relative h-full shrink-0">
+          <WorkspacePanel
           tab={workspaceTab}
           onTabChange={setWorkspaceTab}
           hasRepo={Boolean(sessionRepo)}
@@ -1794,7 +1864,17 @@ export function AgentPage() {
           onNotesChange={setNotes}
           onRefresh={() => void refreshWorkspace()}
           refreshing={workspaceRefreshing}
-        />
+          />
+          <button
+            type="button"
+            onPointerDown={(event) => startResize("workspace", event)}
+            className="absolute left-0 top-0 z-20 flex h-full w-2 -translate-x-1/2 cursor-col-resize touch-none items-center justify-center text-muted-foreground/30 hover:text-accent"
+            title="Resize workspace panel"
+            aria-label="Resize workspace panel"
+          >
+            <GripVertical className="h-5 w-5" />
+          </button>
+        </div>
       ) : (
         <button
           onClick={() => setWorkspaceOpen(true)}
@@ -1811,7 +1891,7 @@ export function AgentPage() {
         agentUrl={agentUrl}
         repoUrl={sessionRepo}
         model={model}
-        ollamaUrl={ollamaUrl}
+        ollamaUrl={LOCAL_OLLAMA_URL}
       />
     </div>
   );

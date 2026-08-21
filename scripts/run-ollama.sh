@@ -11,12 +11,13 @@ if [ ! -x "$OLLAMA" ]; then
 fi
 
 export OLLAMA_MODELS="${OLLAMA_MODELS:-$ROOT/.ollama/models}"
-export OLLAMA_HOST="${OLLAMA_HOST:-0.0.0.0:11434}"
-export OLLAMA_ORIGINS="${OLLAMA_ORIGINS:-*}"
+# Ollama is local-only: the browser UI and agent reach it through loopback.
+export OLLAMA_HOST="${OLLAMA_HOST:-127.0.0.1:11434}"
+export OLLAMA_ORIGINS="${OLLAMA_ORIGINS:-http://127.0.0.1:5173,http://localhost:5173}"
 
 mkdir -p "$OLLAMA_MODELS"
 
 echo "Starting Ollama…"
-echo "  API:     http://localhost:11434"
+echo "  API:     http://127.0.0.1:11434 (loopback only)"
 echo "  Models:  $OLLAMA_MODELS"
 exec "$OLLAMA" serve

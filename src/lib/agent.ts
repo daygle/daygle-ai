@@ -15,7 +15,7 @@ export type AgentEvent =
   | { type: "cancelled"; message: string }
   | { type: "done"; summary: string; prUrl?: string; branch?: string; changedFiles?: string[]; pending?: boolean };
 
-export const DEFAULT_AGENT_URL = sameHostUrl(8787);
+export const DEFAULT_AGENT_URL = sameHostUrl(8787, "/api/agent");
 
 export type RunStatus = "running" | "done" | "error" | "cancelled";
 
@@ -93,13 +93,6 @@ export async function checkSandbox(
   const res = await fetch(`${strip(serverUrl)}/api/sandbox/check`);
   if (!res.ok) throw new Error(`Sandbox check failed (${res.status})`);
   return (await res.json()) as { ok: boolean; name: string | null; output: string };
-}
-
-export async function getGithubToken(serverUrl: string): Promise<string> {
-  const res = await fetch(`${strip(serverUrl)}/api/github-token`);
-  if (!res.ok) throw new Error("Failed to load token");
-  const data = (await res.json()) as { token: string };
-  return data.token;
 }
 
 export async function saveGithubToken(serverUrl: string, token: string): Promise<void> {

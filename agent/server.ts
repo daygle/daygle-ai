@@ -28,9 +28,19 @@ import { reviewApprover, runTool, type CommandApprover } from "./tools";
 import { HistoryStore, type StoredJob } from "./history";
 import { runQaGate, type QaResult } from "./qa";
 import { checkModelUpdate } from "./updates";
+import { getAllowedUiOrigins, isAllowedUiOrigin, isLoopbackUrl, LOOPBACK_HOST } from "./security";
 
 const PORT = Number(process.env.PORT ?? 8787);
-const HOST = process.env.HOST ?? "0.0.0.0";
+// The agent holds GitHub credentials and must never be reachable from the LAN.
+// Keep this loopback-only unless an explicitly different deployment is intended.
+const HOST = process.env.HOST?.trim() || LOOPBACK_HOST;
+const ALLOWED_UI_ORIGINS = getAllowedUiOrigins();
+const DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434";
+
+function localOllamaUrl(value?: string): string | null {
+  const url = (value ?? DEFAULT_OLLAMA_URL).trim();
+  return isLoopbackUrl(url) ? url : null;
+}
 
 const TOKEN_PATH = path.join(os.homedir(), ".daygle", "github-token");
 
@@ -53,8 +63,12 @@ function loadGithubToken(): string {
 }
 
 function saveGithubToken(token: string): void {
-  fs.mkdirSync(path.dirname(TOKEN_PATH), { recursive: true });
-  fs.writeFileSync(TOKEN_PATH, token.trim(), "utf8");
+  const directory = path.dirname(TOKEN_PATH);
+  fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+  fs.chmodSync(directory, 0o700);
+  fs.writeFileSync(TOKEN_PATH, token.trim(), { encoding: "utf8", mode: 0o600 });
+  // chmod also tightens permissions when the file was created by an older version.
+  fs.chmodSync(TOKEN_PATH, 0o600);
 }
 
 interface Job {
@@ -146,7 +160,7 @@ async function rehydrateChat(id: string): Promise<ChatSession | null> {
     repoUrl: stored.repoUrl,
     root: dir,
     model: stored.model,
-    ollamaUrl: stored.ollamaUrl,
+    ollamaUrl: localOllamaUrl(stored.ollamaUrl) ?? DEFAULT_OLLAMA_URL,
     messages: stored.messages,
     createdAt: stored.createdAt,
     lastActivity: Date.now(),
@@ -180,10 +194,18 @@ function persist(job: Job): void {
 }
 
 const CORS_HEADERS: Record<string, string> = {
-  "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, PATCH, DELETE, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type",
 };
+
+/** Allow browser calls only from the local UI, never from arbitrary web origins. */
+function applyCors(req: IncomingMessage, res: ServerResponse): void {
+  const origin = req.headers.origin;
+  if (isAllowedUiOrigin(origin, ALLOWED_UI_ORIGINS)) {
+    res.setHeader("Access-Control-Allow-Origin", origin!);
+    res.setHeader("Vary", "Origin");
+  }
+}
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, { "Content-Type": "application/json", ...CORS_HEADERS });
@@ -197,7 +219,9 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
  * names - so everything after the first line is dropped.
  */
 function errMessage(err: unknown): string {
-  const text = errMessage(err);
+  const raw = err instanceof Error ? err.message : String(err);
+  const token = loadGithubToken();
+  const text = token ? raw.replaceAll(token, "[credential redacted]") : raw;
   const firstLine = text.split(/\r?\n/, 1)[0].trim();
   return firstLine.length > 500 ? `${firstLine.slice(0, 500)}…` : firstLine;
 }
@@ -565,8 +589,9 @@ function handleEvents(req: IncomingMessage, res: ServerResponse, job: Job): void
 }
 
 const server = http.createServer((req, res) => {
+  applyCors(req, res);
   void (async () => {
-    const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
+    const url = new URL(req.url ?? "/", `http://${req.headers.host ?? LOOPBACK_HOST}`);
 
     if (req.method === "OPTIONS") {
       res.writeHead(204, CORS_HEADERS);
@@ -623,8 +648,9 @@ const server = http.createServer((req, res) => {
 
     if (url.pathname === "/api/github-token") {
       if (req.method === "GET") {
-        const token = loadGithubToken();
-        sendJson(res, 200, { token });
+        // Never send the GitHub credential back to a browser. The UI only needs
+        // to know whether one is configured; jobs read it server-side.
+        sendJson(res, 200, { configured: Boolean(loadGithubToken()) });
         return;
       }
       if (req.method === "POST") {
@@ -886,6 +912,11 @@ const server = http.createServer((req, res) => {
         sendJson(res, 400, { error: "model is required." });
         return;
       }
+      const ollamaUrl = localOllamaUrl(body.ollamaUrl);
+      if (!ollamaUrl) {
+        sendJson(res, 400, { error: "ollamaUrl must point to the local Ollama server." });
+        return;
+      }
       const repoUrl = body.repoUrl?.trim() ?? "";
       const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
       // A repo is optional: with one, we clone for tool use; without, it's a
@@ -907,7 +938,7 @@ const server = http.createServer((req, res) => {
         repoUrl,
         root: dir,
         model: body.model.trim(),
-        ollamaUrl: (body.ollamaUrl ?? "http://localhost:11434").trim(),
+        ollamaUrl,
         messages: [],
         createdAt: Date.now(),
         lastActivity: Date.now(),
@@ -1034,14 +1065,16 @@ const server = http.createServer((req, res) => {
     }
 
     if (req.method === "GET" && url.pathname === "/api/model-updates") {
-      const ollamaUrl = (url.searchParams.get("ollamaUrl") ?? "").trim();
+      // Model-registry requests run from this server; never trust a browser-
+      // supplied Ollama destination, even though the UI normally uses a proxy.
+      const ollamaUrl = DEFAULT_OLLAMA_URL;
       const names = (url.searchParams.get("names") ?? "")
         .split(",")
         .map((name) => name.trim())
         .filter(Boolean)
         .slice(0, 50);
-      if (!ollamaUrl || names.length === 0) {
-        sendJson(res, 400, { error: "ollamaUrl and names are required." });
+      if (names.length === 0) {
+        sendJson(res, 400, { error: "At least one model name is required." });
         return;
       }
       const results = await Promise.all(names.map((name) => checkModelUpdate(ollamaUrl, name)));
@@ -1070,13 +1103,19 @@ const server = http.createServer((req, res) => {
         return;
       }
 
+      const ollamaUrl = localOllamaUrl(body.ollamaUrl);
+      if (!ollamaUrl) {
+        sendJson(res, 400, { error: "ollamaUrl must point to the local Ollama server." });
+        return;
+      }
+
       const job: Job = {
         id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
         repoUrl: body.repoUrl.trim(),
         task: body.task.trim(),
         model: body.model.trim(),
         baseBranch: (body.baseBranch ?? "").trim(),
-        ollamaUrl: (body.ollamaUrl ?? "http://localhost:11434").trim(),
+        ollamaUrl,
         status: "running",
         events: [],
         listeners: new Set(),

@@ -54,13 +54,8 @@ export function ModelsPage() {
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
 
-  const [agentUrl] = useState(() => {
-    try {
-      return localStorage.getItem("daygle.agentUrl") ?? DEFAULT_AGENT_URL;
-    } catch {
-      return DEFAULT_AGENT_URL;
-    }
-  });
+  // Model update checks go through the local agent server only.
+  const [agentUrl] = useState(DEFAULT_AGENT_URL);
   const [updates, setUpdates] = useState<Record<string, ModelUpdateInfo> | null>(null);
   const [checkingUpdates, setCheckingUpdates] = useState(false);
   const [updatesError, setUpdatesError] = useState<string | null>(null);

@@ -1,20 +1,32 @@
+export const LOCAL_OLLAMA_URL = "http://127.0.0.1:11434";
+
 export function cn(...classes: Array<string | false | null | undefined>): string {
   return classes.filter(Boolean).join(" ");
 }
 
 /**
- * Build a default service URL on the same host the UI is served from. When the
- * app is opened locally this resolves to `http://localhost:<port>`; when it's
- * opened over the LAN (`http://<server-ip>:5173`) it resolves to that server's
- * IP, so the bundled Ollama and agent are reachable without hand-editing the
- * URL in Settings. Falls back to localhost outside a browser.
+ * Build the browser URL for a service. The UI proxy keeps Ollama and Agent on
+ * loopback while allowing this UI itself to be opened from the LAN.
  */
-export function sameHostUrl(port: number, fallbackHost = "localhost"): string {
-  const host =
-    typeof window !== "undefined" && window.location?.hostname
-      ? window.location.hostname
-      : fallbackHost;
-  return `http://${host}:${port}`;
+export function sameHostUrl(port: number, proxyPath: string): string {
+  if (typeof window !== "undefined" && window.location?.origin) {
+    return `${window.location.origin}${proxyPath}`;
+  }
+  return `http://127.0.0.1:${port}`;
+}
+
+/** Accept loopback services or this UI's same-origin Ollama proxy. */
+export function isAllowedOllamaUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "http:" || url.username || url.password) return false;
+    if (url.hostname === "127.0.0.1" || url.hostname === "localhost") return true;
+    return typeof window !== "undefined" &&
+      url.origin === window.location.origin &&
+      url.pathname === "/api/ollama";
+  } catch {
+    return false;
+  }
 }
 
 export function formatBytes(bytes: number): string {

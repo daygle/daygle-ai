@@ -14,12 +14,12 @@ import {
   normalizeBaseUrl,
   type OllamaModel,
 } from "../lib/ollama";
-import { sameHostUrl } from "../lib/utils";
+import { isAllowedOllamaUrl, sameHostUrl } from "../lib/utils";
 
 const STORAGE_KEY = "daygle.ollamaUrl";
-// Default to the host the UI is served from, so the bundled Ollama is reachable
-// both locally and when the UI is opened over the LAN (http://<server-ip>:5173).
-const DEFAULT_URL = sameHostUrl(11434);
+// Keep the bundled Ollama on IPv4 loopback. The LAN-facing UI talks to it
+// through the Vite preview proxy, so browsers never connect to Ollama directly.
+const DEFAULT_URL = sameHostUrl(11434, "/api/ollama");
 
 interface OllamaContextValue {
   baseUrl: string;
@@ -39,7 +39,8 @@ const OllamaContext = createContext<OllamaContextValue | null>(null);
 export function OllamaProvider({ children }: { children: ReactNode }) {
   const [baseUrl, setBaseUrlState] = useState<string>(() => {
     try {
-      return localStorage.getItem(STORAGE_KEY) ?? DEFAULT_URL;
+      const stored = localStorage.getItem(STORAGE_KEY);
+      return stored && isAllowedOllamaUrl(stored) ? stored : DEFAULT_URL;
     } catch {
       return DEFAULT_URL;
     }
@@ -53,6 +54,10 @@ export function OllamaProvider({ children }: { children: ReactNode }) {
 
   const setBaseUrl = useCallback((url: string) => {
     const normalized = normalizeBaseUrl(url);
+    if (!isAllowedOllamaUrl(normalized)) {
+      setError("Only the local Ollama service or the UI's /api/ollama proxy is allowed.");
+      return;
+    }
     setBaseUrlState(normalized);
     try {
       localStorage.setItem(STORAGE_KEY, normalized);
