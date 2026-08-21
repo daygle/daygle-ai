@@ -163,7 +163,9 @@ Wants=daygle-ollama.service
 Type=simple
 User=$RUN_USER
 WorkingDirectory=$DIR
-ExecStart=$BUN_BIN run dev
+ExecStartPre=$BUN_BIN run build
+ExecStart=$BUN_BIN run preview --port 5173
+TimeoutStartSec=300
 Environment=HOME=$RUN_HOME
 Restart=always
 RestartSec=5

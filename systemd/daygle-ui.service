@@ -6,7 +6,9 @@ Wants=daygle-ollama.service
 [Service]
 Type=simple
 WorkingDirectory=/opt/daygle-ai
-ExecStart=/root/.bun/bin/bun run dev
+ExecStartPre=/root/.bun/bin/bun run build
+ExecStart=/root/.bun/bin/bun run preview --port 5173
+TimeoutStartSec=300
 Environment=HOME=/root
 Restart=always
 RestartSec=5
