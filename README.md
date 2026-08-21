@@ -168,7 +168,7 @@ Ollama lives inside the project:
 
 - **Binary:** `.ollama/bin/ollama`
 - **Models:** `.ollama/models/` (gitignored)
-- **Server:** `bun run ollama` binds to `0.0.0.0:11434` and sets `OLLAMA_ORIGINS="*"` so the browser can reach it (the systemd installer instead sets `OLLAMA_HOST=127.0.0.1:11434`, LAN-locking the model API)
+- **Server:** `bun run ollama` binds to `0.0.0.0:11434` and sets `OLLAMA_ORIGINS="*"` so the browser can reach it (the systemd install uses the same bind, so the UI works from other machines on your LAN)
 
 > On Linux, `bun run ollama:install` requires `zstd` to extract the download - `sudo apt-get install zstd`. On Windows, use WSL2 or the official Ollama installer.
 
@@ -184,7 +184,7 @@ The **Agent** page drives a local agent server that does the actual work (the br
 bun run agent   # starts the agent server on http://localhost:8787
 ```
 
-By default the agent binds `0.0.0.0` (trust-the-LAN). The Debian installer's `daygle-agent.service` sets `HOST=127.0.0.1`, so a systemd install only exposes the agent - and the GitHub token it serves - to the machine itself; use the Agent and chat features from that machine's UI.
+The agent binds `0.0.0.0` (trust-the-LAN) so the browser can reach it from any machine on your network - the same as the Debian installer's `daygle-agent.service`. The agent serves the GitHub token it holds, so keep this box on a network you control; set `HOST=127.0.0.1` if you want to restrict the agent to the machine itself.
 
 **Authentication** - pick one:
 
@@ -235,9 +235,9 @@ Set `DAYGLE_SANDBOX_NETWORK=1` to allow network access inside the sandbox (off b
 | `DAYGLE_SANDBOX_IMAGE` | `node:22-slim` | Docker/Podman image for sandboxed commands (pinned by digest on first use; `image@sha256:...` pins explicitly) |
 | `DAYGLE_SANDBOX_REGISTRIES` | `docker.io` | Comma-separated registries the sandbox image may come from |
 | `OLLAMA_MODELS` | `.ollama/models` | Where Ollama stores model weights |
-| `OLLAMA_HOST` | `0.0.0.0:11434` | Ollama bind address (the systemd installer sets `127.0.0.1:11434`) |
+| `OLLAMA_HOST` | `0.0.0.0:11434` | Ollama bind address |
 | `OLLAMA_ORIGINS` | `*` | Allowed browser origins (required for the UI) |
-| `PORT` / `HOST` | `8787` / `0.0.0.0` | Agent server bind (the systemd installer sets `HOST=127.0.0.1`) |
+| `PORT` / `HOST` | `8787` / `0.0.0.0` | Agent server bind (set `HOST=127.0.0.1` to restrict to localhost) |
 
 ## Troubleshooting
 
