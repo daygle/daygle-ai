@@ -600,12 +600,12 @@ export function AgentPage() {
   const [confirmDeleteChat, setConfirmDeleteChat] = useState<string | null>(null);
   const [chatsSidebarOpen, setChatsSidebarOpen] = useState(true);
   const [verifying, setVerifying] = useState(false);
-  const verifyAbortRef = useRef<() => void>();
+  const verifyAbortRef = useRef<(() => void) | undefined>(undefined);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const stickToBottomRef = useRef(true);
-  const abortRef = useRef<() => void>();
+  const abortRef = useRef<(() => void) | undefined>(undefined);
   const toolResultsRef = useRef<Map<string, string>>(new Map());
   const busyPollRef = useRef<number | null>(null);
 
@@ -1855,7 +1855,7 @@ function TaskRunnerModal({
   const [prUrl, setPrUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const jobIdRef = useRef<string | null>(null);
-  const closeEventsRef = useRef<() => void>();
+  const closeEventsRef = useRef<(() => void) | undefined>(undefined);
   const logEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
