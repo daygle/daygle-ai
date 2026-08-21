@@ -25,8 +25,8 @@ Bun, the bundled Ollama, the app (cloned + built), and systemd services - with:
 curl -fsSL https://raw.githubusercontent.com/daygle/daygle-ai/main/scripts/install-debian.sh | sudo bash
 ```
 
-It installs to `/opt/daygle-ai`, starts `daygle-ui` (`:5173`), `daygle-agent`
-(`:8787`), and `daygle-ollama` (`:11434`) as systemd services, and pulls
+It installs to `/opt/daygle-ai`, starts `daygle-ai-ui` (`:5173`), `daygle-ai-agent`
+(`:8787`), and `daygle-ai-ollama` (`:11434`) as systemd services, and pulls
 `qwen2.5-coder:7b`. Re-run it any time to update. Override defaults with env vars:
 
 ```bash
@@ -129,7 +129,7 @@ bun run dev              # terminal 2: Daygle AI UI
 bun run agent            # terminal 3: agent server (needed for Agent pages)
 ```
 
-Open the printed URL - Daygle AI defaults to `http://localhost:11434`, so it should connect to the bundled server immediately. Pull a model from the **Models** page (or `.ollama/bin/ollama pull llama3.2`).
+Open the printed URL - Daygle AI defaults its Ollama and agent URLs to the same host the UI is served from (so `http://localhost:11434` locally, or `http://<server-ip>:11434` when you open the UI over the LAN), and should connect to the bundled server immediately. Override either URL in **Settings** if needed. Pull a model from the **Models** page (or `.ollama/bin/ollama pull llama3.2`).
 
 ### Auto-start on boot (systemd)
 
@@ -142,9 +142,9 @@ sudo bash systemd/install-services.sh
 This starts Ollama, the UI, and the agent server on boot. Manage them with:
 
 ```bash
-systemctl status daygle-ollama daygle-ui daygle-agent
-sudo systemctl restart daygle-ollama daygle-ui daygle-agent
-journalctl -u daygle-ui -f
+systemctl status daygle-ai-ollama daygle-ai-ui daygle-ai-agent
+sudo systemctl restart daygle-ai-ollama daygle-ai-ui daygle-ai-agent
+journalctl -u daygle-ai-ui -f
 ```
 
 ### Model recommendations
@@ -184,7 +184,7 @@ The **Agent** page drives a local agent server that does the actual work (the br
 bun run agent   # starts the agent server on http://localhost:8787
 ```
 
-The agent binds `0.0.0.0` (trust-the-LAN) so the browser can reach it from any machine on your network - the same as the Debian installer's `daygle-agent.service`. The agent serves the GitHub token it holds, so keep this box on a network you control; set `HOST=127.0.0.1` if you want to restrict the agent to the machine itself.
+The agent binds `0.0.0.0` (trust-the-LAN) so the browser can reach it from any machine on your network - the same as the Debian installer's `daygle-ai-agent.service`. The agent serves the GitHub token it holds, so keep this box on a network you control; set `HOST=127.0.0.1` if you want to restrict the agent to the machine itself.
 
 **Authentication** - pick one:
 

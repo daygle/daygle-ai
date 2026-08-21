@@ -117,7 +117,16 @@ if [ "$INSTALL_SERVICES" = "1" ]; then
     printf '%s\n' "$2" > "/etc/systemd/system/$1"
   }
 
-  write_unit daygle-ollama.service "[Unit]
+  # Remove old (pre-rename) daygle-* units so a re-run doesn't leave two
+  # copies of each service fighting over the same ports.
+  for old in daygle-ollama daygle-ui daygle-agent; do
+    if [ -f "/etc/systemd/system/$old.service" ]; then
+      systemctl disable --now "$old.service" >/dev/null 2>&1 || true
+      rm -f "/etc/systemd/system/$old.service"
+    fi
+  done
+
+  write_unit daygle-ai-ollama.service "[Unit]
 Description=Daygle AI - Ollama Server
 After=network.target
 
@@ -136,10 +145,10 @@ RestartSec=5
 [Install]
 WantedBy=multi-user.target"
 
-  write_unit daygle-agent.service "[Unit]
+  write_unit daygle-ai-agent.service "[Unit]
 Description=Daygle AI - Agent Server
-After=network.target daygle-ollama.service
-Wants=daygle-ollama.service
+After=network.target daygle-ai-ollama.service
+Wants=daygle-ai-ollama.service
 
 [Service]
 Type=simple
@@ -153,10 +162,10 @@ RestartSec=5
 [Install]
 WantedBy=multi-user.target"
 
-  write_unit daygle-ui.service "[Unit]
+  write_unit daygle-ai-ui.service "[Unit]
 Description=Daygle AI - Web UI
-After=network.target daygle-ollama.service
-Wants=daygle-ollama.service
+After=network.target daygle-ai-ollama.service
+Wants=daygle-ai-ollama.service
 
 [Service]
 Type=simple
@@ -173,7 +182,7 @@ RestartSec=5
 WantedBy=multi-user.target"
 
   systemctl daemon-reload
-  systemctl enable --now daygle-ollama.service daygle-agent.service daygle-ui.service
+  systemctl enable --now daygle-ai-ollama.service daygle-ai-agent.service daygle-ai-ui.service
   ok "services enabled and started"
 else
   warn "Skipping systemd services (DAYGLE_SERVICES=0)."
@@ -194,8 +203,11 @@ if [ -n "$MODEL" ]; then
   done
   if curl -fsS http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then
     log "Pulling model '$MODEL' (this can take a while)…"
-    OLLAMA_HOST=127.0.0.1:11434 "$DIR/.ollama/bin/ollama" pull "$MODEL" \
-      && ok "model '$MODEL' ready" || warn "Model pull failed - pull later from the Models page."
+    if OLLAMA_HOST=127.0.0.1:11434 "$DIR/.ollama/bin/ollama" pull "$MODEL"; then
+      ok "model '$MODEL' ready"
+    else
+      warn "Model pull failed - pull later from the Models page."
+    fi
   else
     warn "Ollama did not become reachable - skipping model pull."
   fi
@@ -212,9 +224,9 @@ Ollama API:         http://$IP:11434
 Agent server:       http://$IP:8787
 
 Service control:
-  systemctl status  daygle-ui daygle-agent daygle-ollama
-  journalctl -fu daygle-ui        # (or daygle-agent / daygle-ollama)
-  systemctl restart daygle-ui
+  systemctl status  daygle-ai-ui daygle-ai-agent daygle-ai-ollama
+  journalctl -fu daygle-ai-ui        # (or daygle-ai-agent / daygle-ai-ollama)
+  systemctl restart daygle-ai-ui
 
 Note: the browser talks to Ollama and the agent directly, so open the UI from
 the same machine (http://localhost:5173), or reach this box by its IP above -

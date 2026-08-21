@@ -1,4 +1,5 @@
 import type { GenOptions } from "./genOptions";
+import { sameHostUrl } from "./utils";
 
 export type AgentEvent =
   | { type: "status"; message: string }
@@ -14,7 +15,7 @@ export type AgentEvent =
   | { type: "cancelled"; message: string }
   | { type: "done"; summary: string; prUrl?: string; branch?: string; changedFiles?: string[]; pending?: boolean };
 
-export const DEFAULT_AGENT_URL = "http://localhost:8787";
+export const DEFAULT_AGENT_URL = sameHostUrl(8787);
 
 export type RunStatus = "running" | "done" | "error" | "cancelled";
 

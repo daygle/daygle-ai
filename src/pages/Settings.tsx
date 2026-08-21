@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { CheckCircle2, CircleAlert, Cpu, Gauge, Key, PlugZap, RotateCcw, Server, ShieldCheck, SlidersHorizontal } from "lucide-react";
 import { useOllama } from "../context/OllamaProvider";
 import { describeError, getVersion } from "../lib/ollama";
-import { agentHealth, checkSandbox, getGithubToken, saveGithubToken } from "../lib/agent";
+import { DEFAULT_AGENT_URL, agentHealth, checkSandbox, getGithubToken, saveGithubToken } from "../lib/agent";
 import { DEFAULT_GEN_OPTIONS, loadGenOptions, loadModelPreference, saveGenOptions, saveModelPreference, type GenOptions } from "../lib/genOptions";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
@@ -22,9 +22,9 @@ export function SettingsPage() {
 
   const [agentUrl] = useState(() => {
     try {
-      return localStorage.getItem("daygle.agentUrl") ?? "http://localhost:8787";
+      return localStorage.getItem("daygle.agentUrl") ?? DEFAULT_AGENT_URL;
     } catch {
-      return "http://localhost:8787";
+      return DEFAULT_AGENT_URL;
     }
   });
   const [ghToken, setGhToken] = useState("");

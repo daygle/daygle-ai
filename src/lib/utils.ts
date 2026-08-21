@@ -2,6 +2,21 @@ export function cn(...classes: Array<string | false | null | undefined>): string
   return classes.filter(Boolean).join(" ");
 }
 
+/**
+ * Build a default service URL on the same host the UI is served from. When the
+ * app is opened locally this resolves to `http://localhost:<port>`; when it's
+ * opened over the LAN (`http://<server-ip>:5173`) it resolves to that server's
+ * IP, so the bundled Ollama and agent are reachable without hand-editing the
+ * URL in Settings. Falls back to localhost outside a browser.
+ */
+export function sameHostUrl(port: number, fallbackHost = "localhost"): string {
+  const host =
+    typeof window !== "undefined" && window.location?.hostname
+      ? window.location.hostname
+      : fallbackHost;
+  return `http://${host}:${port}`;
+}
+
 export function formatBytes(bytes: number): string {
   if (!bytes || bytes < 0) return "0 B";
   const units = ["B", "KB", "MB", "GB", "TB"];

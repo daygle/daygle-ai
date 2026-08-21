@@ -4,6 +4,7 @@ import { Bot, Check, ChevronDown, ChevronRight, ChevronUp, CircleAlert, Copy, Ey
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
+  DEFAULT_AGENT_URL,
   cancelAgentJob,
   cancelChat,
   createChatSession,
@@ -578,9 +579,9 @@ export function AgentPage() {
   const { baseUrl: ollamaUrl } = useOllama();
   const [agentUrl] = useState(() => {
     try {
-      return localStorage.getItem("daygle.agentUrl") ?? "http://localhost:8787";
+      return localStorage.getItem("daygle.agentUrl") ?? DEFAULT_AGENT_URL;
     } catch {
-      return "http://localhost:8787";
+      return DEFAULT_AGENT_URL;
     }
   });
 

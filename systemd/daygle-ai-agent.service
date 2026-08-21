@@ -1,7 +1,7 @@
 [Unit]
 Description=Daygle AI - Agent Server
-After=network.target daygle-ollama.service
-Wants=daygle-ollama.service
+After=network.target daygle-ai-ollama.service
+Wants=daygle-ai-ollama.service
 
 [Service]
 Type=simple
