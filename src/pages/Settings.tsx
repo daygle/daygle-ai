@@ -1,12 +1,18 @@
 import { useEffect, useRef, useState } from "react";
-import { CheckCircle2, CircleAlert, Cpu, Gauge, Key, PlugZap, RotateCcw, Server, SlidersHorizontal } from "lucide-react";
+import { CheckCircle2, CircleAlert, Cpu, Gauge, Key, PlugZap, RotateCcw, Server, ShieldCheck, SlidersHorizontal } from "lucide-react";
 import { useOllama } from "../context/OllamaProvider";
 import { describeError, getVersion } from "../lib/ollama";
-import { getGithubToken, saveGithubToken } from "../lib/agent";
+import { agentHealth, checkSandbox, getGithubToken, saveGithubToken } from "../lib/agent";
 import { DEFAULT_GEN_OPTIONS, loadGenOptions, loadModelPreference, saveGenOptions, saveModelPreference, type GenOptions } from "../lib/genOptions";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Spinner } from "../components/ui/spinner";
+
+const SANDBOX_LABELS: Record<string, string> = {
+  bubblewrap: "Bubblewrap",
+  docker: "Docker",
+  podman: "Podman",
+};
 
 export function SettingsPage() {
   const { baseUrl, setBaseUrl, connected, checking, version, error, models } = useOllama();
@@ -66,6 +72,31 @@ export function SettingsPage() {
   useEffect(() => {
     getGithubToken(agentUrl).then(setGhToken).catch(() => {});
   }, [agentUrl]);
+
+  const [sandboxName, setSandboxName] = useState<string | null | undefined>(undefined);
+  const [sandboxTesting, setSandboxTesting] = useState(false);
+  const [sandboxResult, setSandboxResult] = useState<{ ok: boolean; text: string } | null>(null);
+
+  useEffect(() => {
+    agentHealth(agentUrl)
+      .then((health) => setSandboxName(health.sandbox))
+      .catch(() => setSandboxName(null));
+  }, [agentUrl]);
+
+  async function handleSandboxCheck() {
+    setSandboxTesting(true);
+    setSandboxResult(null);
+    try {
+      const result = await checkSandbox(agentUrl);
+      setSandboxName(result.name);
+      setSandboxResult({ ok: result.ok, text: result.output });
+    } catch (err) {
+      setSandboxName(null);
+      setSandboxResult({ ok: false, text: describeError(err) });
+    } finally {
+      setSandboxTesting(false);
+    }
+  }
 
   useEffect(() => {
     if (models.length === 0 || (defaultModel && models.some((model) => model.name === defaultModel))) return;
@@ -327,6 +358,60 @@ export function SettingsPage() {
               {ghTokenResult.ok ? <CheckCircle2 className="h-3.5 w-3.5 shrink-0" /> : <CircleAlert className="h-3.5 w-3.5 shrink-0" />}
               {ghTokenResult.text}
             </p>
+          )}
+        </div>
+      </section>
+
+      <section className="space-y-4">
+        <div className="flex items-center gap-2.5">
+          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-accent/15 text-accent">
+            <ShieldCheck className="h-4 w-4" />
+          </div>
+          <h2 className="text-sm font-semibold">Sandbox</h2>
+        </div>
+
+        <div className="rounded-2xl border border-border bg-card p-5">
+          <div className="flex flex-wrap items-center gap-3">
+            <span className="flex items-center gap-1.5 text-xs font-medium">
+              <span
+                className={`h-1.5 w-1.5 rounded-full ${
+                  sandboxName === undefined ? "bg-muted" : sandboxName ? "bg-accent" : "bg-destructive"
+                }`}
+              />
+              <span
+                className={
+                  sandboxName === undefined
+                    ? "text-muted-foreground"
+                    : sandboxName
+                      ? "text-accent"
+                      : "text-destructive"
+                }
+              >
+                {sandboxName === undefined
+                  ? "Checking sandbox…"
+                  : sandboxName
+                    ? `${SANDBOX_LABELS[sandboxName] ?? sandboxName} active`
+                    : "No sandbox backend detected"}
+              </span>
+            </span>
+            <Button variant="outline" size="sm" onClick={handleSandboxCheck} disabled={sandboxTesting}>
+              {sandboxTesting ? <Spinner /> : <ShieldCheck className="h-3.5 w-3.5" />}
+              {sandboxTesting ? "Testing…" : "Test sandbox"}
+            </Button>
+          </div>
+          <p className="mt-2 text-xs text-muted-foreground">
+            {sandboxName
+              ? "Commands the agent runs (tests, builds, and the QA gate) execute inside the sandbox - the repo is the only writable location and network is off by default."
+              : "No sandbox backend detected - commands run directly on the host, gated by the block/allow/approve policy. Install bubblewrap, Docker, or Podman for isolation."}
+          </p>
+          {sandboxResult && (
+            <pre
+              className={`mt-3 max-h-40 overflow-auto whitespace-pre-wrap rounded-md border border-border bg-background p-3 font-mono text-[11px] leading-relaxed ${
+                sandboxResult.ok ? "text-accent" : "text-destructive/90"
+              }`}
+            >
+              {sandboxResult.text}
+            </pre>
           )}
         </div>
       </section>

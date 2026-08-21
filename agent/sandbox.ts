@@ -4,6 +4,12 @@ import fs from "node:fs";
 export interface SandboxRunner {
   name: string;
   run(root: string, command: string, signal?: AbortSignal): Promise<string>;
+  /** Structured variant for harness code (e.g. the QA gate): raw exit code and output. */
+  runCapture(
+    root: string,
+    command: string,
+    opts?: { signal?: AbortSignal; timeoutMs?: number },
+  ): Promise<CaptureResult>;
 }
 
 const NETWORK_ENABLED = process.env.DAYGLE_SANDBOX_NETWORK === "1";
@@ -12,7 +18,7 @@ const TIMEOUT_MS = 180_000;
 const CAPTURE_LIMIT = 200_000;
 const MAX_OUTPUT = 12_000;
 
-interface CaptureResult {
+export interface CaptureResult {
   code: number | null;
   stdout: string;
   stderr: string;
@@ -34,7 +40,7 @@ function hasCommand(cmd: string): Promise<boolean> {
 
 function spawnCapture(
   args: string[],
-  opts: { cwd?: string; env?: Record<string, string>; signal?: AbortSignal } = {},
+  opts: { cwd?: string; env?: Record<string, string>; signal?: AbortSignal; timeoutMs?: number } = {},
 ): Promise<CaptureResult> {
   return new Promise((resolve) => {
     const child = spawn(args[0], args.slice(1), {
@@ -78,7 +84,7 @@ function spawnCapture(
         }
       }
       finish({ code: null, stdout, stderr, timedOut: true, overflow });
-    }, TIMEOUT_MS);
+    }, opts.timeoutMs ?? TIMEOUT_MS);
 
     const append = (chunk: Buffer, target: "stdout" | "stderr") => {
       const text = chunk.toString();
@@ -148,26 +154,34 @@ function buildBwrapArgs(root: string, command: string): string[] {
 }
 
 function bwrapRunner(): SandboxRunner {
+  const runCapture: SandboxRunner["runCapture"] = async (root, command, opts) =>
+    spawnCapture(buildBwrapArgs(root, command), { signal: opts?.signal, timeoutMs: opts?.timeoutMs });
   return {
     name: "bubblewrap",
-    async run(root, command, signal) {
-      return formatResult(await spawnCapture(buildBwrapArgs(root, command), { signal }));
-    },
+    runCapture,
+    run: (root, command, signal) => runCapture(root, command, { signal }).then(formatResult),
   };
 }
 
 function containerRunner(engine: "docker" | "podman"): SandboxRunner {
+  const runCapture: SandboxRunner["runCapture"] = async (root, command, opts) => {
+    const args = [engine, "run", "--rm"];
+    if (!NETWORK_ENABLED) args.push("--network", "none");
+    args.push("--memory", "2g", "--cpus", "2");
+    args.push("-v", `${root}:/work`, "-w", "/work");
+    args.push(DEFAULT_IMAGE, "sh", "-c", command);
+    return spawnCapture(args, { signal: opts?.signal, timeoutMs: opts?.timeoutMs });
+  };
   return {
     name: engine,
-    async run(root, command, signal) {
-      const args = [engine, "run", "--rm"];
-      if (!NETWORK_ENABLED) args.push("--network", "none");
-      args.push("--memory", "2g", "--cpus", "2");
-      args.push("-v", `${root}:/work`, "-w", "/work");
-      args.push(DEFAULT_IMAGE, "sh", "-c", command);
-      return formatResult(await spawnCapture(args, { signal }));
-    },
+    runCapture,
+    run: (root, command, signal) => runCapture(root, command, { signal }).then(formatResult),
   };
+}
+
+/** Whether the sandbox is configured to allow network access (DAYGLE_SANDBOX_NETWORK=1). */
+export function isSandboxNetworkEnabled(): boolean {
+  return NETWORK_ENABLED;
 }
 
 export async function detectSandbox(): Promise<SandboxRunner | null> {

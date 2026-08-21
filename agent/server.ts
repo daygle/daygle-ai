@@ -393,6 +393,7 @@ async function executeJob(job: Job): Promise<void> {
           root: workDir,
           command: job.config?.qaCommand,
           signal,
+          sandbox: sandbox ?? undefined,
           onStatus: (message) => emit({ type: "status", message }),
         });
         publish(job, { type: "qa", command: qa.command, output: qa.output, passed: qa.passed, skipped: !qa.ran });
@@ -569,6 +570,39 @@ const server = http.createServer((req, res) => {
       return;
     }
 
+    // Exercising the sandbox: run a trivial command through the active backend
+    // so the UI can show not just which backend is detected, but whether it
+    // actually works right now.
+    if (req.method === "GET" && url.pathname === "/api/sandbox/check") {
+      try {
+        if (!sandbox) {
+          sendJson(res, 200, {
+            ok: false,
+            name: null,
+            output: "No sandbox backend detected - commands run on the host (policy-gated).",
+          });
+          return;
+        }
+        const result = await sandbox.runCapture(os.tmpdir(), "true", { timeoutMs: 60_000 });
+        const output =
+          result.code === 0
+            ? `Sandbox check passed - ${sandbox.name} ran a test command successfully.`
+            : `Sandbox check failed (exit ${result.code ?? "error"}).\n${(
+                `${result.stdout}\n${result.stderr}`
+              )
+                .trim()
+                .slice(0, 4000)}`;
+        sendJson(res, 200, { ok: result.code === 0, name: sandbox.name, output });
+      } catch (err) {
+        sendJson(res, 200, {
+          ok: false,
+          name: sandbox?.name ?? null,
+          output: `Sandbox check failed: ${err instanceof Error ? err.message : String(err)}`,
+        });
+      }
+      return;
+    }
+
     if (url.pathname === "/api/github-token") {
       if (req.method === "GET") {
         const token = loadGithubToken();
@@ -694,6 +728,7 @@ const server = http.createServer((req, res) => {
           root: session.root,
           command: body.qaCommand?.trim() || undefined,
           signal: controller.signal,
+          sandbox: sandbox ?? undefined,
           onStatus: (message) => emit({ type: "status", message }),
         });
         emit({ type: "qa", command: qa.command, output: qa.output, passed: qa.passed, skipped: !qa.ran });

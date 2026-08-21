@@ -82,6 +82,18 @@ export async function agentHealth(
   return (await res.json()) as { ok: boolean; gh: boolean; app: boolean; token: boolean; sandbox: string | null };
 }
 
+/**
+ * Asks the agent server to run a trivial command through the active sandbox
+ * backend, proving it works end-to-end (not just that one was detected).
+ */
+export async function checkSandbox(
+  serverUrl: string,
+): Promise<{ ok: boolean; name: string | null; output: string }> {
+  const res = await fetch(`${strip(serverUrl)}/api/sandbox/check`);
+  if (!res.ok) throw new Error(`Sandbox check failed (${res.status})`);
+  return (await res.json()) as { ok: boolean; name: string | null; output: string };
+}
+
 export async function getGithubToken(serverUrl: string): Promise<string> {
   const res = await fetch(`${strip(serverUrl)}/api/github-token`);
   if (!res.ok) throw new Error("Failed to load token");

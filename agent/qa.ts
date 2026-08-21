@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { isSandboxNetworkEnabled, type SandboxRunner } from "./sandbox";
 
 export interface QaResult {
   /** Whether any verification command actually ran (false = nothing to verify). */
@@ -110,18 +111,21 @@ function detectCommands(root: string): string[] {
 
 /**
  * Runs the QA gate for a repo: installs dependencies if missing, then runs the
- * detected (or configured) verification commands. Runs on the host, not the
- * sandbox - the commands come from the repo's package.json or an explicit
- * user-provided QA command, so they're trusted harness input, and installs
- * need network anyway.
+ * detected (or configured) verification commands. Verification commands run
+ * inside the sandbox when one is available (the same sandbox used for
+ * run_command); dependency installs stay on the host unless the sandbox has
+ * network enabled, because installs need network access which is off by
+ * default.
  */
 export async function runQaGate(opts: {
   root: string;
   command?: string;
   signal?: AbortSignal;
   onStatus?: (message: string) => void;
+  /** When set, verification commands run inside this sandbox (like run_command). */
+  sandbox?: SandboxRunner;
 }): Promise<QaResult> {
-  const { root, signal } = opts;
+  const { root, signal, sandbox } = opts;
   const commands = opts.command?.trim() ? [opts.command.trim()] : detectCommands(root);
 
   if (commands.length === 0) {
@@ -137,10 +141,24 @@ export async function runQaGate(opts: {
   const outputParts: string[] = [];
   let passed = true;
 
+  // Run a command through the sandbox when one is available, falling back to
+  // the host otherwise. The sandbox handles its own cwd (the repo is mounted
+  // at /work), so only host execution needs an explicit cwd.
+  const run = async (command: string, timeoutMs: number) => {
+    if (sandbox) {
+      const result = await sandbox.runCapture(root, command, { signal, timeoutMs });
+      return { code: result.code, stdout: result.stdout, stderr: result.stderr, timedOut: result.timedOut };
+    }
+    return spawnCapture(command, { cwd: root, timeoutMs, signal });
+  };
+
   if (fs.existsSync(path.join(root, "package.json")) && !fs.existsSync(path.join(root, "node_modules"))) {
     const pm = detectPackageManager(root);
-    opts.onStatus?.(`QA: installing dependencies (${pm} install)…`);
-    const install = await spawnCapture(`${pm} install`, { cwd: root, timeoutMs: INSTALL_TIMEOUT_MS, signal });
+    // Installs need network, which the sandbox has off by default - so they
+    // run on the host unless the sandbox was explicitly given network access.
+    const inSandbox = Boolean(sandbox) && isSandboxNetworkEnabled();
+    opts.onStatus?.(`QA: installing dependencies (${pm} install${inSandbox ? ", sandboxed" : ""})…`);
+    const install = await run(`${pm} install`, INSTALL_TIMEOUT_MS);
     if (install.timedOut) {
       return { ran: true, command: `${pm} install`, output: "QA: dependency install timed out.", passed: false };
     }
@@ -151,8 +169,8 @@ export async function runQaGate(opts: {
   }
 
   for (const command of commands) {
-    opts.onStatus?.(`QA: running ${command}…`);
-    const result = await spawnCapture(command, { cwd: root, timeoutMs: COMMAND_TIMEOUT_MS, signal });
+    opts.onStatus?.(`QA: running ${command}${sandbox ? " (sandboxed)" : ""}…`);
+    const result = await run(command, COMMAND_TIMEOUT_MS);
     const output = truncate(`${result.stdout}\n${result.stderr}`.trim(), MAX_OUTPUT);
     if (result.timedOut) {
       passed = false;
