@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type ChangeEvent, type PointerEvent as ReactPointerEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { Bot, Check, ChevronDown, ChevronRight, ChevronUp, CircleAlert, Copy, Eye, ExternalLink, FileEdit, Files, Folder, GitBranch, GitCompare, GripVertical, ImagePlus, ListTodo, Loader2, MessageSquarePlus, PanelRightClose, PanelRightOpen, RefreshCw, Rocket, Search, Send, ShieldCheck, Square, StickyNote, Terminal, Trash2, User, X } from "lucide-react";
 import ReactMarkdown from "react-markdown";
@@ -33,6 +33,7 @@ import { Input } from "../components/ui/input";
 import { Textarea } from "../components/ui/textarea";
 import { Modal } from "../components/ui/modal";
 import { LOCAL_OLLAMA_URL } from "../lib/utils";
+import { parseDiff } from "../lib/diff";
 
 /** Human-readable "working" label for the running-indicator, per tool. */
 function toolStatus(name: string): string {
@@ -155,6 +156,77 @@ function DiffView({ diff }: { diff: string }) {
         </div>
       ))}
     </pre>
+  );
+}
+
+/**
+ * GitHub-style "files changed" list: one row per file with +N/−N counts, and
+ * an expandable unified diff underneath. Replaces the raw stat line + full
+ * diff dump so the change set can be scanned at a glance.
+ */
+function ChangesView({ diff }: { diff: string }) {
+  const files = useMemo(() => parseDiff(diff), [diff]);
+  const [open, setOpen] = useState<Set<string>>(() => new Set());
+
+  let additions = 0;
+  let deletions = 0;
+  for (const file of files) {
+    additions += file.additions;
+    deletions += file.deletions;
+  }
+
+  if (files.length === 0) return <DiffView diff={diff} />;
+
+  const toggle = (path: string) =>
+    setOpen((prev) => {
+      const next = new Set(prev);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
+
+  // The row already shows the path, so drop git's per-file preamble lines and
+  // show just the hunks (`@@ ... @@` plus +/- context), like GitHub's view.
+  const hunks = (content: string) =>
+    content
+      .split("\n")
+      .filter((line) => !line.startsWith("diff --git ") && !line.startsWith("index ") && !line.startsWith("--- ") && !line.startsWith("+++ "))
+      .join("\n");
+
+  return (
+    <div className="space-y-1">
+      <p className="mb-2 text-[11px] text-muted-foreground">
+        {files.length} file{files.length === 1 ? "" : "s"} changed
+        <span className="text-accent"> · +{additions}</span>
+        <span className="text-destructive/90"> · −{deletions}</span>
+      </p>
+      {files.map((file) => {
+        const expanded = open.has(file.path);
+        return (
+          <div key={file.path} className="overflow-hidden rounded-lg border border-border bg-background">
+            <button
+              type="button"
+              onClick={() => toggle(file.path)}
+              className="flex w-full items-center gap-2 px-2.5 py-2 text-left transition-colors hover:bg-muted/50"
+            >
+              {expanded ? (
+                <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+              ) : (
+                <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+              )}
+              <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-foreground">{file.path}</span>
+              <span className="shrink-0 whitespace-nowrap font-mono text-[11px] tabular-nums">
+                {file.additions > 0 && <span className="text-accent">+{file.additions}</span>}
+                {file.additions > 0 && file.deletions > 0 && <span className="text-muted-foreground/40"> </span>}
+                {file.deletions > 0 && <span className="text-destructive/90">−{file.deletions}</span>}
+                {file.additions === 0 && file.deletions === 0 && <span className="text-muted-foreground">±0</span>}
+              </span>
+            </button>
+            {expanded && <DiffView diff={hunks(file.content)} />}
+          </div>
+        );
+      })}
+    </div>
   );
 }
 
@@ -663,10 +735,7 @@ function WorkspacePanel({
 
         {activeTab === "changes" && (
           workspace.diff ? (
-            <div>
-              <p className="mb-2 text-[11px] text-muted-foreground">{workspace.stat || "Working directory changes"}</p>
-              <DiffView diff={workspace.diff} />
-            </div>
+            <ChangesView diff={workspace.diff} />
           ) : <div className="py-8 text-center text-xs text-muted-foreground">No working directory changes.</div>
         )}
 
