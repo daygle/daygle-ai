@@ -37,7 +37,7 @@ export function SettingsPage() {
   // These options autosave to the browser as you type (no Save button). A brief
   // "Saved" flash makes that obvious and keeps the cards consistent.
   const [savedFlash, setSavedFlash] = useState(false);
-  const savedTimer = useRef<number>();
+  const savedTimer = useRef<number | undefined>(undefined);
   function markSaved() {
     setSavedFlash(true);
     window.clearTimeout(savedTimer.current);
