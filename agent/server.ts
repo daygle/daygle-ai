@@ -570,10 +570,16 @@ const server = http.createServer((req, res) => {
       return;
     }
 
-    // Exercising the sandbox: run a trivial command through the active backend
-    // so the UI can show not just which backend is detected, but whether it
-    // actually works right now.
+    // Exercising the sandbox: re-detect the backend on demand (so a backend
+    // installed since the agent started is picked up without a restart), then
+    // run a trivial command through it so the UI can show not just which
+    // backend is active, but whether it actually works right now.
     if (req.method === "GET" && url.pathname === "/api/sandbox/check") {
+      const fresh = await detectSandbox();
+      if (fresh?.name !== sandbox?.name) {
+        sandbox = fresh;
+        console.log(fresh ? `command sandbox: ${fresh.name}` : "command sandbox: none (host execution)");
+      }
       try {
         if (!sandbox) {
           sendJson(res, 200, {

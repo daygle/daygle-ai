@@ -14,6 +14,13 @@ export interface SandboxRunner {
 
 const NETWORK_ENABLED = process.env.DAYGLE_SANDBOX_NETWORK === "1";
 const DEFAULT_IMAGE = process.env.DAYGLE_SANDBOX_IMAGE ?? "node:22-slim";
+// Registries the sandbox image may be pulled from (comma-separated). Anything
+// else is refused at run time, so a tampered DAYGLE_SANDBOX_IMAGE can't point
+// the sandbox at an arbitrary registry.
+const ALLOWED_REGISTRIES = (process.env.DAYGLE_SANDBOX_REGISTRIES ?? "docker.io")
+  .split(",")
+  .map((entry) => entry.trim().toLowerCase())
+  .filter(Boolean);
 const TIMEOUT_MS = 180_000;
 const CAPTURE_LIMIT = 200_000;
 const MAX_OUTPUT = 12_000;
@@ -163,15 +170,125 @@ function bwrapRunner(): SandboxRunner {
   };
 }
 
+interface ParsedImageRef {
+  registry: string;
+  repository: string;
+  digest?: string;
+}
+
+/**
+ * Normalizes a container image reference and defaults the registry to
+ * docker.io: `node:22-slim`, `library/node:22-slim`, and
+ * `docker.io/library/node:22-slim@sha256:...` all parse; a host with a `.` or
+ * `:` (or `localhost`) before the first slash is treated as a registry.
+ */
+export function parseImageRef(ref: string): ParsedImageRef {
+  let rest = ref.trim();
+  let digest: string | undefined;
+  const at = rest.lastIndexOf("@");
+  if (at !== -1) {
+    digest = rest.slice(at + 1);
+    rest = rest.slice(0, at);
+  }
+  let registry = "docker.io";
+  let repository = rest;
+  const slash = rest.indexOf("/");
+  if (slash !== -1) {
+    const first = rest.slice(0, slash);
+    if (first.includes(".") || first.includes(":") || first === "localhost") {
+      registry = first;
+      repository = rest.slice(slash + 1);
+    }
+  }
+  // docker.io implies the `library` namespace for single-name references.
+  if (registry === "docker.io" && !repository.includes("/")) {
+    repository = `library/${repository}`;
+  }
+  return { registry, repository, digest };
+}
+
+/** Refuses images from registries outside the allowlist (supply-chain hardening). */
+export function assertAllowedImage(ref: string): ParsedImageRef {
+  const parsed = parseImageRef(ref);
+  if (!ALLOWED_REGISTRIES.includes(parsed.registry)) {
+    throw new Error(
+      `Sandbox image registry "${parsed.registry}" is not in the allowlist (${ALLOWED_REGISTRIES.join(", ")}). ` +
+        `Allow it with DAYGLE_SANDBOX_REGISTRIES or use an image from an allowed registry.`,
+    );
+  }
+  return parsed;
+}
+
 function containerRunner(engine: "docker" | "podman"): SandboxRunner {
+  // Resolved once and frozen, so every container runs the exact image content
+  // that was first pulled - a registry tag moving later can't silently change
+  // what the sandbox executes.
+  let pinnedRef: string | null = null;
+
+  async function resolveImageRef(): Promise<string> {
+    if (pinnedRef) return pinnedRef;
+    const parsed = assertAllowedImage(DEFAULT_IMAGE);
+
+    // An explicit @sha256: pin is honored as-is (strongest form).
+    if (parsed.digest) {
+      pinnedRef = `${parsed.registry}/${parsed.repository}@${parsed.digest}`;
+      return pinnedRef;
+    }
+
+    const ref = `${parsed.registry}/${parsed.repository}`;
+    const inspect = async (): Promise<string> => {
+      const result = await spawnCapture(
+        [engine, "image", "inspect", "--format", "{{index .RepoDigests 0}}", ref],
+        { timeoutMs: 60_000 },
+      );
+      return result.code === 0 ? result.stdout.trim() : "";
+    };
+
+    let digest = await inspect();
+    if (!digest) {
+      const pulled = await spawnCapture([engine, "pull", ref], { timeoutMs: 600_000 });
+      if (pulled.code !== 0) {
+        throw new Error(
+          `Failed to pull sandbox image ${ref}: ${`${pulled.stdout}\n${pulled.stderr}`.trim().slice(0, 1000) || "unknown error"}`,
+        );
+      }
+      digest = await inspect();
+    }
+    if (!digest) {
+      // No registry digest (e.g. a locally built image) - freeze on the image ID instead.
+      const id = await spawnCapture([engine, "image", "inspect", "--format", "{{.Id}}", ref], { timeoutMs: 60_000 });
+      if (id.code !== 0 || !id.stdout.trim()) {
+        throw new Error(`Could not resolve a digest for sandbox image ${ref}.`);
+      }
+      pinnedRef = id.stdout.trim();
+    } else {
+      pinnedRef = digest;
+    }
+    console.log(`sandbox image pinned: ${pinnedRef}`);
+    return pinnedRef;
+  }
+
   const runCapture: SandboxRunner["runCapture"] = async (root, command, opts) => {
-    const args = [engine, "run", "--rm"];
-    if (!NETWORK_ENABLED) args.push("--network", "none");
-    args.push("--memory", "2g", "--cpus", "2");
-    args.push("-v", `${root}:/work`, "-w", "/work");
-    args.push(DEFAULT_IMAGE, "sh", "-c", command);
-    return spawnCapture(args, { signal: opts?.signal, timeoutMs: opts?.timeoutMs });
+    try {
+      const args = [engine, "run", "--rm"];
+      if (!NETWORK_ENABLED) args.push("--network", "none");
+      args.push("--memory", "2g", "--cpus", "2");
+      args.push("-v", `${root}:/work`, "-w", "/work");
+      args.push(await resolveImageRef(), "sh", "-c", command);
+      return await spawnCapture(args, { signal: opts?.signal, timeoutMs: opts?.timeoutMs });
+    } catch (err) {
+      // Surface config/pull errors as a failed command result instead of an
+      // unhandled rejection, so they show up in run logs and the UI.
+      return {
+        code: null,
+        stdout: "",
+        stderr: err instanceof Error ? err.message : String(err),
+        timedOut: false,
+        overflow: false,
+      };
+    }
   };
+
   return {
     name: engine,
     runCapture,

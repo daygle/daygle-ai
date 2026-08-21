@@ -217,7 +217,7 @@ Every job also runs a **QA verification gate** before anything is committed: it 
 `run_command` runs inside a container when one is available, so an untrusted repo can't touch your machine:
 
 - **bubblewrap (preferred).** Reuses your host toolchain read-only, exposes only the repo (writable at `/work`) plus a fresh `/tmp`, and has no network. Install with `sudo apt install bubblewrap` (or `brew install bubblewrap`). If it's blocked on Ubuntu, allow unprivileged user namespaces: `sudo sysctl kernel.apparmor_restrict_unprivileged_userns=0`.
-- **Docker / Podman (fallback).** Runs the command in `node:22-slim` by default - set `DAYGLE_SANDBOX_IMAGE` to an image that contains the repo's toolchain.
+- **Docker / Podman (fallback).** Runs the command in `node:22-slim` by default - set `DAYGLE_SANDBOX_IMAGE` to an image that contains the repo's toolchain. The image is resolved to its **content digest** on first use and frozen there, so a registry tag moving later can't silently change what the sandbox runs; it must also come from an allowlisted registry (`docker.io` by default, extend with `DAYGLE_SANDBOX_REGISTRIES`), and you can pin it yourself with `image@sha256:...`.
 - **Host (last resort).** If neither is available, commands run on your machine gated by the block/allow/approve policy.
 
 Set `DAYGLE_SANDBOX_NETWORK=1` to allow network access inside the sandbox (off by default).
@@ -230,7 +230,8 @@ Set `DAYGLE_SANDBOX_NETWORK=1` to allow network access inside the sandbox (off b
 | `GITHUB_APP_PRIVATE_KEY` | - | GitHub App private key (agent auth via App) |
 | `GITHUB_APP_INSTALLATION_ID` | - | Optional: skip the App install lookup |
 | `DAYGLE_SANDBOX_NETWORK` | off | Set `1` to allow network inside the sandbox |
-| `DAYGLE_SANDBOX_IMAGE` | `node:22-slim` | Docker/Podman image for sandboxed commands |
+| `DAYGLE_SANDBOX_IMAGE` | `node:22-slim` | Docker/Podman image for sandboxed commands (pinned by digest on first use; `image@sha256:...` pins explicitly) |
+| `DAYGLE_SANDBOX_REGISTRIES` | `docker.io` | Comma-separated registries the sandbox image may come from |
 | `OLLAMA_MODELS` | `.ollama/models` | Where Ollama stores model weights |
 | `OLLAMA_HOST` | `0.0.0.0:11434` | Ollama bind address |
 | `OLLAMA_ORIGINS` | `*` | Allowed browser origins (required for the UI) |
