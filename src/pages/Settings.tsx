@@ -131,7 +131,7 @@ export function SettingsPage() {
 
         <div className="rounded-2xl border border-border bg-card p-5">
           <label htmlFor="ollama-url" className="text-xs font-medium text-muted-foreground">
-            Ollama base URL
+            Ollama Base URL
           </label>
           <div className="mt-2 flex flex-col gap-2 sm:flex-row">
             <div className="relative flex-1">
@@ -201,7 +201,7 @@ export function SettingsPage() {
 
         <div className="rounded-2xl border border-border bg-card p-5">
           <div className="space-y-1">
-            <label htmlFor="default-agent-model" className="text-xs font-medium text-muted-foreground">Default Agent model</label>
+            <label htmlFor="default-agent-model" className="text-xs font-medium text-muted-foreground">Default Agent Model</label>
             <select
               id="default-agent-model"
               value={defaultModel}
@@ -222,12 +222,12 @@ export function SettingsPage() {
           </p>
           <div className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             <NumField label="Temperature" hint="0 = focused, higher = more creative" value={gen.temperature} step="0.1" min={0} max={2} onChange={(v) => updateGen({ temperature: v })} />
-            <NumField label="Context length (num_ctx)" hint="tokens of context; larger uses more memory" value={gen.num_ctx} step="512" min={256} onChange={(v) => updateGen({ num_ctx: v })} />
+            <NumField label="Context Length (num_ctx)" hint="tokens of context; larger uses more memory" value={gen.num_ctx} step="512" min={256} onChange={(v) => updateGen({ num_ctx: v })} />
             <NumField label="top_p" hint="nucleus sampling - optional" value={gen.top_p} step="0.05" min={0} max={1} onChange={(v) => updateGen({ top_p: v })} />
             <NumField label="top_k" hint="optional" value={gen.top_k} step="1" min={0} onChange={(v) => updateGen({ top_k: v })} />
-            <NumField label="Repeat penalty" hint="optional" value={gen.repeat_penalty} step="0.05" min={0} onChange={(v) => updateGen({ repeat_penalty: v })} />
+            <NumField label="Repeat Penalty" hint="optional" value={gen.repeat_penalty} step="0.05" min={0} onChange={(v) => updateGen({ repeat_penalty: v })} />
             <div className="space-y-1">
-              <label className="text-xs font-medium text-muted-foreground">Keep alive</label>
+              <label className="text-xs font-medium text-muted-foreground">Keep Alive</label>
               <Input
                 value={gen.keep_alive ?? ""}
                 onChange={(e) => updateGen({ keep_alive: e.target.value.trim() || undefined })}
@@ -255,7 +255,7 @@ export function SettingsPage() {
           </p>
           <div className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             <NumField
-              label="CPU threads (num_thread)"
+              label="CPU Threads (num_thread)"
               hint="threads used to generate; try your number of physical cores"
               value={gen.num_thread}
               step="1"
@@ -263,7 +263,7 @@ export function SettingsPage() {
               onChange={(v) => updateGen({ num_thread: v })}
             />
             <NumField
-              label="Batch size (num_batch)"
+              label="Batch Size (num_batch)"
               hint="prompt batch; smaller (e.g. 128–256) uses less RAM"
               value={gen.num_batch}
               step="32"
@@ -271,7 +271,7 @@ export function SettingsPage() {
               onChange={(v) => updateGen({ num_batch: v })}
             />
             <NumField
-              label="GPU layers (num_gpu)"
+              label="GPU Layers (num_gpu)"
               hint="0 forces pure CPU and avoids slow partial offload"
               value={gen.num_gpu}
               step="1"
@@ -281,12 +281,12 @@ export function SettingsPage() {
           </div>
           <div className="mt-4 rounded-lg border border-border bg-background p-3 text-[11px] leading-relaxed text-muted-foreground">
             <p className="mb-1 flex items-center gap-1.5 font-medium text-foreground">
-              <Cpu className="h-3.5 w-3.5 text-accent" /> Tips for slow, CPU-only machines
+              <Cpu className="h-3.5 w-3.5 text-accent" /> Tips for Slow, CPU-Only Machines
             </p>
             <ul className="ml-4 list-disc space-y-0.5">
               <li>Prefer smaller / quantized models (e.g. 3B–7B, <span className="font-mono">q4</span> builds) - the single biggest speedup.</li>
-              <li>Lower the <span className="font-mono">Context length</span> above; large contexts are much slower on CPU.</li>
-              <li>Set <span className="font-mono">Keep alive</span> to <span className="font-mono">-1</span> to keep the model loaded and skip reload lag between messages.</li>
+              <li>Lower the <span className="font-mono">Context Length</span> above; large contexts are much slower on CPU.</li>
+              <li>Set <span className="font-mono">Keep Alive</span> to <span className="font-mono">-1</span> to keep the model loaded and skip reload lag between messages.</li>
             </ul>
           </div>
           <AutosaveFooter saved={savedFlash} onReset={resetPerf} />

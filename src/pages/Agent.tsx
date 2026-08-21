@@ -1305,7 +1305,7 @@ export function AgentPage() {
           {/* Form */}
           <div className="space-y-4 px-6 py-5">
             <div className="space-y-1.5">
-              <label className="text-xs font-medium text-muted-foreground">Repository <span className="font-normal opacity-70">(optional)</span></label>
+              <label className="text-xs font-medium text-muted-foreground">Repository <span className="font-normal opacity-70">(Optional)</span></label>
               <div className="relative">
                 <GitBranch className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
                 <Input
@@ -1953,7 +1953,7 @@ function TaskRunnerModal({
   const started = running || lines.length > 0 || prUrl !== null || error !== null;
 
   return (
-    <Modal open={open} onClose={onClose} title="Run autonomous task">
+    <Modal open={open} onClose={onClose} title="Run Autonomous Task">
       <div className="space-y-4">
         <p className="text-sm text-muted-foreground">
           The agent will work through this task on its own, review its own changes, run your QA
@@ -1978,7 +1978,7 @@ function TaskRunnerModal({
             </div>
 
             <button onClick={() => setAdvanced((v) => !v)} className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground">
-              {advanced ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />} Advanced options
+              {advanced ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />} Advanced Options
             </button>
             {advanced && (
               <div className="space-y-2">
@@ -1994,7 +1994,7 @@ function TaskRunnerModal({
                   />
                   <span>
                     <span className="flex items-center gap-1.5 font-medium text-foreground">
-                      <ShieldCheck className="h-3.5 w-3.5 text-accent" /> Agentic review
+                      <ShieldCheck className="h-3.5 w-3.5 text-accent" /> Agentic Review
                     </span>
                     <span className="mt-0.5 block text-[11px] text-muted-foreground">
                       The reviewer reads the surrounding code and runs the project’s tests before deciding - slower, but catches issues a diff-only review misses. Only used when a review model is set.
@@ -2010,7 +2010,7 @@ function TaskRunnerModal({
                   />
                   <span>
                     <span className="flex items-center gap-1.5 font-medium text-foreground">
-                      <ListTodo className="h-3.5 w-3.5 text-accent" /> Generate tests
+                      <ListTodo className="h-3.5 w-3.5 text-accent" /> Generate Tests
                     </span>
                     <span className="mt-0.5 block text-[11px] text-muted-foreground">
                       After the change, write and run tests covering it (using the project’s existing test framework) before QA and review. Skipped if the repo has no test setup.

@@ -175,7 +175,7 @@ export function ModelsPage() {
           <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-accent/15 text-accent">
             <Download className="h-4 w-4" />
           </div>
-          <h2 className="text-sm font-semibold">Pull a model</h2>
+          <h2 className="text-sm font-semibold">Pull a Model</h2>
         </div>
         <div className="mt-3 flex flex-col gap-2 sm:flex-row">
           <div className="relative flex-1">
