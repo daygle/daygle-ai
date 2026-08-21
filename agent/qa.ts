@@ -108,6 +108,7 @@ function spawnCapture(
       if (settled) return;
       settled = true;
       if (timer) clearTimeout(timer);
+      opts.signal?.removeEventListener("abort", onAbort);
       resolve(result);
     };
 

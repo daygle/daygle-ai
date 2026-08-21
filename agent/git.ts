@@ -32,6 +32,25 @@ function tokenUrl(url: string, token: string): string {
 }
 
 /**
+ * Git embeds the full remote URL (credential included) in its error output
+ * (e.g. "unable to access 'https://x-access-token:TOKEN@github.com/...'").
+ * Scrub both the raw and URL-encoded token so failures can't leak the
+ * credential into job events or the UI.
+ */
+function redactToken(message: string, token?: string): string {
+  if (!token) return message;
+  return message.replaceAll(token, "[credential redacted]").replaceAll(encodeURIComponent(token), "[credential redacted]");
+}
+
+async function runWithToken(cmd: string, args: string[], token: string | undefined): Promise<string> {
+  try {
+    return await run(cmd, args);
+  } catch (err) {
+    throw new Error(redactToken(err instanceof Error ? err.message : String(err), token));
+  }
+}
+
+/**
  * Only allow real remote URLs (https/http with a resolvable host, the SSH
  * `git@github.com:` form, or a bare `github.com/` shorthand). Anything
  * starting with `-` is rejected so user-controlled input can't be parsed as
@@ -58,7 +77,7 @@ export async function cloneRepo(url: string, dir: string, token?: string): Promi
   if (!isSafeGitRemote(target)) {
     throw new Error(`Refusing to clone an unsafe repository URL.`);
   }
-  await run("git", ["clone", "--depth", "1", "--", target, dir]);
+  await runWithToken("git", ["clone", "--depth", "1", "--", target, dir], token);
 }
 
 export async function detectDefaultBranch(url: string, token?: string): Promise<string> {
@@ -66,7 +85,7 @@ export async function detectDefaultBranch(url: string, token?: string): Promise<
   if (!isSafeGitRemote(target)) {
     throw new Error(`Refusing to inspect an unsafe repository URL.`);
   }
-  const out = await run("git", ["ls-remote", "--symref", "--", target, "HEAD"]);
+  const out = await runWithToken("git", ["ls-remote", "--symref", "--", target, "HEAD"], token);
   const match = out.match(/ref: refs\/heads\/(\S+)/);
   return match?.[1] ?? "main";
 }

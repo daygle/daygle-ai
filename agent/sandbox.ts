@@ -48,6 +48,8 @@ export interface CaptureResult {
   stdout: string;
   stderr: string;
   timedOut: boolean;
+  /** When timedOut, the timeout that actually fired (may differ from TIMEOUT_MS). */
+  timedOutAfterMs?: number;
   overflow: boolean;
 }
 
@@ -85,6 +87,7 @@ function spawnCapture(
       if (settled) return;
       settled = true;
       if (timer) clearTimeout(timer);
+      opts.signal?.removeEventListener("abort", onAbort);
       resolve(result);
     };
 
@@ -108,7 +111,7 @@ function spawnCapture(
           // group already gone
         }
       }
-      finish({ code: null, stdout, stderr, timedOut: true, overflow });
+      finish({ code: null, stdout, stderr, timedOut: true, timedOutAfterMs: opts.timeoutMs ?? TIMEOUT_MS, overflow });
     }, opts.timeoutMs ?? TIMEOUT_MS);
 
     const append = (chunk: Buffer, target: "stdout" | "stderr") => {
@@ -131,7 +134,8 @@ function spawnCapture(
 
 function formatResult(result: CaptureResult): string {
   if (result.timedOut) {
-    return `exit code: timeout\n(command timed out after ${Math.round(TIMEOUT_MS / 1000)}s)`;
+    const seconds = Math.round((result.timedOutAfterMs ?? TIMEOUT_MS) / 1000);
+    return `exit code: timeout\n(command timed out after ${seconds}s)`;
   }
   const parts: string[] = [];
   const stdout = result.stdout.trim();

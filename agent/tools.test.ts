@@ -1,6 +1,82 @@
 /// <reference types="bun" />
 import { describe, expect, test } from "bun:test";
-import { classifyCommand, isReviewSafeCommand } from "./tools";
+import { mkdtempSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { classifyCommand, isReviewSafeCommand, runTool } from "./tools";
+
+describe("space-separated tool paths", () => {
+  const root = mkdtempSync(join(tmpdir(), "daygle-tools-"));
+  mkdirSync(join(root, "a"), { recursive: true });
+  mkdirSync(join(root, "b"), { recursive: true });
+  writeFileSync(join(root, "a", "one.txt"), "alpha needle\n");
+  writeFileSync(join(root, "b", "two.txt"), "beta needle\n");
+
+  test("search accepts several space-separated paths in one call", async () => {
+    const result = await runTool(root, "search", { pattern: "needle", path: "a one.txt b/two.txt" });
+    expect(result).toContain("one.txt");
+    expect(result).toContain("two.txt");
+  });
+
+  test("list_files accepts several space-separated paths in one call", async () => {
+    const result = await runTool(root, "list_files", { path: "a b" });
+    expect(result).toContain("a/one.txt");
+    expect(result).toContain("b/two.txt");
+  });
+
+  test("search reports missing paths instead of crashing on ENOENT", async () => {
+    await expect(
+      runTool(root, "search", { pattern: "needle", path: "does-not-exist" }),
+    ).rejects.toThrow(/No such file or directory/);
+  });
+
+  test("search skips missing paths when at least one target exists", async () => {
+    const result = await runTool(root, "search", { pattern: "needle", path: "a ghost.txt" });
+    expect(result).toContain("one.txt");
+  });
+});
+
+describe("tool hardening", () => {
+  const root = mkdtempSync(join(tmpdir(), "daygle-tools-hardening-"));
+  mkdirSync(join(root, "src"), { recursive: true });
+  writeFileSync(join(root, "src", "code.txt"), "hello world\n");
+  writeFileSync(join(root, "blob.bin"), "text\u0000binary");
+  // A symlink inside the repo that points outside it.
+  symlinkSync(tmpdir(), join(root, "escape"));
+
+  test("read_file refuses paths that escape the repo through a symlink", async () => {
+    await expect(runTool(root, "read_file", { path: "escape" })).rejects.toThrow(/outside the repository/);
+  });
+
+  test("list_files survives one missing path in a multi-path call", async () => {
+    const result = await runTool(root, "list_files", { path: "src ghost.txt" });
+    expect(result).toContain("src/code.txt");
+    expect(result).toContain("(not found: ghost.txt)");
+  });
+
+  test("list_files reports a clear error when every path is missing", async () => {
+    await expect(runTool(root, "list_files", { path: "nope also-missing" })).rejects.toThrow(
+      /No such file or directory/,
+    );
+  });
+
+  test("search rejects an empty pattern instead of matching everything", async () => {
+    await expect(runTool(root, "search", { pattern: "" })).rejects.toThrow(/Missing search pattern/);
+  });
+
+  test("read_file flags binary files instead of returning garbage", async () => {
+    await expect(runTool(root, "read_file", { path: "blob.bin" })).rejects.toThrow(/binary/);
+  });
+
+  test("reviewer cannot execute inline code through runners", () => {
+    const evil = 'node -e \'require("fs").rmSync("x")\'';
+    expect(isReviewSafeCommand(evil)).toBe(false);
+    expect(isReviewSafeCommand("python -m pip install requests")).toBe(false);
+    expect(isReviewSafeCommand("bun --eval 'console.log(1)'")).toBe(false);
+    expect(isReviewSafeCommand("node --version")).toBe(true);
+    expect(isReviewSafeCommand("npm test")).toBe(true);
+  });
+});
 
 describe("classifyCommand", () => {
   test("auto-allows read-only inspection commands", () => {

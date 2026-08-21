@@ -101,11 +101,14 @@ interface PendingApproval {
 const pendingApprovals = new Map<string, PendingApproval>();
 
 // Evict idle chat sessions and remove their cloned repos so memory and disk
-// don't grow without bound.
+// don't grow without bound. Also evicts finished jobs from memory after a TTL
+// (they're persisted to disk by HistoryStore, which GET /api/jobs falls back to).
 const CHAT_SESSION_TTL_MS = 60 * 60 * 1000;
+const JOB_TTL_MS = 60 * 60 * 1000;
 const chatSweeper = setInterval(() => {
   const now = Date.now();
   for (const [id, session] of chatSessions) {
+    if (session.busy) continue; // never evict a session mid-generation
     if (now - session.lastActivity > CHAT_SESSION_TTL_MS) {
       chatSessions.delete(id);
       if (session.root) {
@@ -115,6 +118,11 @@ const chatSweeper = setInterval(() => {
           // best effort
         }
       }
+    }
+  }
+  for (const [id, job] of jobs) {
+    if (job.status !== "running" && job.finishedAt && now - job.finishedAt > JOB_TTL_MS) {
+      jobs.delete(id);
     }
   }
 }, 10 * 60 * 1000);
@@ -1225,16 +1233,35 @@ const server = http.createServer((req, res) => {
     }
 
     sendJson(res, 404, { error: "Not found." });
-  })();
+  })().catch((err) => {
+    // Safety net: an unexpected throw in any handler must not become an
+    // unhandled rejection that leaves the socket hanging.
+    console.error("request handler failed:", err);
+    if (!res.headersSent) {
+      sendJson(res, 500, { error: errMessage(err) });
+    } else {
+      res.end();
+    }
+  });
 });
 
-detectSandbox().then((runner) => {
-  sandbox = runner;
-  console.log(runner ? `command sandbox: ${runner.name}` : "command sandbox: none (host execution)");
-  // Pre-pull the sandbox image in the background so the first sandboxed
-  // command doesn't stall on the download (no-op for bubblewrap).
-  runner?.warmup?.();
+function startListening(): void {
   server.listen(PORT, HOST, () => {
     console.log(`daygle agent listening on http://localhost:${PORT}`);
   });
-});
+}
+
+detectSandbox()
+  .then((runner) => {
+    sandbox = runner;
+    console.log(runner ? `command sandbox: ${runner.name}` : "command sandbox: none (host execution)");
+    // Pre-pull the sandbox image in the background so the first sandboxed
+    // command doesn't stall on the download (no-op for bubblewrap).
+    runner?.warmup?.();
+    startListening();
+  })
+  .catch((err) => {
+    // Sandbox detection is best-effort; never leave the server unstarted.
+    console.error("sandbox detection failed:", err instanceof Error ? err.message : err);
+    startListening();
+  });

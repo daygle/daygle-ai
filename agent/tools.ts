@@ -216,6 +216,14 @@ export const REVIEW_RUNNERS = new Set([
   "rspec", "rake", "phpunit", "composer",
 ]);
 
+// Runners that can execute inline code. Combined with -e/-c/-m style flags
+// they would hand the read-only reviewer arbitrary code execution (e.g.
+// `node -e 'fs.rmSync(...)'` or `python -m pip install`), so those flag
+// combinations are rejected outright - legit uses like `pytest` or
+// `node --version` are unaffected.
+const CODE_EXEC_RUNNERS = new Set(["node", "bun", "bunx", "deno", "npx", "python", "python3"]);
+const INLINE_CODE_FLAGS = new Set(["-e", "--eval", "-c", "--command", "-p", "--print", "--exec", "-m"]);
+
 /**
  * Whether a command is safe for the agentic reviewer to run unattended: a
  * chain of `cd <dir>` and known verification runners (or the read-only
@@ -235,6 +243,9 @@ export function isReviewSafeCommand(command: string): boolean {
     const program = tokens[0];
     if (program === "cd") return tokens.length === 2;
     if (program === "git") return Boolean(tokens[1]) && SAFE_GIT.has(tokens[1]);
+    if (CODE_EXEC_RUNNERS.has(program) && tokens.slice(1).some((t) => INLINE_CODE_FLAGS.has(t))) {
+      return false;
+    }
     return REVIEW_RUNNERS.has(program) || SAFE_PROGRAMS.has(program);
   });
 }
@@ -248,10 +259,32 @@ export const reviewApprover: CommandApprover = (command: string) =>
   Promise.resolve(isReviewSafeCommand(command) ? "approve" : "deny");
 
 function safeResolve(root: string, rel: string): string {
-  const abs = path.resolve(root, rel || ".");
   const rootAbs = path.resolve(root);
+  const abs = path.resolve(rootAbs, rel || ".");
   if (abs !== rootAbs && !abs.startsWith(rootAbs + path.sep)) {
     throw new Error(`Path is outside the repository: ${rel}`);
+  }
+  // Lexical containment isn't enough when symlinks are involved: a link inside
+  // the repo can point outside it. Walk up to the deepest existing ancestor
+  // and compare real paths (the repo root itself may be a symlink, e.g. /tmp
+  // on macOS, so compare against its real path too).
+  const rootReal = fs.realpathSync(rootAbs);
+  let probe = abs;
+  for (;;) {
+    let real: string;
+    try {
+      real = fs.realpathSync(probe);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+      const parent = path.dirname(probe);
+      if (parent === probe) break;
+      probe = parent;
+      continue;
+    }
+    if (real !== rootReal && !real.startsWith(rootReal + path.sep)) {
+      throw new Error(`Path is outside the repository: ${rel}`);
+    }
+    break;
   }
   return abs;
 }
@@ -266,10 +299,20 @@ function asNumber(value: unknown): number | undefined {
 
 function listFiles(root: string, rel: string): string {
   const out: string[] = [];
+  const missing: string[] = [];
 
   const listOne = (single: string) => {
-    const abs = safeResolve(root, single);
-    const stat = fs.statSync(abs);
+    let abs: string;
+    let stat: fs.Stats;
+    try {
+      abs = safeResolve(root, single);
+      stat = fs.statSync(abs);
+    } catch {
+      // One bad path shouldn't sink a multi-path call (the model passes
+      // space-separated paths); record it and keep going.
+      missing.push(single);
+      return;
+    }
     if (stat.isFile()) {
       out.push(single);
       return;
@@ -304,17 +347,25 @@ function listFiles(root: string, rel: string): string {
   const paths = rel.trim() ? rel.split(/\s+/).filter(Boolean) : ["."];
   for (const p of paths) listOne(p);
 
+  if (out.length === 0 && missing.length > 0) {
+    throw new Error(`No such file or directory: ${missing.join(", ")}`);
+  }
+
   // Sort globally: all directories first (sorted), then all files (sorted),
   // so the flat list in the Files panel groups folders at the top. Dedupe so
   // overlapping paths (e.g. "." plus a file) don't repeat entries.
-  return [...new Set(out)]
-    .sort((a, b) => {
-      const aDir = a.endsWith("/");
-      const bDir = b.endsWith("/");
-      if (aDir !== bDir) return aDir ? -1 : 1;
-      return a.localeCompare(b);
-    })
-    .join("\n") || "(empty)";
+  const entries = [...new Set(out)].sort((a, b) => {
+    const aDir = a.endsWith("/");
+    const bDir = b.endsWith("/");
+    if (aDir !== bDir) return aDir ? -1 : 1;
+    return a.localeCompare(b);
+  });
+  const lines = entries.length > 0 ? entries : ["(empty)"];
+  // Tell the model when output was cut or paths were skipped, so it can
+  // narrow the query instead of assuming it saw everything.
+  if (out.length >= MAX_LIST) lines.push(`(truncated at ${MAX_LIST} entries)`);
+  if (missing.length > 0) lines.push(`(not found: ${missing.join(", ")})`);
+  return lines.join("\n");
 }
 
 function readFile(root: string, rel: string, startLine?: number, endLine?: number): string {
@@ -324,7 +375,11 @@ function readFile(root: string, rel: string, startLine?: number, endLine?: numbe
   if (stat.size > MAX_READ_BYTES) {
     throw new Error(`File too large (${stat.size} bytes). Read a line range or use search instead.`);
   }
-  let lines = fs.readFileSync(abs, "utf8").split("\n");
+  const raw = fs.readFileSync(abs, "utf8");
+  if (raw.includes("\u0000")) {
+    throw new Error(`File appears to be binary: ${rel}. Use run_command (e.g. strings/hexdump) instead.`);
+  }
+  let lines = raw.split("\n");
   const firstLine = Math.max(1, startLine ?? 1);
   if (startLine !== undefined || endLine !== undefined) {
     const end = Math.min(lines.length, endLine ?? lines.length);
@@ -357,24 +412,48 @@ function collectFiles(dirAbs: string, out: string[], budget: { count: number }):
 }
 
 function searchFiles(root: string, pattern: string, rel?: string): string {
+  if (!pattern.trim()) {
+    throw new Error("Missing search pattern.");
+  }
   let regex: RegExp;
   try {
     regex = new RegExp(pattern);
   } catch {
     throw new Error(`Invalid regular expression: ${pattern}`);
   }
-  const abs = rel ? safeResolve(root, rel) : root;
-  const files: string[] = [];
-  if (fs.statSync(abs).isFile()) {
-    files.push(abs);
-  } else {
-    collectFiles(abs, files, { count: 0 });
+  // Like list_files, tolerate the model passing several space-separated paths
+  // in a single call; search each independently instead of treating the whole
+  // string as one path (which made statSync throw ENOENT).
+  const targets = rel && rel.trim() ? rel.split(/\s+/).filter(Boolean) : ["."];
+  const missing: string[] = [];
+  const collected: string[] = [];
+  for (const target of targets) {
+    let abs: string;
+    try {
+      abs = safeResolve(root, target);
+      if (fs.statSync(abs).isFile()) {
+        collected.push(abs);
+        continue;
+      }
+      collectFiles(abs, collected, { count: 0 });
+    } catch {
+      missing.push(target);
+    }
   }
+
+  if (collected.length === 0 && missing.length > 0) {
+    throw new Error(`No such file or directory: ${missing.join(", ")}`);
+  }
+  const files: string[] = [...new Set(collected)];
 
   const matches: string[] = [];
   for (const file of files) {
     if (matches.length >= MAX_SEARCH_MATCHES) break;
-    if (fs.statSync(file).size > MAX_SEARCH_FILE) continue;
+    try {
+      if (fs.statSync(file).size > MAX_SEARCH_FILE) continue;
+    } catch {
+      continue; // file vanished between listing and reading
+    }
     let content: string;
     try {
       content = fs.readFileSync(file, "utf8");
@@ -390,7 +469,13 @@ function searchFiles(root: string, pattern: string, rel?: string): string {
       }
     });
   }
-  return matches.length ? matches.join("\n") : "(no matches)";
+  if (matches.length === 0) {
+    return missing.length > 0 ? `(no matches; not found: ${missing.join(", ")})` : "(no matches)";
+  }
+  // Surface skipped paths so the model can correct course instead of
+  // assuming every target was searched.
+  const note = missing.length > 0 ? `\n(not found: ${missing.join(", ")})` : "";
+  return matches.join("\n") + note;
 }
 
 function writeFile(root: string, rel: string, content: string): string {
@@ -419,6 +504,7 @@ function executeCommand(root: string, command: string, signal?: AbortSignal): Pr
       if (settled) return;
       settled = true;
       if (timer) clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
       resolve(text);
     };
 
