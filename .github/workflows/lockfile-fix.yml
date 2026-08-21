@@ -1,0 +1,47 @@
+name: Fix dependabot lockfile
+
+# Dependabot's npm ecosystem updates package.json but not bun.lock, so its
+# PRs fail `bun install --frozen-lockfile` in CI. This workflow regenerates
+# the lockfile on dependabot PRs and commits the change back to the branch.
+#
+# Runs on `pull_request_target` (needed for write access to push to the PR
+# branch). It only ever executes for dependabot[bot] PRs, checks out the PR
+# head, and runs `bun install --ignore-scripts` so no dependency install
+# scripts from the PR's tree are executed. Only bun.lock is committed.
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: fix-lockfile-${{ github.head_ref }}
+  cancel-in-progress: true
+
+jobs:
+  fix:
+    if: github.actor == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.head_ref }}
+          persist-credentials: false
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Regenerate bun.lock
+        run: bun install --ignore-scripts
+
+      - name: Commit and push lockfile changes
+        run: |
+          if ! git diff --quiet bun.lock; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add bun.lock
+            git commit -m "chore: update bun.lock"
+            git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD:"${GITHUB_HEAD_REF}"
+          fi
