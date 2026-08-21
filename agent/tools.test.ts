@@ -128,6 +128,39 @@ describe("str_replace", () => {
   });
 });
 
+describe("paths with spaces", () => {
+  const root = mkdtempSync(join(tmpdir(), "daygle-tools-spaces-"));
+  writeFileSync(join(root, "my notes.txt"), "alpha needle\n");
+
+  test("search treats a literal path with spaces as one path", async () => {
+    const result = await runTool(root, "search", { pattern: "needle", path: "my notes.txt" });
+    expect(result).toContain("my notes.txt:1:");
+  });
+
+  test("list_files treats a literal path with spaces as one path", async () => {
+    const result = await runTool(root, "list_files", { path: "my notes.txt" });
+    expect(result).toContain("my notes.txt");
+  });
+});
+
+describe("write_file truncation warning", () => {
+  const root = mkdtempSync(join(tmpdir(), "daygle-tools-writefile-"));
+  const file = join(root, "big.txt");
+
+  test("warns when an existing file is rewritten with far fewer lines", async () => {
+    writeFileSync(file, Array.from({ length: 20 }, (_, i) => `line ${i}`).join("\n"));
+    const result = await runTool(root, "write_file", { path: "big.txt", content: "one line\n" });
+    expect(result).toContain("WARNING");
+    expect(result).toContain("shrank");
+  });
+
+  test("does not warn for similar-sized rewrites or new files", async () => {
+    writeFileSync(file, "a\nb\nc\n");
+    const result = await runTool(root, "write_file", { path: "big.txt", content: "a\nb\nc\nd\n" });
+    expect(result).not.toContain("WARNING");
+  });
+});
+
 describe("classifyCommand", () => {
   test("auto-allows read-only inspection commands", () => {
     expect(classifyCommand("")).toBe("allow");
@@ -142,6 +175,12 @@ describe("classifyCommand", () => {
     expect(classifyCommand("bun run build")).toBe("approve");
     expect(classifyCommand("cd web && vite")).toBe("approve");
     expect(classifyCommand("npm test | grep foo")).toBe("approve");
+  });
+
+  test("requires approval for read-only programs that can write files", () => {
+    expect(classifyCommand("sort -o out.txt in.txt")).toBe("approve");
+    expect(classifyCommand("sort --output=out.txt in.txt")).toBe("approve");
+    expect(classifyCommand("sort in.txt")).toBe("allow");
   });
 
   test("hard-blocks destructive, privileged, networked, and secret-accessing commands", () => {
@@ -171,5 +210,10 @@ describe("isReviewSafeCommand", () => {
     expect(isReviewSafeCommand("npm test | grep foo")).toBe(false);
     expect(isReviewSafeCommand("rm -rf node_modules")).toBe(false);
     expect(isReviewSafeCommand("npm run deploy")).toBe(true); // npm is allowlisted; policy still applies
+  });
+
+  test("rejects read-only programs that can write files", () => {
+    expect(isReviewSafeCommand("sort -o out.txt in.txt")).toBe(false);
+    expect(isReviewSafeCommand("sort in.txt")).toBe(true);
   });
 });

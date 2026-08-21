@@ -103,6 +103,19 @@ const SECRET_PATTERNS: RegExp[] = [
 
 export type Decision = "allow" | "block" | "approve";
 
+/**
+ * A couple of programs in SAFE_PROGRAMS can still write files via a flag
+ * (`sort -o <file>`, `sort --output=<file>`). Those invocations must not be
+ * auto-allowed: the coding agent and the read-only reviewer would otherwise
+ * overwrite files without approval.
+ */
+function isMutatingReadOnlyCommand(tokens: string[]): boolean {
+  if (tokens[0] === "sort") {
+    return tokens.slice(1).some((t) => t === "-o" || t === "--output" || t.startsWith("--output="));
+  }
+  return false;
+}
+
 export function classifyCommand(command: string): Decision {
   const trimmed = command.trim();
   if (!trimmed) return "allow";
@@ -120,7 +133,10 @@ export function classifyCommand(command: string): Decision {
   if (program === "git") {
     return tokens[1] && SAFE_GIT.has(tokens[1]) ? "allow" : "approve";
   }
-  return SAFE_PROGRAMS.has(program) ? "allow" : "approve";
+  if (SAFE_PROGRAMS.has(program)) {
+    return isMutatingReadOnlyCommand(tokens) ? "approve" : "allow";
+  }
+  return "approve";
 }
 
 export const TOOL_DEFINITIONS: ToolDefinition[] = [
@@ -263,7 +279,8 @@ export function isReviewSafeCommand(command: string): boolean {
     if (CODE_EXEC_RUNNERS.has(program) && tokens.slice(1).some((t) => INLINE_CODE_FLAGS.has(t))) {
       return false;
     }
-    return REVIEW_RUNNERS.has(program) || SAFE_PROGRAMS.has(program);
+    if (SAFE_PROGRAMS.has(program)) return !isMutatingReadOnlyCommand(tokens);
+    return REVIEW_RUNNERS.has(program);
   });
 }
 
@@ -314,6 +331,20 @@ function asNumber(value: unknown): number | undefined {
   return typeof value === "number" ? value : undefined;
 }
 
+function splitPaths(root: string, rel: string): string[] {
+  const trimmed = rel.trim();
+  if (!trimmed) return ["."];
+  // Prefer the literal string as a single path when it actually exists, so
+  // paths containing spaces work; otherwise fall back to splitting on
+  // whitespace for the multi-path shorthand the model sometimes emits.
+  try {
+    fs.statSync(safeResolve(root, trimmed));
+    return [trimmed];
+  } catch {
+    return trimmed.split(/\s+/).filter(Boolean);
+  }
+}
+
 function listFiles(root: string, rel: string): string {
   const out: string[] = [];
   const missing: string[] = [];
@@ -361,7 +392,8 @@ function listFiles(root: string, rel: string): string {
 
   // The model occasionally passes several space-separated paths in a single
   // list_files call; handle each independently so the call still succeeds.
-  const paths = rel.trim() ? rel.split(/\s+/).filter(Boolean) : ["."];
+  // A literal path (which may contain spaces) wins over the shorthand split.
+  const paths = splitPaths(root, rel);
   for (const p of paths) listOne(p);
 
   if (out.length === 0 && missing.length > 0) {
@@ -387,7 +419,12 @@ function listFiles(root: string, rel: string): string {
 
 function readFile(root: string, rel: string, startLine?: number, endLine?: number): string {
   const abs = safeResolve(root, rel);
-  const stat = fs.statSync(abs);
+  let stat: fs.Stats;
+  try {
+    stat = fs.statSync(abs);
+  } catch {
+    throw new Error(`No such file or directory: ${rel}`);
+  }
   if (stat.isDirectory()) throw new Error(`Path is a directory: ${rel}`);
   if (stat.size > MAX_READ_BYTES) {
     throw new Error(`File too large (${stat.size} bytes). Read a line range or use search instead.`);
@@ -441,7 +478,7 @@ function searchFiles(root: string, pattern: string, rel?: string): string {
   // Like list_files, tolerate the model passing several space-separated paths
   // in a single call; search each independently instead of treating the whole
   // string as one path (which made statSync throw ENOENT).
-  const targets = rel && rel.trim() ? rel.split(/\s+/).filter(Boolean) : ["."];
+  const targets = splitPaths(root, rel || ".");
   const missing: string[] = [];
   const collected: string[] = [];
   for (const target of targets) {
@@ -498,8 +535,26 @@ function searchFiles(root: string, pattern: string, rel?: string): string {
 function writeFile(root: string, rel: string, content: string): string {
   const abs = safeResolve(root, rel);
   fs.mkdirSync(path.dirname(abs), { recursive: true });
+  // Snapshot the old text so a drastic shrink can be flagged: the classic
+  // failure mode is the model "rewriting" a file for a small edit and dropping
+  // every line it didn't reproduce. This is non-blocking (full rewrites are
+  // legitimate) but surfaces the mistake so the model can self-correct.
+  let before = "";
+  try {
+    before = fs.readFileSync(abs, "utf8");
+  } catch {
+    before = "";
+  }
   fs.writeFileSync(abs, content, "utf8");
-  return `Wrote ${Buffer.byteLength(content, "utf8")} bytes to ${rel}.`;
+  let note = "";
+  if (before && !before.includes("\u0000")) {
+    const beforeLines = before.split("\n").length;
+    const afterLines = content.split("\n").length;
+    if (beforeLines > 10 && afterLines < Math.ceil(beforeLines / 2)) {
+      note = `\nWARNING: ${rel} shrank from ${beforeLines} to ${afterLines} lines. If this was meant to be a small edit, use str_replace instead and restore the rest of the file.`;
+    }
+  }
+  return `Wrote ${Buffer.byteLength(content, "utf8")} bytes to ${rel}.${note}`;
 }
 
 function strReplace(root: string, rel: string, oldStr: string, newStr: string, replaceAll: unknown): string {
