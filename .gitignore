@@ -21,6 +21,7 @@ dist-ssr/
 
 # Vite
 .vite/
+vite.log
 
 # Ollama
 .ollama/
