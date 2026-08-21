@@ -14,9 +14,12 @@ import {
   normalizeBaseUrl,
   type OllamaModel,
 } from "../lib/ollama";
+import { sameHostUrl } from "../lib/utils";
 
 const STORAGE_KEY = "daygle.ollamaUrl";
-const DEFAULT_URL = "http://localhost:11434";
+// Default to the host the UI is served from, so the bundled Ollama is reachable
+// both locally and when the UI is opened over the LAN (http://<server-ip>:5173).
+const DEFAULT_URL = sameHostUrl(11434);
 
 interface OllamaContextValue {
   baseUrl: string;

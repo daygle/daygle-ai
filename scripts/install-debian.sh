@@ -117,7 +117,7 @@ if [ "$INSTALL_SERVICES" = "1" ]; then
     printf '%s\n' "$2" > "/etc/systemd/system/$1"
   }
 
-  write_unit daygle-ollama.service "[Unit]
+  write_unit daygle-ai-ollama.service "[Unit]
 Description=Daygle AI - Ollama Server
 After=network.target
 
@@ -127,7 +127,7 @@ User=$RUN_USER
 WorkingDirectory=$DIR
 ExecStart=$DIR/.ollama/bin/ollama serve
 Environment=HOME=$RUN_HOME
-Environment=OLLAMA_HOST=127.0.0.1:11434
+Environment=OLLAMA_HOST=0.0.0.0:11434
 Environment=OLLAMA_ORIGINS=*
 Environment=OLLAMA_MODELS=$DIR/.ollama/models
 Restart=always
@@ -136,10 +136,10 @@ RestartSec=5
 [Install]
 WantedBy=multi-user.target"
 
-  write_unit daygle-agent.service "[Unit]
+  write_unit daygle-ai-agent.service "[Unit]
 Description=Daygle AI - Agent Server
-After=network.target daygle-ollama.service
-Wants=daygle-ollama.service
+After=network.target daygle-ai-ollama.service
+Wants=daygle-ai-ollama.service
 
 [Service]
 Type=simple
@@ -147,17 +147,16 @@ User=$RUN_USER
 WorkingDirectory=$DIR
 ExecStart=$BUN_BIN run agent
 Environment=HOME=$RUN_HOME
-Environment=HOST=127.0.0.1
 Restart=always
 RestartSec=5
 
 [Install]
 WantedBy=multi-user.target"
 
-  write_unit daygle-ui.service "[Unit]
+  write_unit daygle-ai-ui.service "[Unit]
 Description=Daygle AI - Web UI
-After=network.target daygle-ollama.service
-Wants=daygle-ollama.service
+After=network.target daygle-ai-ollama.service
+Wants=daygle-ai-ollama.service
 
 [Service]
 Type=simple
@@ -174,7 +173,7 @@ RestartSec=5
 WantedBy=multi-user.target"
 
   systemctl daemon-reload
-  systemctl enable --now daygle-ollama.service daygle-agent.service daygle-ui.service
+  systemctl enable --now daygle-ai-ollama.service daygle-ai-agent.service daygle-ai-ui.service
   ok "services enabled and started"
 else
   warn "Skipping systemd services (DAYGLE_SERVICES=0)."
@@ -195,8 +194,11 @@ if [ -n "$MODEL" ]; then
   done
   if curl -fsS http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then
     log "Pulling model '$MODEL' (this can take a while)…"
-    OLLAMA_HOST=127.0.0.1:11434 "$DIR/.ollama/bin/ollama" pull "$MODEL" \
-      && ok "model '$MODEL' ready" || warn "Model pull failed - pull later from the Models page."
+    if OLLAMA_HOST=127.0.0.1:11434 "$DIR/.ollama/bin/ollama" pull "$MODEL"; then
+      ok "model '$MODEL' ready"
+    else
+      warn "Model pull failed - pull later from the Models page."
+    fi
   else
     warn "Ollama did not become reachable - skipping model pull."
   fi
@@ -209,17 +211,17 @@ IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
 printf "\n${c_ok}== Daygle AI is installed ==${c_off}\n\n"
 cat <<EOF
 Open the UI:        http://$IP:5173
-Ollama API:         http://127.0.0.1:11434 (localhost only)
-Agent server:       http://127.0.0.1:8787 (localhost only)
+Ollama API:         http://$IP:11434
+Agent server:       http://$IP:8787
 
 Service control:
-  systemctl status  daygle-ui daygle-agent daygle-ollama
-  journalctl -fu daygle-ui        # (or daygle-agent / daygle-ollama)
-  systemctl restart daygle-ui
+  systemctl status  daygle-ai-ui daygle-ai-agent daygle-ai-ollama
+  journalctl -fu daygle-ai-ui        # (or daygle-ai-agent / daygle-ai-ollama)
+  systemctl restart daygle-ai-ui
 
-Note: the browser talks to Ollama and the agent directly. Both listen on
-127.0.0.1 only, so the UI, chat, model pulls, and GitHub token are available
-from this machine (http://localhost:5173), not from other computers. To open
-PRs from the Agent page, authenticate once with:
-  gh auth login   (or set a token in Settings).
+Note: the browser talks to Ollama and the agent directly, so open the UI from
+the same machine (http://localhost:5173), or reach this box by its IP above -
+not "localhost" from a different computer. These services trust your LAN; keep
+this box on a network you control. To open PRs from the Agent page,
+authenticate once with:  gh auth login   (or set a token in Settings).
 EOF
