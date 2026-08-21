@@ -101,9 +101,9 @@ const SECRET_PATTERNS: RegExp[] = [
   /\/proc\/self\/environ/,
 ];
 
-type Decision = "allow" | "block" | "approve";
+export type Decision = "allow" | "block" | "approve";
 
-function classifyCommand(command: string): Decision {
+export function classifyCommand(command: string): Decision {
   const trimmed = command.trim();
   if (!trimmed) return "allow";
 

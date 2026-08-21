@@ -1,0 +1,24 @@
+version: 2
+
+updates:
+  # JS dependencies (package.json + bun.lock at the repo root).
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    groups:
+      # Keep the PR queue small: one grouped PR per week for minor/patch bumps,
+      # with major versions still landing as individual, reviewable PRs.
+      minor-and-patch:
+        applies-to: version-updates
+        update-types:
+          - "minor"
+          - "patch"
+
+  # GitHub Actions used in CI workflows.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5

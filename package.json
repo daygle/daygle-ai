@@ -9,6 +9,7 @@
     "ollama:install": "sh scripts/install-ollama.sh",
     "ollama": "sh scripts/run-ollama.sh",
     "agent": "bun run agent/server.ts",
+    "test": "bun test",
     "build": "tsc -b && vite build",
     "preview": "vite preview --host 0.0.0.0",
     "typecheck": "tsc -b --noEmit"
@@ -23,6 +24,7 @@
     "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
+    "@types/bun": "^1.4.0",
     "@types/node": "^22.10.2",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",

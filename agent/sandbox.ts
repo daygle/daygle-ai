@@ -10,6 +10,11 @@ export interface SandboxRunner {
     command: string,
     opts?: { signal?: AbortSignal; timeoutMs?: number },
   ): Promise<CaptureResult>;
+  /**
+   * Background warm-up hook (e.g. pre-pull the container image) so the first
+   * sandboxed command doesn't pay a slow one-time cost. Should never reject.
+   */
+  warmup?: () => Promise<void>;
 }
 
 const NETWORK_ENABLED = process.env.DAYGLE_SANDBOX_NETWORK === "1";
@@ -24,6 +29,19 @@ const ALLOWED_REGISTRIES = (process.env.DAYGLE_SANDBOX_REGISTRIES ?? "docker.io"
 const TIMEOUT_MS = 180_000;
 const CAPTURE_LIMIT = 200_000;
 const MAX_OUTPUT = 12_000;
+
+// Resource limits for the bubblewrap path (bwrap itself has no rlimit option,
+// so we set them in a wrapper shell before exec; they're inherited by the
+// whole sandbox tree). Values mirror the container sandbox's limits:
+//   - RLIMIT_DATA (2 GiB, in 1024-byte blocks): bounds writable anonymous
+//     memory - the kernel only counts private writable mappings, so modern
+//     runtimes' PROT_NONE virtual reservations (V8's cage) don't trip it.
+//   - RLIMIT_CPU (seconds, per process): hard cap against infinite loops
+//     (Docker's --cpus 2 is a proportional share, which bwrap can't express).
+//   - RLIMIT_NPROC: cap on processes/threads in the sandbox against fork bombs.
+const SANDBOX_MEM_LIMIT_KB = 2 * 1024 * 1024;
+const SANDBOX_CPU_LIMIT_S = 1_800;
+const SANDBOX_NPROC_LIMIT = 1_024;
 
 export interface CaptureResult {
   code: number | null;
@@ -161,8 +179,23 @@ function buildBwrapArgs(root: string, command: string): string[] {
 }
 
 function bwrapRunner(): SandboxRunner {
-  const runCapture: SandboxRunner["runCapture"] = async (root, command, opts) =>
-    spawnCapture(buildBwrapArgs(root, command), { signal: opts?.signal, timeoutMs: opts?.timeoutMs });
+  const runCapture: SandboxRunner["runCapture"] = async (root, command, opts) => {
+    // Set resource limits in a wrapper shell, then exec bwrap with its
+    // arguments; exec preserves rlimits, so the whole sandbox tree inherits
+    // them. `set -e` makes a failed ulimit abort before anything runs.
+    const args = [
+      "sh",
+      "-c",
+      [
+        "set -e",
+        `ulimit -d ${SANDBOX_MEM_LIMIT_KB} -t ${SANDBOX_CPU_LIMIT_S} -u ${SANDBOX_NPROC_LIMIT}`,
+        'exec "$@"',
+      ].join("\n"),
+      "bwrap-sandbox",
+      ...buildBwrapArgs(root, command),
+    ];
+    return spawnCapture(args, { signal: opts?.signal, timeoutMs: opts?.timeoutMs });
+  };
   return {
     name: "bubblewrap",
     runCapture,
@@ -224,9 +257,20 @@ function containerRunner(engine: "docker" | "podman"): SandboxRunner {
   // that was first pulled - a registry tag moving later can't silently change
   // what the sandbox executes.
   let pinnedRef: string | null = null;
+  // Deduplicate concurrent resolutions (e.g. a startup warm-up racing the
+  // first real command) so the image is only inspected/pulled once.
+  let resolving: Promise<string> | null = null;
 
   async function resolveImageRef(): Promise<string> {
     if (pinnedRef) return pinnedRef;
+    if (resolving) return resolving;
+    resolving = doResolveImageRef().finally(() => {
+      resolving = null;
+    });
+    return resolving;
+  }
+
+  async function doResolveImageRef(): Promise<string> {
     const parsed = assertAllowedImage(DEFAULT_IMAGE);
 
     // An explicit @sha256: pin is honored as-is (strongest form).
@@ -273,6 +317,11 @@ function containerRunner(engine: "docker" | "podman"): SandboxRunner {
       const args = [engine, "run", "--rm"];
       if (!NETWORK_ENABLED) args.push("--network", "none");
       args.push("--memory", "2g", "--cpus", "2");
+      // Runtime hardening: drop every Linux capability, forbid privilege
+      // escalation, and run tini as PID 1 so child processes get reaped.
+      args.push("--cap-drop", "ALL");
+      args.push("--security-opt", "no-new-privileges");
+      args.push("--init");
       args.push("-v", `${root}:/work`, "-w", "/work");
       args.push(await resolveImageRef(), "sh", "-c", command);
       return await spawnCapture(args, { signal: opts?.signal, timeoutMs: opts?.timeoutMs });
@@ -293,6 +342,17 @@ function containerRunner(engine: "docker" | "podman"): SandboxRunner {
     name: engine,
     runCapture,
     run: (root, command, signal) => runCapture(root, command, { signal }).then(formatResult),
+    warmup: async () => {
+      try {
+        await resolveImageRef();
+        console.log(`sandbox image ready: ${pinnedRef}`);
+      } catch (err) {
+        // Non-fatal: the first real command will retry and surface the error.
+        console.warn(
+          `sandbox image warm-up failed (will retry on first use): ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    },
   };
 }
 

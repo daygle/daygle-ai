@@ -1180,6 +1180,9 @@ const server = http.createServer((req, res) => {
 detectSandbox().then((runner) => {
   sandbox = runner;
   console.log(runner ? `command sandbox: ${runner.name}` : "command sandbox: none (host execution)");
+  // Pre-pull the sandbox image in the background so the first sandboxed
+  // command doesn't stall on the download (no-op for bubblewrap).
+  runner?.warmup?.();
   server.listen(PORT, HOST, () => {
     console.log(`daygle agent listening on http://localhost:${PORT}`);
   });
