@@ -52,7 +52,7 @@ export async function startPull(
     await pullModel(baseUrl, target, (progress) => set({ progress }));
     set({ progress: { status: "done" }, pulling: false });
     await onComplete?.();
-    // Briefly show "done", then clear — unless another pull has started since.
+    // Briefly show "done", then clear - unless another pull has started since.
     clearTimer = setTimeout(() => {
       if (!state.pulling && state.name === target) {
         set({ name: null, progress: null });

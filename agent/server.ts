@@ -40,7 +40,7 @@ const chatSessions = new Map<string, ChatSession>();
 
 // Cancel handles for in-flight chat generations, keyed by session id, so a
 // /cancel request (or a disconnect) can stop a run even when the streaming
-// client is gone — e.g. the user navigated away and clicks Stop from a
+// client is gone - e.g. the user navigated away and clicks Stop from a
 // reconnected view.
 const activeChatRuns = new Map<string, () => void>();
 
@@ -331,7 +331,7 @@ async function executeJob(job: Job): Promise<void> {
       type: "status",
       message: sandbox
         ? `Command sandbox: ${sandbox.name}`
-        : "No container sandbox available — commands run on the host (policy-gated).",
+        : "No container sandbox available - commands run on the host (policy-gated).",
     });
     emit({ type: "status", message: `Running ${job.model}…` });
     let summary = await runAgentLoop({
@@ -401,7 +401,7 @@ async function executeJob(job: Job): Promise<void> {
       const runQaFixLoop = async (): Promise<void> => {
         let qa = await runQaOnce();
         for (let round = 0; round < maxQaRounds && qa.ran && !qa.passed; round++) {
-          emit({ type: "status", message: `QA failed — fix round ${round + 1}…` });
+          emit({ type: "status", message: `QA failed - fix round ${round + 1}…` });
           summary = await runAgentLoop({
             root: workDir,
             task: `A QA verification gate ran "${qa.command}" and reported failures:\n\n${qa.output}\n\nFix the failures, re-verify, and finish.`,
@@ -458,11 +458,11 @@ async function executeJob(job: Job): Promise<void> {
           reviewText = review.text;
           if (review.verdict === "approved") break;
           if (round >= maxRounds) {
-            emit({ type: "status", message: "Reviewer still has concerns — opening the PR with review notes." });
+            emit({ type: "status", message: "Reviewer still has concerns - opening the PR with review notes." });
             break;
           }
           reviewFixRounds += 1;
-          emit({ type: "status", message: `Reviewer requested changes — fix round ${round + 1}…` });
+          emit({ type: "status", message: `Reviewer requested changes - fix round ${round + 1}…` });
           summary = await runAgentLoop({
             root: workDir,
             task: `A code reviewer requested the following changes:\n\n${review.text}\n\nAddress these issues, verify your work, and finish.`,
@@ -482,7 +482,7 @@ async function executeJob(job: Job): Promise<void> {
         await runQaFixLoop();
       }
 
-      emit({ type: "status", message: `${changed.length} file(s) changed — committing…` });
+      emit({ type: "status", message: `${changed.length} file(s) changed - committing…` });
       await commitAll(workDir, `daygle: ${job.task.slice(0, 72)}`);
       const title = `daygle: ${job.task.slice(0, 72)}`;
       const body = buildBody(job.task, summary, changed, reviewText, qaNote);
@@ -689,7 +689,7 @@ const server = http.createServer((req, res) => {
       };
 
       try {
-        // 1) QA gate — install deps if needed, run detected/configured checks.
+        // 1) QA gate - install deps if needed, run detected/configured checks.
         const qa = await runQaGate({
           root: session.root,
           command: body.qaCommand?.trim() || undefined,
@@ -870,7 +870,7 @@ const server = http.createServer((req, res) => {
       const sessionId = chatMatch[1];
       let session = chatSessions.get(sessionId);
       if (!session) {
-        // Session expired from memory — restore it from disk if we have a transcript.
+        // Session expired from memory - restore it from disk if we have a transcript.
         try {
           session = (await rehydrateChat(sessionId)) ?? undefined;
         } catch (err) {

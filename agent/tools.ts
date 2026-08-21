@@ -200,7 +200,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   },
 ];
 
-/** Read-only tool surface for the agentic reviewer — everything except write_file. */
+/** Read-only tool surface for the agentic reviewer - everything except write_file. */
 export const REVIEW_TOOL_DEFINITIONS: ToolDefinition[] = TOOL_DEFINITIONS.filter(
   (tool) => tool.function.name !== "write_file",
 );

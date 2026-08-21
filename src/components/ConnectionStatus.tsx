@@ -13,7 +13,7 @@ export function ConnectionStatus({ compact = false }: { compact?: boolean }) {
       : "Disconnected";
 
   if (compact) {
-    // Horizontal pill for the top nav bar — collapses to just the status dot on
+    // Horizontal pill for the top nav bar - collapses to just the status dot on
     // narrow screens where the label and URL would crowd the header.
     return (
       <Link

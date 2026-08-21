@@ -184,7 +184,7 @@ export function SettingsPage() {
                 : connected
                   ? `Connected to ${baseUrl}${version && version !== "unknown" ? ` (v${version})` : ""}`
                   : error
-                    ? `Disconnected — ${error}`
+                    ? `Disconnected - ${error}`
                     : "Disconnected"}
             </span>
           </div>
@@ -223,7 +223,7 @@ export function SettingsPage() {
           <div className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             <NumField label="Temperature" hint="0 = focused, higher = more creative" value={gen.temperature} step="0.1" min={0} max={2} onChange={(v) => updateGen({ temperature: v })} />
             <NumField label="Context length (num_ctx)" hint="tokens of context; larger uses more memory" value={gen.num_ctx} step="512" min={256} onChange={(v) => updateGen({ num_ctx: v })} />
-            <NumField label="top_p" hint="nucleus sampling — optional" value={gen.top_p} step="0.05" min={0} max={1} onChange={(v) => updateGen({ top_p: v })} />
+            <NumField label="top_p" hint="nucleus sampling - optional" value={gen.top_p} step="0.05" min={0} max={1} onChange={(v) => updateGen({ top_p: v })} />
             <NumField label="top_k" hint="optional" value={gen.top_k} step="1" min={0} onChange={(v) => updateGen({ top_k: v })} />
             <NumField label="Repeat penalty" hint="optional" value={gen.repeat_penalty} step="0.05" min={0} onChange={(v) => updateGen({ repeat_penalty: v })} />
             <div className="space-y-1">
@@ -284,7 +284,7 @@ export function SettingsPage() {
               <Cpu className="h-3.5 w-3.5 text-accent" /> Tips for slow, CPU-only machines
             </p>
             <ul className="ml-4 list-disc space-y-0.5">
-              <li>Prefer smaller / quantized models (e.g. 3B–7B, <span className="font-mono">q4</span> builds) — the single biggest speedup.</li>
+              <li>Prefer smaller / quantized models (e.g. 3B–7B, <span className="font-mono">q4</span> builds) - the single biggest speedup.</li>
               <li>Lower the <span className="font-mono">Context length</span> above; large contexts are much slower on CPU.</li>
               <li>Set <span className="font-mono">Keep alive</span> to <span className="font-mono">-1</span> to keep the model loaded and skip reload lag between messages.</li>
             </ul>

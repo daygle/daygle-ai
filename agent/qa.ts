@@ -111,7 +111,7 @@ function detectCommands(root: string): string[] {
 /**
  * Runs the QA gate for a repo: installs dependencies if missing, then runs the
  * detected (or configured) verification commands. Runs on the host, not the
- * sandbox — the commands come from the repo's package.json or an explicit
+ * sandbox - the commands come from the repo's package.json or an explicit
  * user-provided QA command, so they're trusted harness input, and installs
  * need network anyway.
  */

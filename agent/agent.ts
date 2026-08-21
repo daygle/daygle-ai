@@ -42,7 +42,7 @@ export interface AgentConfig {
   maxReviewRounds?: number;
   qaCommand?: string;
   maxQaRounds?: number;
-  /** When true, the review is agentic — it reads code and runs checks before deciding. */
+  /** When true, the review is agentic - it reads code and runs checks before deciding. */
   agenticReview?: boolean;
   /** Max tool-using steps for the agentic reviewer before it must decide. */
   maxReviewSteps?: number;
@@ -59,18 +59,18 @@ const DEFAULT_NUM_CTX = 16384;
 const DEFAULT_SYSTEM_PROMPT = `You are daygle, a careful software engineering agent working inside a git repository checkout.
 Your job is to complete the user's task by inspecting the code and, when appropriate, editing it.
 
-You MUST use the provided tools to accomplish the task. Do NOT just describe what you would do — actually call the tools using the proper function call format.
+You MUST use the provided tools to accomplish the task. Do NOT just describe what you would do - actually call the tools using the proper function call format.
 
-CRITICAL: Never write tool calls or shell commands as text. Do NOT type things like "list_files()", "bash list_files()", or "bash cd web vite" — these do nothing. To use a tool you MUST invoke it through the tool interface.
+CRITICAL: Never write tool calls or shell commands as text. Do NOT type things like "list_files()", "bash list_files()", or "bash cd web vite" - these do nothing. To use a tool you MUST invoke it through the tool interface.
 
 Work in small, verifiable steps. Read and understand before editing.
 
 Available tools:
-- list_files(path) — list files/directories under a path (recursive, capped)
-- read_file(path, start_line?, end_line?) — read a file with numbered lines (up to 1500)
-- search(pattern, path?) — regex-search files, returns matches with line numbers
-- write_file(path, content) — create or overwrite a file with full contents
-- run_command(command) — run a shell command in the repo (tests, typecheck, git status, etc.)
+- list_files(path) - list files/directories under a path (recursive, capped)
+- read_file(path, start_line?, end_line?) - read a file with numbered lines (up to 1500)
+- search(pattern, path?) - regex-search files, returns matches with line numbers
+- write_file(path, content) - create or overwrite a file with full contents
+- run_command(command) - run a shell command in the repo (tests, typecheck, git status, etc.)
   For commands in a subdirectory, use: "cd <dir> && <command>"
 
 Rules:
@@ -79,7 +79,7 @@ Rules:
 - After editing, verify with the project's typecheck/tests when available.
 - Wait for each tool's result before acting on it.
 - When finished, respond with a concise summary of what you found and changed, then STOP calling tools.
-- Do not commit, push, or open pull requests — the harness handles that after you finish.
+- Do not commit, push, or open pull requests - the harness handles that after you finish.
 - If the task cannot be completed with the available information, explain why and stop.`;
 
 interface RawToolCall {
@@ -275,15 +275,15 @@ const DEFAULT_MAX_TEST_GEN_STEPS = 30;
 
 const TEST_GEN_SYSTEM_PROMPT = `You are daygle, a software engineer writing automated tests for a change that was just made to a git repository.
 
-You MUST use the provided tools — read files, search, write test files, and run the tests. Do NOT describe tests as text; actually create and run them.
+You MUST use the provided tools - read files, search, write test files, and run the tests. Do NOT describe tests as text; actually create and run them.
 
 CRITICAL: Never write tool calls or shell commands as plain text. To use a tool you MUST invoke it through the tool interface.
 
 How to work:
-1. Study the change and the code it touches, and look for an existing test setup — a test runner, config, and where tests live (e.g. *.test.ts, *_test.py, tests/). Match the project's existing testing framework and conventions exactly. Do NOT introduce a new test framework or dependencies.
-2. Write focused tests that cover the new or changed behavior, including the important edge cases — not trivial or redundant assertions.
+1. Study the change and the code it touches, and look for an existing test setup - a test runner, config, and where tests live (e.g. *.test.ts, *_test.py, tests/). Match the project's existing testing framework and conventions exactly. Do NOT introduce a new test framework or dependencies.
+2. Write focused tests that cover the new or changed behavior, including the important edge cases - not trivial or redundant assertions.
 3. Run the tests with the project's test command and iterate until they pass. If the change itself is buggy, prefer fixing the test to assert correct behavior; only touch non-test code if a test reveals a real defect.
-4. If the repository has no test framework set up and adding one would be intrusive, do NOT scaffold one — stop and explain that in your summary instead.
+4. If the repository has no test framework set up and adding one would be intrusive, do NOT scaffold one - stop and explain that in your summary instead.
 
 Rules:
 - Only add or edit test files (and minimal fixtures) unless a test uncovers a real bug in the change.
@@ -343,7 +343,7 @@ Then: a short summary and, if changes are requested, a numbered list of the conc
  * Classify a reviewer's free-text response into a verdict. The reviewer is
  * asked to start with "APPROVED" or "CHANGES REQUESTED", but models phrase it
  * many ways, so we look for explicit change/approve signals near the top
- * before falling back — and default to "changes_requested" when genuinely
+ * before falling back - and default to "changes_requested" when genuinely
  * ambiguous, so an unclear review never silently waves changes through.
  */
 export function parseReviewVerdict(text: string): ReviewResult["verdict"] {
@@ -397,13 +397,13 @@ const DEFAULT_MAX_REVIEW_STEPS = 12;
 const AGENTIC_REVIEW_SYSTEM_PROMPT = `You are a senior software engineer performing a pre-merge code review inside the repository checkout that already contains the change.
 
 You have READ-ONLY tools to investigate before you decide:
-- list_files(path) — list files/directories
-- read_file(path, start_line?, end_line?) — read a file with numbered lines
-- search(pattern, path?) — regex-search the repo
-- run_command(command) — run verification commands (tests, typecheck, lint, build). Only test/build runners are permitted; anything else is denied. You cannot modify files.
+- list_files(path) - list files/directories
+- read_file(path, start_line?, end_line?) - read a file with numbered lines
+- search(pattern, path?) - regex-search the repo
+- run_command(command) - run verification commands (tests, typecheck, lint, build). Only test/build runners are permitted; anything else is denied. You cannot modify files.
 
 How to review:
-1. Read the diff, then open the surrounding code and call sites the change affects — don't judge from the diff alone.
+1. Read the diff, then open the surrounding code and call sites the change affects - don't judge from the diff alone.
 2. When it helps, run the project's tests or typecheck to confirm the change actually works.
 3. Look for correctness bugs, regressions, security issues, missing error handling, and broken conventions.
 
@@ -414,7 +414,7 @@ Then: a short summary and, if changes are requested, a numbered list of concrete
 /**
  * Agentic pre-merge review: a reviewer model that reads the code and runs the
  * project's checks (via a scoped, read-only tool set) before returning a
- * verdict — stronger than a diff-only review because it can confirm the change
+ * verdict - stronger than a diff-only review because it can confirm the change
  * actually works. Emits tool/status events so the investigation is visible, and
  * a final `review` event.
  */
@@ -492,7 +492,7 @@ export async function runAgenticReview(opts: {
     }
   }
 
-  // Ran out of steps without a clean stop — treat the last words as the verdict,
+  // Ran out of steps without a clean stop - treat the last words as the verdict,
   // defaulting to changes-requested so an inconclusive review doesn't approve.
   const text = lastContent.trim()
     ? `${lastContent.trim()}\n\n(Reviewer reached its step limit.)`

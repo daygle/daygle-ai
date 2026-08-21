@@ -1,5 +1,5 @@
 [Unit]
-Description=Daygle - Web UI
+Description=Daygle AI - Web UI
 After=network.target daygle-ollama.service
 Wants=daygle-ollama.service
 

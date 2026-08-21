@@ -1,5 +1,5 @@
 #!/bin/sh
-# One-command setup for daygle:
+# One-command setup for Daygle AI:
 #   - checks prerequisites (bun, curl, git, tar; zstd on Linux)
 #   - installs JS dependencies
 #   - installs the bundled Ollama server (skips if already present)
@@ -36,7 +36,7 @@ while [ "$#" -gt 0 ]; do
   shift
 done
 
-echo "== daygle setup =="
+echo "== Daygle AI setup =="
 echo ""
 
 # --- Prerequisites ---------------------------------------------------------
@@ -89,7 +89,7 @@ bun install
 # --- Bundled Ollama --------------------------------------------------------
 echo ""
 if [ -x "$ROOT/.ollama/bin/ollama" ]; then
-  echo "Bundled Ollama already present — skipping download."
+  echo "Bundled Ollama already present - skipping download."
 else
   echo "Installing bundled Ollama…"
   sh scripts/install-ollama.sh
@@ -114,7 +114,7 @@ echo ""
 echo "== Setup complete =="
 echo ""
 echo " 1. bun run ollama    # start the Ollama server (models in .ollama/models/)"
-echo " 2. bun run dev       # start daygle, then pull a model from the Models page"
+echo " 2. bun run dev       # start Daygle AI, then pull a model from the Models page"
 echo " 3. bun run agent     # optional: start the coding agent server for the Agent page"
 echo ""
 echo "Agent page authentication (pick one):"

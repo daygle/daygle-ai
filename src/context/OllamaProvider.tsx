@@ -54,7 +54,7 @@ export function OllamaProvider({ children }: { children: ReactNode }) {
     try {
       localStorage.setItem(STORAGE_KEY, normalized);
     } catch {
-      // localStorage unavailable (private mode etc.) — ignore
+      // localStorage unavailable (private mode etc.) - ignore
     }
   }, []);
 

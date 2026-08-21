@@ -17,7 +17,7 @@ export function AppShell() {
 
   return (
     <div className="flex h-[100dvh] flex-col bg-background">
-      {/* Top nav bar — holds the logo, menu items, and connection status so the
+      {/* Top nav bar - holds the logo, menu items, and connection status so the
           left edge is free for a single page-level sidebar (e.g. chat history). */}
       <header className="sticky top-0 z-40 flex shrink-0 items-center gap-3 border-b border-border bg-card/50 px-4 py-2.5 backdrop-blur sm:gap-6">
         <button onClick={() => navigate("/")} className="shrink-0 text-left">

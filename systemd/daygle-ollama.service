@@ -1,5 +1,5 @@
 [Unit]
-Description=Daygle - Ollama Server
+Description=Daygle AI - Ollama Server
 After=network.target
 
 [Service]

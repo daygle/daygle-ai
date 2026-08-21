@@ -53,7 +53,7 @@ export type ChatEvent =
   | { type: "approval_requested"; requestId: string; command: string }
   | { type: "approval_resolved"; requestId: string; decision: "approve" | "deny" }
   | { type: "clarification_requested"; requestId: string; question: string; options: Array<{ label: string; description?: string }> }
-  // Verification events — emitted by the on-demand "Verify" action, not the
+  // Verification events - emitted by the on-demand "Verify" action, not the
   // normal chat stream: a QA gate result and an optional second-model review.
   | { type: "qa"; command: string; output: string; passed: boolean; skipped?: boolean }
   | { type: "review"; verdict: "approved" | "changes_requested"; text: string }
@@ -233,21 +233,21 @@ function parseTextToolCalls(text: string): Array<{ function: { name: string; arg
 
 export const SYSTEM_PROMPT = `You are daygle, a helpful software engineering assistant working inside a git repository checkout.
 
-You have tools to inspect and edit the code — listing files, reading files, searching, writing files, and running shell commands. Use them by making an actual tool call; the system runs it and returns the result to you.
+You have tools to inspect and edit the code - listing files, reading files, searching, writing files, and running shell commands. Use them by making an actual tool call; the system runs it and returns the result to you.
 
 CRITICAL: Never write tool calls or shell commands as text. Do NOT type things like:
 - "list_files()"
 - "bash list_files()"
 - "bash cd web vite"
 - Any JSON or code snippet describing a call
-These do nothing — they are just text. To use a tool you MUST invoke it through the tool interface, not print it. When you are not calling a tool, just talk normally.
+These do nothing - they are just text. To use a tool you MUST invoke it through the tool interface, not print it. When you are not calling a tool, just talk normally.
 
 Available tools:
-- list_files(path) — list files/directories under a path
-- read_file(path, start_line?, end_line?) — read a file with numbered lines
-- search(pattern, path?) — regex-search files for patterns
-- write_file(path, content) — create or overwrite a file
-- run_command(command) — run a shell command (tests, typecheck, etc.)
+- list_files(path) - list files/directories under a path
+- read_file(path, start_line?, end_line?) - read a file with numbered lines
+- search(pattern, path?) - regex-search files for patterns
+- write_file(path, content) - create or overwrite a file
+- run_command(command) - run a shell command (tests, typecheck, etc.)
   IMPORTANT: For commands that need to run in a subdirectory, use "cd <dir> && <command>" as a single command string.
 
 When you are unsure how to proceed, ask for clarification by outputting a JSON object in your response like this:
@@ -258,7 +258,7 @@ A good turn reads like: one short sentence about what you're doing ("Let me look
 
 Be concise. Read and understand before editing. Make the smallest change that solves the problem.`;
 
-export const CHAT_ONLY_SYSTEM_PROMPT = `You are daygle, a helpful, concise assistant. Answer questions, explain concepts, and help with coding by writing and discussing code inline. You are not connected to a repository, so you cannot read or modify files — if the user needs you to work inside a codebase, suggest they connect a repository.`;
+export const CHAT_ONLY_SYSTEM_PROMPT = `You are daygle, a helpful, concise assistant. Answer questions, explain concepts, and help with coding by writing and discussing code inline. You are not connected to a repository, so you cannot read or modify files - if the user needs you to work inside a codebase, suggest they connect a repository.`;
 
 export async function* streamChat(
   session: ChatSession,
@@ -290,7 +290,7 @@ export async function* streamChat(
   if (typeof opts.top_p === "number") genOptions.top_p = opts.top_p;
   if (typeof opts.top_k === "number") genOptions.top_k = opts.top_k;
   if (typeof opts.repeat_penalty === "number") genOptions.repeat_penalty = opts.repeat_penalty;
-  // CPU / performance knobs — forwarded straight to Ollama when set.
+  // CPU / performance knobs - forwarded straight to Ollama when set.
   if (typeof opts.num_thread === "number") genOptions.num_thread = opts.num_thread;
   if (typeof opts.num_batch === "number") genOptions.num_batch = opts.num_batch;
   if (typeof opts.num_gpu === "number") genOptions.num_gpu = opts.num_gpu;
@@ -376,7 +376,7 @@ export async function* streamChat(
       }
     }
 
-    // Parse tool calls — first try structured format, then fallback to text parsing.
+    // Parse tool calls - first try structured format, then fallback to text parsing.
     // Repo-less sessions are pure conversation, so tools are ignored entirely.
     let toolCalls = hasRepo
       ? (rawToolCalls ?? []).map((call) => {
@@ -427,7 +427,7 @@ export async function* streamChat(
       return;
     }
 
-    // No tool calls — model is done responding
+    // No tool calls - model is done responding
     if (toolCalls.length === 0) {
       yield { type: "model_done", content: displayContent };
       return;

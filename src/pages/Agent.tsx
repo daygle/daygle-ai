@@ -139,7 +139,7 @@ function DiffView({ diff }: { diff: string }) {
   );
 }
 
-/** Lightweight markdown for assistant messages — headings, lists, code, links. */
+/** Lightweight markdown for assistant messages - headings, lists, code, links. */
 function Markdown({ children }: { children: string }) {
   return (
     <div className="space-y-2 text-sm leading-relaxed [&_a]:text-accent [&_a]:underline [&_h1]:text-base [&_h1]:font-semibold [&_h2]:text-sm [&_h2]:font-semibold [&_h3]:font-semibold [&_li]:ml-4 [&_ol]:list-decimal [&_p]:my-0 [&_ul]:list-disc">
@@ -502,7 +502,7 @@ function WorkspacePanel({
         {activeTab === "files" && (
           workspace.files.length === 0 ? (
             <div className="py-8 text-center text-xs text-muted-foreground">
-              {hasRepo ? "No files to show yet — try refreshing." : "Connect a repository to browse files."}
+              {hasRepo ? "No files to show yet - try refreshing." : "Connect a repository to browse files."}
             </div>
           ) : (
             <div className="space-y-0.5">
@@ -627,7 +627,7 @@ export function AgentPage() {
   useEffect(() => {
     if (!sessionId) return;
     void refreshWorkspace();
-    // Only poll when the panel is actually open and there's a repo to inspect —
+    // Only poll when the panel is actually open and there's a repo to inspect -
     // a repo-less chat has no workspace, and a closed panel shows nothing.
     if (!workspaceOpen || !sessionRepo) return;
     const timer = window.setInterval(() => void refreshWorkspace(), 4000);
@@ -666,7 +666,7 @@ export function AgentPage() {
       .then((m) => {
         const names = m.map((model) => model.name);
         setModels(names);
-        // Only pick an initial model when the current one is unset/unavailable —
+        // Only pick an initial model when the current one is unset/unavailable -
         // never override a selection the user (or a resumed chat) already made,
         // otherwise changing the model just snaps back to the default.
         setModel((current) => {
@@ -728,7 +728,7 @@ export function AgentPage() {
           role: "assistant",
           content: repo
             ? `Connected to **${repo}**. I've cloned the repo and I'm ready to help. What would you like me to do?`
-            : `Hi — I'm ready to chat. Ask me anything, or connect a repository to have me read and edit code.`,
+            : `Hi - I'm ready to chat. Ask me anything, or connect a repository to have me read and edit code.`,
         },
       ]);
     } catch (err) {
@@ -927,7 +927,7 @@ export function AgentPage() {
           setMessages((prev) => {
             const last = prev[prev.length - 1];
             const hasBubble = last?.id === assistantId && last.role === "assistant";
-            // Nothing displayable yet (pure tool-call JSON) — don't spawn an empty bubble.
+            // Nothing displayable yet (pure tool-call JSON) - don't spawn an empty bubble.
             if (!cleaned) {
               return hasBubble ? [...prev.slice(0, -1), { ...last, content: cleaned, streaming: true }] : prev;
             }
@@ -1055,7 +1055,7 @@ export function AgentPage() {
   }, [autoSendQueued, handleSend, input, streaming]);
 
   function handleStop() {
-    // Abort our own stream if we own it, and ask the server to stop the run —
+    // Abort our own stream if we own it, and ask the server to stop the run -
     // the latter also covers a generation we only reconnected to (busy-poll),
     // where we no longer hold the original stream handle.
     abortRef.current?.();
@@ -1067,7 +1067,7 @@ export function AgentPage() {
     setMessages((prev) => prev.map((m) => (m.streaming ? { ...m, streaming: false } : m)));
   }
 
-  // Stop polling on unmount (navigating away) — this only detaches the UI; it
+  // Stop polling on unmount (navigating away) - this only detaches the UI; it
   // never aborts the generation, which keeps running and persisting so it can
   // be picked back up when the chat is reopened.
   useEffect(() => () => stopBusyPoll(), []);
@@ -1081,7 +1081,7 @@ export function AgentPage() {
     setStatusText("Verifying…");
     setMessages((prev) => [
       ...prev,
-      { id: uid(), role: "assistant", content: "Running verification — QA checks and an AI review of the current changes…" },
+      { id: uid(), role: "assistant", content: "Running verification - QA checks and an AI review of the current changes…" },
     ]);
     const finish = () => {
       setVerifying(false);
@@ -1651,7 +1651,7 @@ export function AgentPage() {
                           >
                             <span className="font-medium">{option.label}</span>
                             {option.description && (
-                              <span className="ml-1 text-muted-foreground">— {option.description}</span>
+                              <span className="ml-1 text-muted-foreground">- {option.description}</span>
                             )}
                           </Button>
                         ))}
@@ -1908,7 +1908,7 @@ function TaskRunnerModal({
             push({ kind: event.type, text: `${event.name}(${Object.values(event.args).join(", ").slice(0, 80)})` });
             break;
           case "review":
-            push({ kind: event.type, text: `Review: ${event.verdict === "approved" ? "approved" : "changes requested"} — ${event.text.slice(0, 200)}`, ok: event.verdict === "approved" });
+            push({ kind: event.type, text: `Review: ${event.verdict === "approved" ? "approved" : "changes requested"} - ${event.text.slice(0, 200)}`, ok: event.verdict === "approved" });
             break;
           case "qa":
             push({ kind: event.type, text: `QA: ${event.command}${event.skipped ? " (skipped)" : event.passed ? " ✓" : " ✕"}`, ok: event.passed });
@@ -1926,7 +1926,7 @@ function TaskRunnerModal({
             break;
           case "done":
             if (event.prUrl) setPrUrl(event.prUrl);
-            push({ kind: event.type, text: event.prUrl ? "Done — pull request opened." : (event.summary || "Done."), ok: true });
+            push({ kind: event.type, text: event.prUrl ? "Done - pull request opened." : (event.summary || "Done."), ok: true });
             setRunning(false);
             break;
           // model / model_delta / tool_result / diff are noisy; the summary lines above suffice
@@ -1997,7 +1997,7 @@ function TaskRunnerModal({
                       <ShieldCheck className="h-3.5 w-3.5 text-accent" /> Agentic review
                     </span>
                     <span className="mt-0.5 block text-[11px] text-muted-foreground">
-                      The reviewer reads the surrounding code and runs the project’s tests before deciding — slower, but catches issues a diff-only review misses. Only used when a review model is set.
+                      The reviewer reads the surrounding code and runs the project’s tests before deciding - slower, but catches issues a diff-only review misses. Only used when a review model is set.
                     </span>
                   </span>
                 </label>

@@ -34,7 +34,7 @@ export function saveGenOptions(options: GenOptions): void {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(options));
   } catch {
-    // localStorage unavailable — ignore
+    // localStorage unavailable - ignore
   }
 }
 
@@ -51,6 +51,6 @@ export function saveModelPreference(model: string): void {
     if (model) localStorage.setItem(MODEL_STORAGE_KEY, model);
     else localStorage.removeItem(MODEL_STORAGE_KEY);
   } catch {
-    // localStorage unavailable — ignore
+    // localStorage unavailable - ignore
   }
 }

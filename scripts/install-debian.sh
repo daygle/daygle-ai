@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 #
-# Daygle AI — one-line installer for a vanilla Debian 13 (trixie) machine.
+# Daygle AI - one-line installer for a vanilla Debian 13 (trixie) machine.
 #
 #   curl -fsSL https://raw.githubusercontent.com/daygle/daygle-ai/main/scripts/install-debian.sh | sudo bash
 #
 # Installs everything from scratch: system packages, Bun, the bundled Ollama,
-# the Daygle app (cloned + built), and systemd services for the UI, agent, and
-# Ollama. Idempotent — safe to re-run to update an existing install.
+# the Daygle AI app (cloned + built), and systemd services for the UI, agent, and
+# Ollama. Idempotent - safe to re-run to update an existing install.
 #
 # Configure via environment variables (pass them through sudo, e.g.
 #   curl -fsSL …/install-debian.sh | sudo DAYGLE_MODEL=llama3.2 bash):
@@ -51,7 +51,7 @@ apt-get install -y -qq \
   ca-certificates curl git unzip zstd tar xz-utils build-essential procps
 ok "base packages installed"
 
-# GitHub CLI — used by the agent to open pull requests (optional but recommended).
+# GitHub CLI - used by the agent to open pull requests (optional but recommended).
 if ! command -v gh >/dev/null 2>&1; then
   log "Installing GitHub CLI (gh)…"
   install -d -m 0755 /usr/share/keyrings
@@ -118,7 +118,7 @@ if [ "$INSTALL_SERVICES" = "1" ]; then
   }
 
   write_unit daygle-ollama.service "[Unit]
-Description=Daygle - Ollama Server
+Description=Daygle AI - Ollama Server
 After=network.target
 
 [Service]
@@ -137,7 +137,7 @@ RestartSec=5
 WantedBy=multi-user.target"
 
   write_unit daygle-agent.service "[Unit]
-Description=Daygle - Agent Server
+Description=Daygle AI - Agent Server
 After=network.target daygle-ollama.service
 Wants=daygle-ollama.service
 
@@ -154,7 +154,7 @@ RestartSec=5
 WantedBy=multi-user.target"
 
   write_unit daygle-ui.service "[Unit]
-Description=Daygle - Web UI
+Description=Daygle AI - Web UI
 After=network.target daygle-ollama.service
 Wants=daygle-ollama.service
 
@@ -193,9 +193,9 @@ if [ -n "$MODEL" ]; then
   if curl -fsS http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then
     log "Pulling model '$MODEL' (this can take a while)…"
     OLLAMA_HOST=127.0.0.1:11434 "$DIR/.ollama/bin/ollama" pull "$MODEL" \
-      && ok "model '$MODEL' ready" || warn "Model pull failed — pull later from the Models page."
+      && ok "model '$MODEL' ready" || warn "Model pull failed - pull later from the Models page."
   else
-    warn "Ollama did not become reachable — skipping model pull."
+    warn "Ollama did not become reachable - skipping model pull."
   fi
   [ -n "$started" ] && kill "$started" 2>/dev/null || true
 fi
@@ -215,7 +215,7 @@ Service control:
   systemctl restart daygle-ui
 
 Note: the browser talks to Ollama and the agent directly, so open the UI from
-the same machine (http://localhost:5173), or reach this box by its IP above —
+the same machine (http://localhost:5173), or reach this box by its IP above -
 not "localhost" from a different computer. To open PRs from the Agent page,
 authenticate once with:  gh auth login   (or set a token in Settings).
 EOF
