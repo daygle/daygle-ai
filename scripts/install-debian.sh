@@ -117,15 +117,6 @@ if [ "$INSTALL_SERVICES" = "1" ]; then
     printf '%s\n' "$2" > "/etc/systemd/system/$1"
   }
 
-  # Remove old (pre-rename) daygle-* units so a re-run doesn't leave two
-  # copies of each service fighting over the same ports.
-  for old in daygle-ollama daygle-ui daygle-agent; do
-    if [ -f "/etc/systemd/system/$old.service" ]; then
-      systemctl disable --now "$old.service" >/dev/null 2>&1 || true
-      rm -f "/etc/systemd/system/$old.service"
-    fi
-  done
-
   write_unit daygle-ai-ollama.service "[Unit]
 Description=Daygle AI - Ollama Server
 After=network.target

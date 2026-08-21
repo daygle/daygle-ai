@@ -8,15 +8,6 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 echo "Installing daygle systemd services..."
 
-# Remove any services from the old (pre-rename) naming scheme so a re-run
-# doesn't leave two copies fighting over the same ports.
-for old in daygle-ollama daygle-ui daygle-agent; do
-  if [ -f "/etc/systemd/system/$old.service" ]; then
-    systemctl disable --now "$old.service" 2>/dev/null || true
-    rm -f "/etc/systemd/system/$old.service"
-  fi
-done
-
 cp "$SCRIPT_DIR/daygle-ai-ollama.service" /etc/systemd/system/
 cp "$SCRIPT_DIR/daygle-ai-ui.service" /etc/systemd/system/
 cp "$SCRIPT_DIR/daygle-ai-agent.service" /etc/systemd/system/
