@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { Bot, Check, ChevronDown, ChevronRight, ChevronUp, CircleAlert, Copy, Eye, ExternalLink, FileEdit, Files, Folder, GitBranch, GitCompare, GripVertical, ImagePlus, ListTodo, Loader2, MessageSquarePlus, PanelRightClose, PanelRightOpen, RefreshCw, Rocket, Search, Send, ShieldCheck, Square, StickyNote, Terminal, Trash2, User, X } from "lucide-react";
+import { Bot, Check, ChevronDown, ChevronRight, ChevronUp, CircleAlert, Copy, Eye, ExternalLink, FileEdit, Files, Folder, GitBranch, GitCompare, GripVertical, ImagePlus, ListTodo, Loader2, MessageSquarePlus, PanelRightClose, PanelRightOpen, RefreshCw, Rocket, Search, Send, ShieldCheck, Square, Terminal, Trash2, User, X } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
@@ -42,6 +42,7 @@ function toolStatus(name: string): string {
     case "read_file": return "Reading files…";
     case "list_files": return "Exploring the repo…";
     case "write_file": return "Writing changes…";
+    case "str_replace": return "Editing a file…";
     case "run_command": return "Running a command…";
     default: return "Working…";
   }
@@ -129,7 +130,7 @@ function stripToolJson(text: string): string {
     // drop example output objects like { "file": "...", "line": 12 }
     .replace(/\{\s*"file"\s*:\s*"[^"]+"\s*,\s*"line"\s*:\s*\d+\s*\}/g, "")
     // drop bash-style tool calls like: bash list_files("src") or list_files()
-    .replace(/(?:bash\s+)?(?:list_files|read_file|search|write_file|run_command)\s*\([^)]*\)/gi, "")
+    .replace(/(?:bash\s+)?(?:list_files|read_file|search|write_file|str_replace|run_command)\s*\([^)]*\)/gi, "")
     // drop bash cd patterns like: bash cd web vite
     .replace(/(?:bash\s+)?cd\s+\S+\s+.+/gi, "")
     // drop a trailing, not-yet-closed tool-call object still streaming in
@@ -321,6 +322,7 @@ function ToolCall({ name, args, result, diff }: { name: string; args: Record<str
     : name === "list_files" && args.path ? `List ${args.path}`
     : name === "search" && args.pattern ? `Search "${args.pattern}"`
     : name === "write_file" && args.path ? `Write ${args.path}`
+    : name === "str_replace" && args.path ? `Edit ${args.path}`
     : name === "run_command" && args.command ? `${args.command}`
     : name;
 
@@ -416,7 +418,7 @@ function ReviewCard({ verdict, text }: { verdict: "approved" | "changes_requeste
   );
 }
 
-type WorkspaceTab = "queue" | "files" | "changes" | "preview" | "terminal" | "notes";
+type WorkspaceTab = "queue" | "files" | "changes" | "preview" | "terminal";
 
 // ── File tree helpers ───────────────────────────────────────────────────────
 
@@ -559,8 +561,6 @@ function WorkspacePanel({
   onReorderQueue,
   workspace,
   messages,
-  notes,
-  onNotesChange,
   onRefresh,
   refreshing,
 }: {
@@ -573,13 +573,11 @@ function WorkspacePanel({
   onReorderQueue: (from: number, to: number) => void;
   workspace: ChatWorkspace;
   messages: ChatBubble[];
-  notes: string;
-  onNotesChange: (notes: string) => void;
   onRefresh: () => void;
   refreshing: boolean;
 }) {
   // Files / Changes / Preview / Terminal only make sense with a checkout; a
-  // repo-less chat gets just Queue and Notes.
+  // repo-less chat gets just Queue.
   const repoOnly = new Set<WorkspaceTab>(["files", "changes", "preview", "terminal"]);
   const allTabs: Array<{ id: WorkspaceTab; label: string; icon: typeof ListTodo; count?: number }> = [
     { id: "queue", label: "Queue", icon: ListTodo, count: queue.length },
@@ -587,7 +585,6 @@ function WorkspacePanel({
     { id: "changes", label: "Changes", icon: GitCompare, count: workspace.changedFiles.length || undefined },
     { id: "preview", label: "Preview", icon: Eye },
     { id: "terminal", label: "Terminal", icon: Terminal },
-    { id: "notes", label: "Notes", icon: StickyNote },
   ];
   const tabs = hasRepo ? allTabs : allTabs.filter((item) => !repoOnly.has(item.id));
   // Fall back to Queue if the selected tab isn't available (e.g. repo tabs on a
@@ -765,14 +762,6 @@ function WorkspacePanel({
           )
         )}
 
-        {activeTab === "notes" && (
-          <textarea
-            value={notes}
-            onChange={(event) => onNotesChange(event.target.value)}
-            placeholder="Keep notes while you work…"
-            className="min-h-64 w-full resize-none rounded-lg border border-border bg-background p-3 text-xs leading-relaxed text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring/60"
-          />
-        )}
       </div>
     </aside>
   );
@@ -801,14 +790,17 @@ export function AgentPage() {
   const [queuedMessages, setQueuedMessages] = useState<QueuedMessage[]>([]);
   const [workspace, setWorkspace] = useState<ChatWorkspace>({ files: [], changedFiles: [], stat: "", diff: "" });
   const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>("queue");
-  const [workspaceOpen, setWorkspaceOpen] = useState(true);
+  // On small screens the chat list and workspace become overlay drawers (closed
+  // by default) so the conversation gets the full width; on desktop they stay
+  // inline side panels as before.
+  const [isMobile, setIsMobile] = useState(() => typeof window !== "undefined" && window.matchMedia("(max-width: 767px)").matches);
+  const [workspaceOpen, setWorkspaceOpen] = useState(() => !isMobile);
   const [workspaceWidth, setWorkspaceWidth] = useState(() => loadPanelWidth("daygle.agent.workspaceWidth", 360, 280, 620));
   const [workspaceRefreshing, setWorkspaceRefreshing] = useState(false);
-  const [notes, setNotes] = useState("");
   const [autoSendQueued, setAutoSendQueued] = useState(false);
   const [taskOpen, setTaskOpen] = useState(false);
   const [confirmDeleteChat, setConfirmDeleteChat] = useState<string | null>(null);
-  const [chatsSidebarOpen, setChatsSidebarOpen] = useState(true);
+  const [chatsSidebarOpen, setChatsSidebarOpen] = useState(() => !isMobile);
   const [chatsSidebarWidth, setChatsSidebarWidth] = useState(() => loadPanelWidth("daygle.agent.chatsWidth", 256, 220, 420));
   const [verifying, setVerifying] = useState(false);
   const resizeRef = useRef<{ side: "chats" | "workspace"; startX: number; startWidth: number } | null>(null);
@@ -820,6 +812,24 @@ export function AgentPage() {
   const abortRef = useRef<(() => void) | undefined>(undefined);
   const toolResultsRef = useRef<Map<string, string>>(new Map());
   const busyPollRef = useRef<number | null>(null);
+
+  // Track viewport width so the side panels can switch between inline (desktop)
+  // and overlay-drawer (mobile) layouts. Collapse drawers when crossing into
+  // mobile so the conversation is never hidden behind a full-width panel.
+  useEffect(() => {
+    const mq = window.matchMedia("(max-width: 767px)");
+    const update = () => {
+      const small = mq.matches;
+      setIsMobile(small);
+      if (small) {
+        setChatsSidebarOpen(false);
+        setWorkspaceOpen(false);
+      }
+    };
+    update();
+    mq.addEventListener("change", update);
+    return () => mq.removeEventListener("change", update);
+  }, []);
 
   useEffect(() => {
     const onPointerMove = (event: globalThis.PointerEvent) => {
@@ -887,14 +897,14 @@ export function AgentPage() {
   }, [refreshWorkspace, sessionId, workspaceOpen, sessionRepo]);
 
   // Default the workspace panel open for repo sessions (Files/Changes/Terminal
-  // are useful) and closed for plain chats (only Queue/Notes apply), once per
+  // are useful) and closed for plain chats (only Queue applies), once per
   // session. Manual toggles and the queue auto-open still take over afterward.
   const panelDefaultedRef = useRef<string | null>(null);
   useEffect(() => {
     if (!sessionId || panelDefaultedRef.current === sessionId) return;
     panelDefaultedRef.current = sessionId;
-    setWorkspaceOpen(Boolean(sessionRepo));
-  }, [sessionId, sessionRepo]);
+    setWorkspaceOpen(Boolean(sessionRepo) && !isMobile);
+  }, [sessionId, sessionRepo, isMobile]);
 
   // Only auto-scroll when the user is already near the bottom, so scrolling up
   // to read earlier output isn't yanked back down on every streamed token.
@@ -1058,6 +1068,7 @@ export function AgentPage() {
     verifyAbortRef.current?.();
     setStreaming(false);
     setStatusText("");
+    if (isMobile) setChatsSidebarOpen(false);
     void resumeChat(id);
   }
 
@@ -1090,7 +1101,6 @@ export function AgentPage() {
     removeImageAttachment();
     setQueuedMessages([]);
     setWorkspace({ files: [], changedFiles: [], stat: "", diff: "" });
-    setNotes("");
     setStreaming(false);
     rememberSession(null);
     refreshHistory();
@@ -1657,12 +1667,25 @@ export function AgentPage() {
 
   // --- Chat screen ---
   return (
-    <div className="flex h-full min-w-0 overflow-hidden">
+    <div className="relative flex h-full min-w-0 overflow-hidden">
+      {/* Mobile backdrop - closes any open overlay drawer when tapped. */}
+      {isMobile && (chatsSidebarOpen || workspaceOpen) && (
+        <button
+          type="button"
+          aria-label="Close panel"
+          onClick={() => {
+            setChatsSidebarOpen(false);
+            setWorkspaceOpen(false);
+          }}
+          className="absolute inset-0 z-30 bg-black/50"
+        />
+      )}
+
       {/* Left: chat list sidebar */}
       {chatsSidebarOpen && (
         <aside
-          style={{ width: `${chatsSidebarWidth}px` }}
-          className="relative flex shrink-0 flex-col border-r border-border bg-card/40"
+          style={{ width: isMobile ? "min(85vw, 20rem)" : `${chatsSidebarWidth}px` }}
+          className={`relative z-40 flex shrink-0 flex-col border-r border-border bg-card/40 ${isMobile ? "absolute inset-y-0 left-0 shadow-2xl" : ""}`}
         >
           <div className="flex items-center justify-between gap-2 border-b border-border px-3 py-3">
             <span className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
@@ -1743,18 +1766,20 @@ export function AgentPage() {
               })
             )}
           </div>
-          <button
-            type="button"
-            onPointerDown={(event) => startResize("chats", event)}
-            className="absolute right-0 top-0 z-20 flex h-full w-2 translate-x-1/2 cursor-col-resize touch-none items-center justify-center text-muted-foreground/30 hover:text-accent"
-            title="Resize chat list"
-            aria-label="Resize chat list"
-          >
-            <GripVertical className="h-5 w-5" />
-          </button>
+          {!isMobile && (
+            <button
+              type="button"
+              onPointerDown={(event) => startResize("chats", event)}
+              className="absolute right-0 top-0 z-20 flex h-full w-2 translate-x-1/2 cursor-col-resize touch-none items-center justify-center text-muted-foreground/30 hover:text-accent"
+              title="Resize chat list"
+              aria-label="Resize chat list"
+            >
+              <GripVertical className="h-5 w-5" />
+            </button>
+          )}
         </aside>
       )}
-      {!chatsSidebarOpen && (
+      {!chatsSidebarOpen && !isMobile && (
         <button
           onClick={() => setChatsSidebarOpen(true)}
           className="flex w-9 shrink-0 items-center justify-center border-r border-border bg-card text-muted-foreground hover:bg-muted hover:text-foreground"
@@ -1764,21 +1789,31 @@ export function AgentPage() {
         </button>
       )}
       <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-        <header className="flex items-center gap-2 border-b border-border px-4 py-3">
+        <header className="flex items-center gap-2 border-b border-border px-3 py-2.5 sm:px-4 sm:py-3">
+        {isMobile && (
+          <button
+            onClick={() => setChatsSidebarOpen(true)}
+            className="rounded p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground"
+            title="Chats"
+            aria-label="Open chats"
+          >
+            <MessageSquarePlus className="h-4 w-4" />
+          </button>
+        )}
         <Bot className="h-4 w-4 text-accent" />
-        <span className="text-sm font-medium">Agent</span>
-        <span className="max-w-xs truncate text-xs text-muted-foreground">
+        <span className="hidden text-sm font-medium sm:inline">Agent</span>
+        <span className="hidden max-w-xs truncate text-xs text-muted-foreground sm:inline">
           {activeChatTitle}
         </span>
         {sessionRepo ? (
           <>
-            <GitBranch className="ml-1 h-3 w-3 text-muted-foreground" />
-            <span className="max-w-xs truncate text-xs text-muted-foreground">
+            <GitBranch className="ml-1 hidden h-3 w-3 text-muted-foreground sm:inline" />
+            <span className="hidden max-w-xs truncate text-xs text-muted-foreground sm:inline">
               {sessionRepo.replace(/^https?:\/\/(www\.)?github\.com\//, "")}
             </span>
           </>
         ) : (
-          <span className="text-xs text-muted-foreground">Chat</span>
+          <span className="hidden text-xs text-muted-foreground sm:inline">Chat</span>
         )}
         {(streaming || verifying) && (
           <span className="ml-2 flex items-center gap-1.5 rounded-full bg-accent/10 px-2 py-0.5 text-[11px] font-medium text-accent">
@@ -1786,7 +1821,7 @@ export function AgentPage() {
             {statusText || "Working…"}
           </span>
         )}
-        <div className="ml-auto flex items-center gap-2">
+        <div className="ml-auto flex shrink-0 items-center gap-2">
           {sessionRepo && (
             <Button
               variant="outline"
@@ -1796,13 +1831,13 @@ export function AgentPage() {
               title="Run QA checks and an AI review of the current changes"
             >
               {verifying
-                ? (<><Square className="mr-1 h-3.5 w-3.5" /> Stop</>)
-                : (<><ShieldCheck className="mr-1 h-3.5 w-3.5" /> Verify</>)}
+                ? (<><Square className="mr-1 h-3.5 w-3.5" /> <span className="hidden sm:inline">Stop</span></>)
+                : (<><ShieldCheck className="mr-1 h-3.5 w-3.5" /> <span className="hidden sm:inline">Verify</span></>)}
             </Button>
           )}
           {sessionRepo && (
             <Button variant="outline" size="sm" onClick={() => setTaskOpen(true)} disabled={streaming || verifying}>
-              <Rocket className="mr-1 h-3.5 w-3.5" /> Run task → PR
+              <Rocket className="mr-1 h-3.5 w-3.5" /> <span className="hidden sm:inline">Run task → PR</span>
             </Button>
           )}
           <button
@@ -2028,7 +2063,10 @@ export function AgentPage() {
       </main>
 
       {workspaceOpen ? (
-        <div style={{ width: `${workspaceWidth}px` }} className="relative h-full shrink-0">
+        <div
+          style={{ width: isMobile ? "min(90vw, 26rem)" : `${workspaceWidth}px` }}
+          className={`relative z-40 h-full shrink-0 ${isMobile ? "absolute inset-y-0 right-0 shadow-2xl" : ""}`}
+        >
           <WorkspacePanel
           tab={workspaceTab}
           onTabChange={setWorkspaceTab}
@@ -2045,29 +2083,31 @@ export function AgentPage() {
           })}
           workspace={workspace}
           messages={messages}
-          notes={notes}
-          onNotesChange={setNotes}
           onRefresh={() => void refreshWorkspace()}
           refreshing={workspaceRefreshing}
           />
-          <button
-            type="button"
-            onPointerDown={(event) => startResize("workspace", event)}
-            className="absolute left-0 top-0 z-20 flex h-full w-2 -translate-x-1/2 cursor-col-resize touch-none items-center justify-center text-muted-foreground/30 hover:text-accent"
-            title="Resize workspace panel"
-            aria-label="Resize workspace panel"
-          >
-            <GripVertical className="h-5 w-5" />
-          </button>
+          {!isMobile && (
+            <button
+              type="button"
+              onPointerDown={(event) => startResize("workspace", event)}
+              className="absolute left-0 top-0 z-20 flex h-full w-2 -translate-x-1/2 cursor-col-resize touch-none items-center justify-center text-muted-foreground/30 hover:text-accent"
+              title="Resize workspace panel"
+              aria-label="Resize workspace panel"
+            >
+              <GripVertical className="h-5 w-5" />
+            </button>
+          )}
         </div>
       ) : (
-        <button
-          onClick={() => setWorkspaceOpen(true)}
-          className="flex w-9 shrink-0 items-center justify-center border-l border-border bg-card text-muted-foreground hover:bg-muted hover:text-foreground"
-          title="Open workspace panel"
-        >
-          <PanelRightOpen className="h-4 w-4" />
-        </button>
+        !isMobile && (
+          <button
+            onClick={() => setWorkspaceOpen(true)}
+            className="flex w-9 shrink-0 items-center justify-center border-l border-border bg-card text-muted-foreground hover:bg-muted hover:text-foreground"
+            title="Open workspace panel"
+          >
+            <PanelRightOpen className="h-4 w-4" />
+          </button>
+        )
       )}
 
       <TaskRunnerModal
