@@ -209,7 +209,7 @@ export const REVIEW_TOOL_DEFINITIONS: ToolDefinition[] = TOOL_DEFINITIONS.filter
 // These run project scripts, so they're gated to this allowlist; anything
 // destructive, networked, or secret-accessing is still hard-blocked by
 // classifyCommand before it ever reaches the reviewer's approver.
-const REVIEW_RUNNERS = new Set([
+export const REVIEW_RUNNERS = new Set([
   "npm", "pnpm", "yarn", "bun", "npx", "node", "deno", "tsc", "vitest", "jest",
   "mocha", "eslint", "prettier", "biome", "go", "cargo", "python", "python3",
   "pytest", "ruff", "mypy", "make", "gradle", "./gradlew", "mvn", "dotnet",
@@ -265,41 +265,56 @@ function asNumber(value: unknown): number | undefined {
 }
 
 function listFiles(root: string, rel: string): string {
-  const abs = safeResolve(root, rel);
-  const stat = fs.statSync(abs);
-  if (stat.isFile()) return rel;
-
   const out: string[] = [];
-  const walk = (dirAbs: string, relDir: string, depth: number) => {
-    if (out.length >= MAX_LIST || depth > 12) return;
-    let entries: fs.Dirent[];
-    try {
-      entries = fs.readdirSync(dirAbs, { withFileTypes: true });
-    } catch {
+
+  const listOne = (single: string) => {
+    const abs = safeResolve(root, single);
+    const stat = fs.statSync(abs);
+    if (stat.isFile()) {
+      out.push(single);
       return;
     }
-    // Folders before files, each alphabetically, so the listing reads as a
-    // tidy tree (dirs first at every level) rather than filesystem order.
-    entries.sort((a, b) => {
-      const aDir = a.isDirectory();
-      const bDir = b.isDirectory();
-      if (aDir !== bDir) return aDir ? -1 : 1;
-      return a.name.localeCompare(b.name);
-    });
-    for (const entry of entries) {
-      if (out.length >= MAX_LIST) break;
-      if (entry.name === ".git" || entry.name === "node_modules" || entry.name === "dist" || entry.name === ".ollama") continue;
-      const childRel = relDir ? path.join(relDir, entry.name) : entry.name;
-      if (entry.isDirectory()) {
-        out.push(`${childRel}/`);
-        walk(path.join(dirAbs, entry.name), childRel, depth + 1);
-      } else {
-        out.push(childRel);
+
+    const walk = (dirAbs: string, relDir: string, depth: number) => {
+      if (out.length >= MAX_LIST || depth > 12) return;
+      let entries: fs.Dirent[];
+      try {
+        entries = fs.readdirSync(dirAbs, { withFileTypes: true });
+      } catch {
+        return;
       }
-    }
+      entries.sort((a, b) => a.name.localeCompare(b.name));
+      for (const entry of entries) {
+        if (out.length >= MAX_LIST) break;
+        if (entry.name === ".git" || entry.name === "node_modules" || entry.name === "dist" || entry.name === ".ollama") continue;
+        const childRel = relDir ? path.join(relDir, entry.name) : entry.name;
+        if (entry.isDirectory()) {
+          out.push(`${childRel}/`);
+          walk(path.join(dirAbs, entry.name), childRel, depth + 1);
+        } else {
+          out.push(childRel);
+        }
+      }
+    };
+    walk(abs, single === "." ? "" : single, 0);
   };
-  walk(abs, rel, 0);
-  return out.length ? out.join("\n") : "(empty)";
+
+  // The model occasionally passes several space-separated paths in a single
+  // list_files call; handle each independently so the call still succeeds.
+  const paths = rel.trim() ? rel.split(/\s+/).filter(Boolean) : ["."];
+  for (const p of paths) listOne(p);
+
+  // Sort globally: all directories first (sorted), then all files (sorted),
+  // so the flat list in the Files panel groups folders at the top. Dedupe so
+  // overlapping paths (e.g. "." plus a file) don't repeat entries.
+  return [...new Set(out)]
+    .sort((a, b) => {
+      const aDir = a.endsWith("/");
+      const bDir = b.endsWith("/");
+      if (aDir !== bDir) return aDir ? -1 : 1;
+      return a.localeCompare(b);
+    })
+    .join("\n") || "(empty)";
 }
 
 function readFile(root: string, rel: string, startLine?: number, endLine?: number): string {

@@ -51,6 +51,27 @@ apt-get install -y -qq \
   ca-certificates curl git unzip zstd tar xz-utils build-essential procps
 ok "base packages installed"
 
+# --- Sandbox backend (bubblewrap) ------------------------------------------
+if ! command -v bwrap >/dev/null 2>&1; then
+  log "Installing bubblewrap (command sandbox)…"
+  if apt-get install -y -qq bubblewrap; then
+    ok "bubblewrap installed"
+    # Ubuntu may block unprivileged user namespaces by default; bubblewrap
+    # needs them. Try to relax the restriction so the sandbox actually works.
+    if command -v sysctl >/dev/null 2>&1; then
+      if [ "$(sysctl -ne kernel.apparmor_restrict_unprivileged_userns 2>/dev/null)" = "1" ]; then
+        sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 >/dev/null 2>&1 && \
+          ok "relaxed unprivileged user namespace restriction for bubblewrap" || \
+          warn "bubblewrap installed but unprivileged userns may still be blocked"
+      fi
+    fi
+  else
+    warn "bubblewrap not available - the agent will run commands on the host (policy-gated). Install Docker or Podman as an alternative."
+  fi
+else
+  ok "bubblewrap already present"
+fi
+
 # GitHub CLI - used by the agent to open pull requests (optional but recommended).
 if ! command -v gh >/dev/null 2>&1; then
   log "Installing GitHub CLI (gh)…"

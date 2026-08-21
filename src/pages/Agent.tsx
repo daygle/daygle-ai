@@ -346,6 +346,130 @@ function ReviewCard({ verdict, text }: { verdict: "approved" | "changes_requeste
 
 type WorkspaceTab = "queue" | "files" | "changes" | "preview" | "terminal" | "notes";
 
+// ── File tree helpers ───────────────────────────────────────────────────────
+
+interface FileNode {
+  name: string;
+  path: string;
+  isDir: boolean;
+  children: FileNode[];
+}
+
+/** Build a nested tree from the flat, globally-sorted file list. */
+function buildFileTree(files: string[]): FileNode[] {
+  const root: FileNode[] = [];
+  for (const file of files) {
+    const isDir = file.endsWith("/");
+    const parts = file.replace(/\/$/, "").split("/");
+    let parent = root;
+    let currentPath = "";
+
+    for (let i = 0; i < parts.length; i++) {
+      const part = parts[i];
+      const isLast = i === parts.length - 1;
+      currentPath = currentPath ? `${currentPath}/${part}` : part;
+      const fullPath = isLast && isDir ? `${currentPath}/` : currentPath;
+      const nodeIsDir = !isLast || isDir;
+
+      let node = parent.find((n) => n.name === part);
+      if (!node) {
+        node = { name: part, path: fullPath, isDir: nodeIsDir, children: [] };
+        parent.push(node);
+      }
+      if (nodeIsDir) parent = node.children;
+    }
+  }
+  return root;
+}
+
+function FileTreeRow({
+  node,
+  depth,
+  collapsed,
+  onToggle,
+}: {
+  node: FileNode;
+  depth: number;
+  collapsed: ReadonlySet<string>;
+  onToggle: (path: string) => void;
+}) {
+  const isCollapsed = node.isDir && collapsed.has(node.path);
+  const indent = depth * 12 + 8;
+
+  return (
+    <>
+      <div
+        className="flex items-center gap-1 rounded px-2 py-1 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
+        style={{ paddingLeft: `${indent}px` }}
+      >
+        {node.isDir ? (
+          <button
+            onClick={() => onToggle(node.path)}
+            className="flex h-4 w-4 shrink-0 items-center justify-center rounded hover:bg-muted-foreground/20"
+            aria-label={isCollapsed ? `Expand ${node.name}` : `Collapse ${node.name}`}
+          >
+            {isCollapsed ? (
+              <ChevronRight className="h-3 w-3" />
+            ) : (
+              <ChevronDown className="h-3 w-3" />
+            )}
+          </button>
+        ) : (
+          <span className="w-4 shrink-0" />
+        )}
+        {node.isDir ? (
+          <Folder className="h-3.5 w-3.5 shrink-0 text-amber-400" />
+        ) : (
+          <FileEdit className="h-3.5 w-3.5 shrink-0 text-emerald-400" />
+        )}
+        <span className="truncate font-mono">{node.name}{node.isDir ? "/" : ""}</span>
+      </div>
+      {node.isDir && !isCollapsed &&
+        node.children.map((child) => (
+          <FileTreeRow
+            key={child.path}
+            node={child}
+            depth={depth + 1}
+            collapsed={collapsed}
+            onToggle={onToggle}
+          />
+        ))}
+    </>
+  );
+}
+
+function FileTree({ files }: { files: string[] }) {
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const tree = useRef<FileNode[]>([]);
+  tree.current = buildFileTree(files);
+
+  const toggleDir = useCallback((path: string) => {
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
+  }, []);
+
+  if (tree.current.length === 0) {
+    return <div className="py-8 text-center text-xs text-muted-foreground">No files to show yet - try refreshing.</div>;
+  }
+
+  return (
+    <div>
+      {tree.current.map((node) => (
+        <FileTreeRow key={node.path} node={node} depth={0} collapsed={collapsed} onToggle={toggleDir} />
+      ))}
+      {tree.current.length > 600 && (
+        <p className="px-2 pt-2 text-[11px] text-muted-foreground">Showing the first 600 files.</p>
+      )}
+    </div>
+  );
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+
 interface QueuedMessage {
   id: number;
   text: string;
@@ -533,15 +657,7 @@ function WorkspacePanel({
               {hasRepo ? "No files to show yet - try refreshing." : "Connect a repository to browse files."}
             </div>
           ) : (
-            <div className="space-y-0.5">
-              {workspace.files.slice(0, 600).map((file) => (
-                <div key={file} className="flex items-center gap-2 rounded px-2 py-1.5 text-xs text-muted-foreground hover:bg-muted hover:text-foreground">
-                  {file.endsWith("/") ? <Folder className="h-3.5 w-3.5 shrink-0 text-amber-400" /> : <FileEdit className="h-3.5 w-3.5 shrink-0 text-emerald-400" />}
-                  <span className="truncate font-mono">{file}</span>
-                </div>
-              ))}
-              {workspace.files.length > 600 && <p className="px-2 pt-2 text-[11px] text-muted-foreground">Showing the first 600 files.</p>}
-            </div>
+            <FileTree files={workspace.files.slice(0, 600)} />
           )
         )}
 

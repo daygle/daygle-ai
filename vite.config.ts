@@ -6,11 +6,22 @@ const localServiceProxy = {
     target: "http://127.0.0.1:11434",
     changeOrigin: true,
     rewrite: (path: string) => path.replace(/^\/api\/ollama/, ""),
+    // Strip the browser Origin header so Ollama doesn't 403 on LAN IPs that
+    // aren't in OLLAMA_ORIGINS (only localhost is allowed by default). The
+    // proxy is the trusted same-origin boundary — Ollama is loopback-only.
+    configure: (proxy: any) => {
+      proxy.on("proxyReq", (proxyReq: any) => proxyReq.removeHeader("origin"));
+    },
   },
   "/api/agent": {
     target: "http://127.0.0.1:8787",
     changeOrigin: true,
     rewrite: (path: string) => path.replace(/^\/api\/agent/, ""),
+    // Same rationale: the agent's CORS allowlist only covers localhost, but
+    // the proxy is the trusted boundary. Strip Origin so any LAN IP works.
+    configure: (proxy: any) => {
+      proxy.on("proxyReq", (proxyReq: any) => proxyReq.removeHeader("origin"));
+    },
   },
 };
 

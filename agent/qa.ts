@@ -2,6 +2,9 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { isSandboxNetworkEnabled, type SandboxRunner } from "./sandbox";
+import { REVIEW_RUNNERS } from "./tools";
+
+const INSTALL_RUNNERS = new Set(["npm", "pnpm", "yarn", "bun"]);
 
 export interface QaResult {
   /** Whether any verification command actually ran (false = nothing to verify). */
@@ -75,6 +78,19 @@ function spawnCapture(
     const argv = splitCommandLine(command);
     if (argv.length === 0) {
       resolve({ code: 1, stdout: "", stderr: "Empty command.", timedOut: false });
+      return;
+    }
+    // Only known verification / install runners may be spawned. argv[0] is
+    // argv-split from a user-supplied or package.json-derived command, so
+    // this prevents arbitrary binary execution even though shell injection
+    // is already avoided by splitting into argv.
+    if (!REVIEW_RUNNERS.has(argv[0]) && !INSTALL_RUNNERS.has(argv[0])) {
+      resolve({
+        code: 1,
+        stdout: "",
+        stderr: `QA command rejected: "${argv[0]}" is not an allowed verification or install runner.`,
+        timedOut: false,
+      });
       return;
     }
     const child = spawn(argv[0], argv.slice(1), {

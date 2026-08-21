@@ -27,7 +27,8 @@ curl -fsSL https://raw.githubusercontent.com/daygle/daygle-ai/main/scripts/insta
 
 It installs to `/opt/daygle-ai`, starts `daygle-ai-ui` (`:5173` on the LAN), `daygle-ai-agent`
 (`127.0.0.1:8787`), and `daygle-ai-ollama` (`127.0.0.1:11434`) as systemd services, and pulls
-`qwen2.5-coder:7b`. Re-run it any time to update. Override defaults with env vars:
+`qwen2.5-coder:7b`. **bubblewrap** is also installed for command sandboxing (falls back
+silently if unavailable). Re-run it any time to update. Override defaults with env vars:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/daygle/daygle-ai/main/scripts/install-debian.sh \
@@ -88,7 +89,9 @@ Pick **GitHub.com** → **HTTPS** → **Paste an authentication token**. Create 
 
 ### Command sandbox (recommended)
 
-The agent runs shell commands (tests, builds, installs) inside a sandbox for safety. Install one:
+The agent runs shell commands (tests, builds, installs) inside a sandbox for safety.
+The Debian one-line installer includes **bubblewrap** automatically. For other setups,
+install one of these:
 
 **bubblewrap (preferred, lightweight):**
 
