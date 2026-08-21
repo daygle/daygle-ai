@@ -31,14 +31,42 @@ function tokenUrl(url: string, token: string): string {
   return `https://x-access-token:${encodeURIComponent(token)}@github.com/${owner}/${repo}.git`;
 }
 
+/**
+ * Only allow real remote URLs (https/http with a resolvable host, the SSH
+ * `git@github.com:` form, or a bare `github.com/` shorthand). Anything
+ * starting with `-` is rejected so user-controlled input can't be parsed as
+ * a git option (e.g. `--upload-pack=...`), and local paths / other schemes
+ * are blocked.
+ */
+function isSafeGitRemote(target: string): boolean {
+  if (!target || target.startsWith("-")) return false;
+  if (target.startsWith("https://") || target.startsWith("http://")) {
+    try {
+      const url = new URL(target);
+      return url.hostname.length > 0;
+    } catch {
+      return false;
+    }
+  }
+  if (target.startsWith("git@github.com:")) return true;
+  if (target.startsWith("github.com/")) return true;
+  return false;
+}
+
 export async function cloneRepo(url: string, dir: string, token?: string): Promise<void> {
   const target = token ? tokenUrl(url, token) : url;
-  await run("git", ["clone", "--depth", "1", target, dir]);
+  if (!isSafeGitRemote(target)) {
+    throw new Error(`Refusing to clone an unsafe repository URL.`);
+  }
+  await run("git", ["clone", "--depth", "1", "--", target, dir]);
 }
 
 export async function detectDefaultBranch(url: string, token?: string): Promise<string> {
   const target = token ? tokenUrl(url, token) : url;
-  const out = await run("git", ["ls-remote", "--symref", target, "HEAD"]);
+  if (!isSafeGitRemote(target)) {
+    throw new Error(`Refusing to inspect an unsafe repository URL.`);
+  }
+  const out = await run("git", ["ls-remote", "--symref", "--", target, "HEAD"]);
   const match = out.match(/ref: refs\/heads\/(\S+)/);
   return match?.[1] ?? "main";
 }

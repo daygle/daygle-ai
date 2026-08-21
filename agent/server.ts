@@ -190,6 +190,18 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
   res.end(JSON.stringify(body));
 }
 
+/**
+ * Turns an unknown thrown value into a short, single-line message safe to
+ * send to clients. Error `message` fields can embed full stack traces (e.g.
+ * child_process failures), which would leak internal paths and function
+ * names - so everything after the first line is dropped.
+ */
+function errMessage(err: unknown): string {
+  const text = errMessage(err);
+  const firstLine = text.split(/\r?\n/, 1)[0].trim();
+  return firstLine.length > 500 ? `${firstLine.slice(0, 500)}…` : firstLine;
+}
+
 function publish(job: Job, event: AgentEvent): void {
   if (event.type === "model_delta" || event.type === "diff") {
     // Streaming deltas and diff snapshots are live-only; the full `model` event and
@@ -515,7 +527,7 @@ async function executeJob(job: Job): Promise<void> {
       publish(job, { type: "cancelled", message: "Job cancelled by the user." });
     } else {
       job.status = "error";
-      publish(job, { type: "error", message: err instanceof Error ? err.message : String(err) });
+      publish(job, { type: "error", message: errMessage(err) });
     }
   } finally {
     if (diffTimer) clearTimeout(diffTimer);
@@ -603,7 +615,7 @@ const server = http.createServer((req, res) => {
         sendJson(res, 200, {
           ok: false,
           name: sandbox?.name ?? null,
-          output: `Sandbox check failed: ${err instanceof Error ? err.message : String(err)}`,
+          output: `Sandbox check failed: ${errMessage(err)}`,
         });
       }
       return;
@@ -653,7 +665,7 @@ const server = http.createServer((req, res) => {
         try {
           session = (await rehydrateChat(sessionId)) ?? undefined;
         } catch (err) {
-          sendJson(res, 400, { error: `Failed to restore chat: ${err instanceof Error ? err.message : String(err)}` });
+          sendJson(res, 400, { error: `Failed to restore chat: ${errMessage(err)}` });
           return;
         }
       }
@@ -674,7 +686,7 @@ const server = http.createServer((req, res) => {
           : filesResult.split(/\r?\n/).filter(Boolean);
         sendJson(res, 200, { files, changedFiles: changed, stat, diff });
       } catch (err) {
-        sendJson(res, 400, { error: err instanceof Error ? err.message : String(err) });
+        sendJson(res, 400, { error: errMessage(err) });
       }
       return;
     }
@@ -691,7 +703,7 @@ const server = http.createServer((req, res) => {
         try {
           session = (await rehydrateChat(sessionId)) ?? undefined;
         } catch (err) {
-          sendJson(res, 400, { error: `Failed to restore chat: ${err instanceof Error ? err.message : String(err)}` });
+          sendJson(res, 400, { error: `Failed to restore chat: ${errMessage(err)}` });
           return;
         }
       }
@@ -786,7 +798,7 @@ const server = http.createServer((req, res) => {
         }
       } catch (err) {
         if (!controller.signal.aborted) {
-          emit({ type: "error", message: err instanceof Error ? err.message : String(err) });
+          emit({ type: "error", message: errMessage(err) });
         }
       } finally {
         emit({ type: "verify_done" });
@@ -886,7 +898,7 @@ const server = http.createServer((req, res) => {
           await cloneRepo(repoUrl, dir, token);
         } catch (err) {
           fs.rmSync(dir, { recursive: true, force: true });
-          sendJson(res, 400, { error: `Failed to clone repo: ${err instanceof Error ? err.message : String(err)}` });
+          sendJson(res, 400, { error: `Failed to clone repo: ${errMessage(err)}` });
           return;
         }
       }
@@ -915,7 +927,7 @@ const server = http.createServer((req, res) => {
         try {
           session = (await rehydrateChat(sessionId)) ?? undefined;
         } catch (err) {
-          sendJson(res, 400, { error: `Failed to restore chat: ${err instanceof Error ? err.message : String(err)}` });
+          sendJson(res, 400, { error: `Failed to restore chat: ${errMessage(err)}` });
           return;
         }
         if (!session) {
@@ -1008,7 +1020,7 @@ const server = http.createServer((req, res) => {
         }
       } catch (err) {
         if (!(err instanceof Error && err.name === "AbortError")) {
-          res.write(`data: ${JSON.stringify({ type: "error", message: err instanceof Error ? err.message : String(err) })}\n\n`);
+          res.write(`data: ${JSON.stringify({ type: "error", message: errMessage(err) })}\n\n`);
         }
       } finally {
         session.busy = false;

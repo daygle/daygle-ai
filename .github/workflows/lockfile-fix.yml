@@ -2,21 +2,25 @@ name: Fix dependabot lockfile
 
 # Dependabot's npm ecosystem updates package.json but not bun.lock, so its
 # PRs fail `bun install --frozen-lockfile` in CI. This workflow regenerates
-# the lockfile on dependabot PRs and commits the change back to the branch.
+# the lockfile when Dependabot pushes to a dependabot branch and commits the
+# change back to that branch.
 #
-# Runs on `pull_request_target` (needed for write access to push to the PR
-# branch). It only ever executes for dependabot[bot] PRs, checks out the PR
-# head, and runs `bun install --ignore-scripts` so no dependency install
-# scripts from the PR's tree are executed. Only bun.lock is committed.
+# Runs on `push` to dependabot branches - the same trust domain as the branch
+# author, so there is no privileged context (unlike `pull_request_target`,
+# which would check out untrusted PR code with a write-capable token). Only
+# bun.lock is committed, `bun install --ignore-scripts` never executes
+# dependency install scripts, and the explicit `permissions` block restores
+# write access that Dependabot-triggered runs would otherwise lack.
 on:
-  pull_request_target:
-    types: [opened, synchronize, reopened]
+  push:
+    branches:
+      - "dependabot/**"
 
 permissions:
   contents: write
 
 concurrency:
-  group: fix-lockfile-${{ github.head_ref }}
+  group: fix-lockfile-${{ github.ref_name }}
   cancel-in-progress: true
 
 jobs:
@@ -25,9 +29,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-        with:
-          ref: ${{ github.head_ref }}
-          persist-credentials: false
 
       - uses: oven-sh/setup-bun@v2
         with:
@@ -43,5 +44,5 @@ jobs:
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git add bun.lock
             git commit -m "chore: update bun.lock"
-            git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD:"${GITHUB_HEAD_REF}"
+            git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD:"${GITHUB_REF_NAME}"
           fi

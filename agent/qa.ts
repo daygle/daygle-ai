@@ -21,14 +21,64 @@ function truncate(text: string, max: number): string {
   return text.length > max ? `${text.slice(0, max)}\n… (truncated)` : text;
 }
 
+/**
+ * Splits a command string into argv pieces (POSIX-ish: single/double quotes
+ * and backslash escapes are honored) so commands can run without a shell.
+ * Running through a shell would let untrusted command text (e.g. a repo's
+ * package.json scripts or a user-supplied QA command) inject arbitrary
+ * commands - shell metacharacters like `;`, `&&` or `$()` are therefore
+ * treated as literal arguments and will not be interpreted.
+ */
+function splitCommandLine(input: string): string[] {
+  const args: string[] = [];
+  let current = "";
+  let inSingle = false;
+  let inDouble = false;
+  let escaped = false;
+  for (const ch of input) {
+    if (escaped) {
+      current += ch;
+      escaped = false;
+      continue;
+    }
+    if (ch === "\\" && !inSingle) {
+      escaped = true;
+      continue;
+    }
+    if (ch === "'" && !inDouble) {
+      inSingle = !inSingle;
+      continue;
+    }
+    if (ch === '"' && !inSingle) {
+      inDouble = !inDouble;
+      continue;
+    }
+    if (/\s/.test(ch) && !inSingle && !inDouble) {
+      if (current) {
+        args.push(current);
+        current = "";
+      }
+      continue;
+    }
+    current += ch;
+  }
+  if (escaped) current += "\\";
+  if (current) args.push(current);
+  return args;
+}
+
 function spawnCapture(
   command: string,
   opts: { cwd: string; timeoutMs: number; signal?: AbortSignal },
 ): Promise<{ code: number | null; stdout: string; stderr: string; timedOut: boolean }> {
   return new Promise((resolve) => {
-    const child = spawn(command, {
+    const argv = splitCommandLine(command);
+    if (argv.length === 0) {
+      resolve({ code: 1, stdout: "", stderr: "Empty command.", timedOut: false });
+      return;
+    }
+    const child = spawn(argv[0], argv.slice(1), {
       cwd: opts.cwd,
-      shell: "/bin/bash",
       detached: true,
       stdio: ["ignore", "pipe", "pipe"],
     });

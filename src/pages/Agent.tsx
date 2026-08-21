@@ -139,6 +139,15 @@ function DiffView({ diff }: { diff: string }) {
   );
 }
 
+/**
+ * Only allow genuine image mime types in data: URLs. A user-controlled mime
+ * (e.g. `text/html`) would let the data URL carry HTML, and a non-image
+ * payload must never be reinterpreted that way.
+ */
+function imageMime(mime: string | undefined): string {
+  return mime && /^image\/[a-z0-9.+-]+$/i.test(mime) ? mime : "image/*";
+}
+
 /** Lightweight markdown for assistant messages - headings, lists, code, links. */
 function Markdown({ children }: { children: string }) {
   return (
@@ -1563,7 +1572,7 @@ export function AgentPage() {
                   <div className="min-w-0 flex-1 pt-0.5">
                     {msg.imageData && (
                       <img
-                        src={`data:${msg.imageMimeType || "image/*"};base64,${msg.imageData}`}
+                        src={`data:${imageMime(msg.imageMimeType)};base64,${msg.imageData}`}
                         alt="Uploaded attachment"
                         className="mb-2 max-h-64 max-w-sm rounded-lg border border-border object-contain"
                       />
@@ -1708,7 +1717,7 @@ export function AgentPage() {
             {imageAttachment && (
               <div className="flex items-center gap-2 rounded-lg border border-border bg-background p-2">
                 <img
-                  src={`data:${imageAttachment.mimeType};base64,${imageAttachment.data}`}
+                  src={`data:${imageMime(imageAttachment.mimeType)};base64,${imageAttachment.data}`}
                   alt="Selected attachment"
                   className="h-12 w-12 rounded object-cover"
                 />

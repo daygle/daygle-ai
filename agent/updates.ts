@@ -3,6 +3,35 @@ import { createHash } from "node:crypto";
 const REGISTRY = "https://registry.ollama.ai";
 const MANIFEST_ACCEPT = "application/vnd.docker.distribution.manifest.v2+json";
 
+// Docker-style namespace (`library/llama3.2`, `org/model`) and tag
+// (`latest`, `7b`) components: alphanumeric start, then letters, digits,
+// `_`, `.`, `-`. Anything else is rejected before it can reach a URL.
+const NAMESPACE_SEGMENT = "[a-zA-Z0-9]+(?:[._-][a-zA-Z0-9]+)*";
+const NAMESPACE_RE = new RegExp(`^${NAMESPACE_SEGMENT}(?:/${NAMESPACE_SEGMENT})*$`);
+const TAG_RE = new RegExp(`^${NAMESPACE_SEGMENT}$`);
+
+function isSafeModelRef(namespace: string, tag: string): boolean {
+  return NAMESPACE_RE.test(namespace) && TAG_RE.test(tag);
+}
+
+/**
+ * Ollama is a local service, so update checks must only ever talk to
+ * loopback addresses - never to arbitrary hosts supplied by a client
+ * (which would let the server be used as an SSRF proxy).
+ */
+function isLoopbackUrl(raw: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return false;
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") return false;
+  if (url.username || url.password) return false;
+  const host = url.hostname.toLowerCase();
+  return host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "[::1]";
+}
+
 export interface ModelUpdateCheck {
   name: string;
   updateAvailable: boolean;
@@ -33,7 +62,9 @@ export async function fetchRemoteDigest(
   tag: string,
   signal?: AbortSignal,
 ): Promise<string | null> {
-  const url = `${REGISTRY}/v2/${namespace}/manifests/${encodeURIComponent(tag)}`;
+  if (!isSafeModelRef(namespace, tag)) return null;
+  const encodedNs = namespace.split("/").map(encodeURIComponent).join("/");
+  const url = `${REGISTRY}/v2/${encodedNs}/manifests/${encodeURIComponent(tag)}`;
   const res = await fetch(url, { headers: { Accept: MANIFEST_ACCEPT }, signal });
   if (!res.ok) return null;
 
@@ -54,9 +85,15 @@ export async function fetchRemoteDigest(
 export async function checkModelUpdate(ollamaUrl: string, name: string): Promise<ModelUpdateCheck> {
   const base = ollamaUrl.replace(/\/+$/, "");
   try {
+    if (!isLoopbackUrl(base)) {
+      return { name, updateAvailable: false, error: "ollamaUrl must be a loopback address (localhost)" };
+    }
     const ref = parseModelRef(name);
     if (!ref) {
       return { name, updateAvailable: false, error: `Unsupported model reference: ${name}` };
+    }
+    if (!isSafeModelRef(ref.namespace, ref.tag)) {
+      return { name, updateAvailable: false, error: "Invalid model name" };
     }
 
     const tagsRes = await fetch(`${base}/api/tags`);
