@@ -96,7 +96,7 @@ function lineDiff(oldText: string, newText: string): string {
   return out.join("\n") || "(no changes)";
 }
 
-const TOOL_NAMES = new Set(["list_files", "read_file", "search", "write_file", "run_command"]);
+const TOOL_NAMES = new Set(["list_files", "read_file", "search", "write_file", "str_replace", "run_command"]);
 
 /**
  * Normalize a keep_alive value for Ollama. Ollama accepts either a Go duration
@@ -201,13 +201,13 @@ function parseTextToolCalls(text: string): Array<{ function: { name: string; arg
             // First positional arg maps to the main parameter
             if (name === 'list_files' || name === 'read_file') args.path = strMatch[1];
             else if (name === 'search') args.pattern = strMatch[1];
-            else if (name === 'write_file') args.path = strMatch[1];
+            else if (name === 'write_file' || name === 'str_replace') args.path = strMatch[1];
             else if (name === 'run_command') args.command = strMatch[1];
           } else {
             // Unquoted string
             if (name === 'list_files' || name === 'read_file') args.path = argStr;
             else if (name === 'search') args.pattern = argStr;
-            else if (name === 'write_file') args.path = argStr;
+            else if (name === 'write_file' || name === 'str_replace') args.path = argStr;
             else if (name === 'run_command') args.command = argStr;
           }
         }
@@ -246,9 +246,12 @@ Available tools:
 - list_files(path) - list files/directories under a path
 - read_file(path, start_line?, end_line?) - read a file with numbered lines
 - search(pattern, path?) - regex-search files for patterns
-- write_file(path, content) - create or overwrite a file
+- write_file(path, content) - create or overwrite a file with its COMPLETE contents
+- str_replace(path, old_string, new_string, replace_all?) - replace exact text in place
 - run_command(command) - run a shell command (tests, typecheck, etc.)
   IMPORTANT: For commands that need to run in a subdirectory, use "cd <dir> && <command>" as a single command string.
+
+Use str_replace for small, targeted edits (find-and-replace, fixing a line). Only use write_file for a new file or a full rewrite, and include every line.
 
 When you are unsure how to proceed, ask for clarification by outputting a JSON object in your response like this:
 {"clarification": {"question": "Your question here", "options": [{"label": "Option A", "description": "Description of option A"}, {"label": "Option B", "description": "Description of option B"}]}}
@@ -404,7 +407,7 @@ export async function* streamChat(
         // Strip example output objects like: { "file": "...", "line": 12 }
         .replace(/\{\s*"file"\s*:\s*"[^"]+"\s*,\s*"line"\s*:\s*\d+\s*\}/g, "")
         // Strip bash-style tool calls like: bash list_files("src")
-        .replace(/(?:bash\s+)?(?:list_files|read_file|search|write_file|run_command)\s*\([^)]*\)/gi, "")
+        .replace(/(?:bash\s+)?(?:list_files|read_file|search|write_file|str_replace|run_command)\s*\([^)]*\)/gi, "")
         // Strip bash cd patterns like: bash cd web vite
         .replace(/(?:bash\s+)?cd\s+\S+\s+.+/gi, "")
         .trim();
@@ -439,9 +442,9 @@ export async function* streamChat(
       const args = call.function.arguments ?? {};
       yield { type: "tool_start", name, args };
 
-      // For file writes, snapshot the previous contents so we can show a diff.
+      // For file edits, snapshot the previous contents so we can show a diff.
       let before: string | undefined;
-      if (name === "write_file" && typeof args.path === "string") {
+      if ((name === "write_file" || name === "str_replace") && typeof args.path === "string") {
         try {
           before = fs.readFileSync(path.resolve(session.root, args.path), "utf8");
         } catch {
@@ -457,8 +460,16 @@ export async function* streamChat(
       }
 
       let diff: string | undefined;
-      if (name === "write_file" && before !== undefined && typeof args.content === "string" && !result.startsWith("Error")) {
-        diff = lineDiff(before, args.content);
+      if ((name === "write_file" || name === "str_replace") && before !== undefined && !result.startsWith("Error")) {
+        if (name === "write_file" && typeof args.content === "string") {
+          diff = lineDiff(before, args.content);
+        } else {
+          try {
+            diff = lineDiff(before, fs.readFileSync(path.resolve(session.root, String(args.path)), "utf8"));
+          } catch {
+            diff = undefined;
+          }
+        }
       }
 
       yield { type: "tool_result", name, result, diff };

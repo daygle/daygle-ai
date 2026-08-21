@@ -172,14 +172,31 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     type: "function",
     function: {
       name: "write_file",
-      description: "Create or overwrite a file with full contents.",
+      description: "Create a new file, or overwrite an existing file with its COMPLETE new contents. Only use this for new files or a deliberate full rewrite - for small edits use str_replace.",
       parameters: {
         type: "object",
         properties: {
           path: { type: "string", description: "File path relative to the repo root." },
-          content: { type: "string", description: "Full new contents of the file." },
+          content: { type: "string", description: "The COMPLETE new contents of the file (every line)." },
         },
         required: ["path", "content"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "str_replace",
+      description: "Replace exact text in a file in place, leaving the rest of the file untouched. Use this for small, targeted edits such as find-and-replace, fixing one line, or renaming an identifier. old_string must match the file exactly (including whitespace); if it appears more than once, make it more specific or set replace_all.",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string", description: "File path relative to the repo root." },
+          old_string: { type: "string", description: "The exact text to replace." },
+          new_string: { type: "string", description: "The replacement text." },
+          replace_all: { type: "boolean", description: "Replace every occurrence instead of requiring a single unique match." },
+        },
+        required: ["path", "old_string", "new_string"],
       },
     },
   },
@@ -200,9 +217,9 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   },
 ];
 
-/** Read-only tool surface for the agentic reviewer - everything except write_file. */
+/** Read-only tool surface for the agentic reviewer - every tool except the mutating editors. */
 export const REVIEW_TOOL_DEFINITIONS: ToolDefinition[] = TOOL_DEFINITIONS.filter(
-  (tool) => tool.function.name !== "write_file",
+  (tool) => tool.function.name !== "write_file" && tool.function.name !== "str_replace",
 );
 
 // Test / typecheck / build runners the agentic reviewer may execute on its own.
@@ -485,6 +502,39 @@ function writeFile(root: string, rel: string, content: string): string {
   return `Wrote ${Buffer.byteLength(content, "utf8")} bytes to ${rel}.`;
 }
 
+function strReplace(root: string, rel: string, oldStr: string, newStr: string, replaceAll: unknown): string {
+  if (!oldStr) {
+    throw new Error("str_replace: old_string must not be empty.");
+  }
+  const abs = safeResolve(root, rel);
+  let stat: fs.Stats;
+  try {
+    stat = fs.statSync(abs);
+  } catch {
+    throw new Error(`No such file or directory: ${rel}`);
+  }
+  if (stat.isDirectory()) throw new Error(`Path is a directory: ${rel}`);
+  if (stat.size > MAX_READ_BYTES) {
+    throw new Error(`File too large (${stat.size} bytes). Use run_command instead.`);
+  }
+  const raw = fs.readFileSync(abs, "utf8");
+  if (raw.includes("\u0000")) {
+    throw new Error(`File appears to be binary: ${rel}.`);
+  }
+  const occurrences = raw.split(oldStr).length - 1;
+  if (occurrences === 0) {
+    throw new Error(`str_replace: old_string was not found in ${rel}. Match it exactly (including whitespace), or read the file first to copy the exact text.`);
+  }
+  const all = replaceAll === true || replaceAll === "true" || replaceAll === 1 || replaceAll === "1";
+  if (occurrences > 1 && !all) {
+    throw new Error(`str_replace: old_string appears ${occurrences} times in ${rel}. Include more surrounding context to make it unique, or set replace_all to true.`);
+  }
+  const replaced = all ? raw.split(oldStr).join(newStr) : raw.replace(oldStr, newStr);
+  fs.writeFileSync(abs, replaced, "utf8");
+  const count = all ? occurrences : 1;
+  return `Replaced ${count} occurrence${count === 1 ? "" : "s"} in ${rel}.`;
+}
+
 function executeCommand(root: string, command: string, signal?: AbortSignal): Promise<string> {
   return new Promise((resolve) => {
     const child = spawn(command, {
@@ -594,6 +644,14 @@ export async function runTool(
       return searchFiles(root, String(args.pattern ?? ""), typeof args.path === "string" ? args.path : undefined);
     case "write_file":
       return writeFile(root, String(args.path ?? ""), String(args.content ?? ""));
+    case "str_replace":
+      return strReplace(
+        root,
+        String(args.path ?? ""),
+        String(args.old_string ?? ""),
+        String(args.new_string ?? ""),
+        args.replace_all,
+      );
     case "run_command":
       return runCommand(root, String(args.command ?? ""), approve, sandbox, signal);
     default:

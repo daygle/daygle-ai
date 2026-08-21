@@ -69,12 +69,14 @@ Available tools:
 - list_files(path) - list files/directories under a path (recursive, capped)
 - read_file(path, start_line?, end_line?) - read a file with numbered lines (up to 1500)
 - search(pattern, path?) - regex-search files, returns matches with line numbers
-- write_file(path, content) - create or overwrite a file with full contents
+- write_file(path, content) - create or overwrite a file with its COMPLETE contents
+- str_replace(path, old_string, new_string, replace_all?) - replace exact text in place
 - run_command(command) - run a shell command in the repo (tests, typecheck, git status, etc.)
   For commands in a subdirectory, use: "cd <dir> && <command>"
 
 Rules:
 - Make the smallest change that solves the problem. Do not rewrite files unnecessarily.
+- ALWAYS use str_replace for small, targeted edits (find-and-replace, fixing a line, renaming). Only use write_file for a brand-new file or a deliberate full rewrite, and then provide EVERY line of the file.
 - Preserve the project's existing style and conventions.
 - After editing, verify with the project's typecheck/tests when available.
 - Wait for each tool's result before acting on it.
@@ -471,7 +473,7 @@ export async function runAgenticReview(opts: {
       const name = call.function.name;
       const args = call.function.arguments ?? {};
       // Defense in depth: the reviewer must never mutate the tree.
-      if (name === "write_file") {
+      if (name === "write_file" || name === "str_replace") {
         emit({ type: "tool_start", name, args });
         const result = "Denied: the reviewer is read-only and cannot write files.";
         emit({ type: "tool_result", name, result });

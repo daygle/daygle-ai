@@ -1,6 +1,6 @@
 /// <reference types="bun" />
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { classifyCommand, isReviewSafeCommand, runTool } from "./tools";
@@ -75,6 +75,56 @@ describe("tool hardening", () => {
     expect(isReviewSafeCommand("bun --eval 'console.log(1)'")).toBe(false);
     expect(isReviewSafeCommand("node --version")).toBe(true);
     expect(isReviewSafeCommand("npm test")).toBe(true);
+  });
+});
+
+describe("str_replace", () => {
+  const root = mkdtempSync(join(tmpdir(), "daygle-tools-strreplace-"));
+  const file = join(root, "code.txt");
+  const reset = () => writeFileSync(file, "line one — dash\nline two — dash\nline three\n");
+
+  test("replaces a unique match in place, preserving the rest of the file", async () => {
+    reset();
+    const result = await runTool(root, "str_replace", {
+      path: "code.txt",
+      old_string: "line two — dash",
+      new_string: "line two - dash",
+    });
+    expect(result).toContain("Replaced 1 occurrence");
+    expect(readFileSync(file, "utf8")).toBe("line one — dash\nline two - dash\nline three\n");
+  });
+
+  test("replaces every occurrence with replace_all", async () => {
+    reset();
+    const result = await runTool(root, "str_replace", {
+      path: "code.txt",
+      old_string: "—",
+      new_string: "-",
+      replace_all: true,
+    });
+    expect(result).toContain("Replaced 2 occurrences");
+    expect(readFileSync(file, "utf8")).toBe("line one - dash\nline two - dash\nline three\n");
+  });
+
+  test("rejects an ambiguous match unless replace_all is set", async () => {
+    reset();
+    await expect(
+      runTool(root, "str_replace", { path: "code.txt", old_string: "—", new_string: "-" }),
+    ).rejects.toThrow(/appears 2 times/);
+  });
+
+  test("errors clearly when old_string is not found", async () => {
+    reset();
+    await expect(
+      runTool(root, "str_replace", { path: "code.txt", old_string: "not here", new_string: "x" }),
+    ).rejects.toThrow(/was not found/);
+  });
+
+  test("refuses paths outside the repo", async () => {
+    reset();
+    await expect(
+      runTool(root, "str_replace", { path: "../outside.txt", old_string: "a", new_string: "b" }),
+    ).rejects.toThrow(/outside the repository/);
   });
 });
 
