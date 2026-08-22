@@ -9,8 +9,10 @@ describe("space-separated tool paths", () => {
   const root = mkdtempSync(join(tmpdir(), "daygle-tools-"));
   mkdirSync(join(root, "a"), { recursive: true });
   mkdirSync(join(root, "b"), { recursive: true });
+  mkdirSync(join(root, "modules", "src"), { recursive: true });
   writeFileSync(join(root, "a", "one.txt"), "alpha needle\n");
   writeFileSync(join(root, "b", "two.txt"), "beta needle\n");
+  writeFileSync(join(root, "modules", "src", "nested.txt"), "nested needle\n");
 
   test("search accepts several space-separated paths in one call", async () => {
     const result = await runTool(root, "search", { pattern: "needle", path: "a/one.txt b/two.txt" });
@@ -55,6 +57,12 @@ describe("space-separated tool paths", () => {
     expect(result).toContain("one.txt");
     const listing = await runTool(root, "list_files", { path: "a\\\\" });
     expect(listing).toContain("a/one.txt");
+  });
+
+  test("recovers a uniquely nested directory when the model drops its parent", async () => {
+    const result = await runTool(root, "search", { pattern: "nested", path: "src" });
+    expect(result).toContain("modules/src/nested.txt");
+    expect(result).toContain("resolved src to modules/src");
   });
 
   test("search reports missing paths instead of crashing on ENOENT", async () => {
@@ -112,6 +120,18 @@ describe("tool hardening", () => {
     expect(isReviewSafeCommand("npm test", root)).toBe(true);
     expect(isReviewSafeCommand("npm run deploy", root)).toBe(false);
     expect(isReviewSafeCommand("npm run test --prefix ../other", root)).toBe(false);
+  });
+
+  test("denies host command execution unless explicitly opted in", async () => {
+    const previous = process.env.DAYGLE_ALLOW_HOST_COMMANDS;
+    delete process.env.DAYGLE_ALLOW_HOST_COMMANDS;
+    try {
+      const result = await runTool(root, "run_command", { command: "true" });
+      expect(result).toContain("no command sandbox is available");
+    } finally {
+      if (previous === undefined) delete process.env.DAYGLE_ALLOW_HOST_COMMANDS;
+      else process.env.DAYGLE_ALLOW_HOST_COMMANDS = previous;
+    }
   });
 
   test("read-only command execution uses the sandbox's immutable path", async () => {
@@ -273,6 +293,8 @@ describe("isReviewSafeCommand", () => {
   test("rejects shell plumbing and anything outside the allowlist", () => {
     expect(isReviewSafeCommand("npm test | grep foo")).toBe(false);
     expect(isReviewSafeCommand("rm -rf node_modules")).toBe(false);
+    expect(isReviewSafeCommand("cd ../../outside && npm test")).toBe(false);
+    expect(isReviewSafeCommand("cd /tmp && npm test")).toBe(false);
     expect(isReviewSafeCommand("npm run deploy")).toBe(false);
   });
 

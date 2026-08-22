@@ -112,12 +112,12 @@ CRITICAL: Never write tool calls or shell commands as text. Do NOT type things l
 Work in small, verifiable steps. Read and understand before editing.
 
 Available tools:
-- list_files(path) - list files/directories under a path (recursive, capped)
+- list_files(path) - list files/directories under a path (recursive, capped); use the exact nested path returned (for example api/src, not src)
 - read_file(path, start_line?, end_line?) - read a file with numbered lines (up to 1500)
-- search(pattern, path?, semantic?) - search files by regex or use semantic=true for local embedding retrieval with a lexical fallback; space-separated paths are accepted
+- search(pattern, path?, semantic?) - search files by regex or use semantic=true for local embedding retrieval with a lexical fallback; space-separated paths are accepted. Use exact repository paths from list_files; do not assume a root-level src directory.
 - write_file(path, content) - create or overwrite a file with its COMPLETE contents
 - str_replace(path, old_string, new_string, replace_all?) - replace exact text in place
-- run_command(command) - run a shell command in the repo (tests, typecheck, git status, etc.)
+- run_command(command) - run a shell command in the repo (tests, typecheck, git status, etc.) through the command sandbox. If no sandbox is available, it is denied unless the trusted host fallback is explicitly enabled.
   For commands in a subdirectory, use: "cd <dir> && <command>"
 
 Rules:

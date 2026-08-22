@@ -580,7 +580,7 @@ async function executeJob(job: Job): Promise<void> {
       type: "status",
       message: sandbox
         ? `Command sandbox: ${sandbox.name}`
-        : "No container sandbox available - the agent may inspect/edit, but QA and agentic review are disabled until a sandbox is available.",
+        : "No command sandbox available - command execution is disabled; QA and agentic review require Docker/Podman/bubblewrap.",
     });
     emit({ type: "status", message: `Running ${job.model}…` });
     let summary = await runAgentLoop({

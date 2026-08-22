@@ -243,12 +243,12 @@ CRITICAL: Never write tool calls or shell commands as text. Do NOT type things l
 These do nothing - they are just text. To use a tool you MUST invoke it through the tool interface, not print it. When you are not calling a tool, just talk normally.
 
 Available tools:
-- list_files(path) - list files/directories under a path
+- list_files(path) - list files/directories under a path; use the exact nested path returned (for example api/src, not src)
 - read_file(path, start_line?, end_line?) - read a file with numbered lines
-- search(pattern, path?, semantic?) - regex-search files; use semantic=true for local embedding retrieval with a lexical fallback when exact names are unknown
+- search(pattern, path?, semantic?) - regex-search files; use semantic=true for local embedding retrieval with a lexical fallback when exact names are unknown. Use exact repository paths from list_files; do not assume a root-level src directory.
 - write_file(path, content) - create or overwrite a file with its COMPLETE contents
 - str_replace(path, old_string, new_string, replace_all?) - replace exact text in place
-- run_command(command) - run a shell command (tests, typecheck, etc.)
+- run_command(command) - run a shell command (tests, typecheck, etc.) through the command sandbox; without one, execution is denied unless trusted host fallback is explicitly enabled.
   IMPORTANT: For commands that need to run in a subdirectory, use "cd <dir> && <command>" as a single command string.
 
 Use str_replace for small, targeted edits (find-and-replace, fixing a line). Only use write_file for a new file or a full rewrite, and include every line.

@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import type { SandboxRunner } from "./sandbox";
+import { isSandboxNetworkEnabled, type SandboxRunner } from "./sandbox";
 import { isReviewSafeCommand } from "./tools";
 
 const INSTALL_RUNNERS = new Set(["npm", "pnpm", "yarn", "bun"]);
@@ -227,7 +227,7 @@ export async function runQaGate(opts: {
       return { code: 1, stdout: "", stderr: `QA command rejected by verification policy: ${command}`, timedOut: false };
     }
     if (sandbox) {
-      const result = await sandbox.runCapture(root, command, { signal, timeoutMs, readOnly: true });
+      const result = await sandbox.runCapture(root, command, { signal, timeoutMs, readOnly: true, network: false });
       return { code: result.code, stdout: result.stdout, stderr: result.stderr, timedOut: result.timedOut };
     }
     return spawnCapture(command, { cwd: root, timeoutMs, signal });
@@ -241,7 +241,11 @@ export async function runQaGate(opts: {
     const installCommand = `${pm} install --ignore-scripts`;
     opts.onStatus?.(`QA: installing dependencies (${installCommand})${sandbox ? " (sandboxed)" : ""}…`);
     const install = sandbox
-      ? await sandbox.runCapture(root, installCommand, { signal, timeoutMs: INSTALL_TIMEOUT_MS })
+      ? await sandbox.runCapture(root, installCommand, {
+          signal,
+          timeoutMs: INSTALL_TIMEOUT_MS,
+          network: isSandboxNetworkEnabled(),
+        })
       : await spawnCapture(installCommand, { cwd: root, timeoutMs: INSTALL_TIMEOUT_MS, signal, allowInstall: true });
     if (install.timedOut) {
       return { ran: true, command: installCommand, output: "QA: dependency install timed out.", passed: false };

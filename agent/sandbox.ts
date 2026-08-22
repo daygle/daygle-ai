@@ -10,7 +10,7 @@ export interface SandboxRunner {
   runCapture(
     root: string,
     command: string,
-    opts?: { signal?: AbortSignal; timeoutMs?: number; readOnly?: boolean },
+    opts?: { signal?: AbortSignal; timeoutMs?: number; readOnly?: boolean; network?: boolean },
   ): Promise<CaptureResult>;
   /**
    * Background warm-up hook (e.g. pre-pull the container image) so the first
@@ -61,7 +61,10 @@ function truncate(text: string, max: number): string {
 
 function hasCommand(cmd: string): Promise<boolean> {
   return new Promise((resolve) => {
-    const child = spawn("sh", ["-c", `command -v ${cmd} >/dev/null 2>&1`], { stdio: "ignore" });
+    const windows = process.platform === "win32";
+    const child = windows
+      ? spawn("where", [cmd], { stdio: "ignore" })
+      : spawn("sh", ["-c", `command -v ${cmd} >/dev/null 2>&1`], { stdio: "ignore" });
     child.on("error", () => resolve(false));
     child.on("close", (code) => resolve(code === 0));
   });
@@ -148,7 +151,7 @@ function formatResult(result: CaptureResult): string {
   return `exit code: ${result.code ?? "error"}\n${parts.join("\n") || "(no output)"}`;
 }
 
-function buildBwrapArgs(root: string, command: string, readOnly = false): string[] {
+function buildBwrapArgs(root: string, command: string, readOnly = false, network = NETWORK_ENABLED): string[] {
   const args = ["bwrap"];
 
   // Read-only toolchain + config from the host.
@@ -179,7 +182,7 @@ function buildBwrapArgs(root: string, command: string, readOnly = false): string
     args.push("--bind", root, "/work");
   }
 
-  if (NETWORK_ENABLED) {
+  if (network) {
     args.push("--unshare-pid", "--unshare-ipc", "--unshare-uts");
   } else {
     args.push("--unshare-all");
@@ -205,7 +208,7 @@ function bwrapRunner(): SandboxRunner {
         'exec "$@"',
       ].join("\n"),
       "bwrap-sandbox",
-      ...buildBwrapArgs(root, command, opts?.readOnly),
+      ...buildBwrapArgs(root, command, opts?.readOnly, opts?.network ?? NETWORK_ENABLED),
     ];
     return spawnCapture(args, { signal: opts?.signal, timeoutMs: opts?.timeoutMs });
   };
@@ -213,7 +216,7 @@ function bwrapRunner(): SandboxRunner {
     name: "bubblewrap",
     runCapture,
     run: (root, command, signal) => runCapture(root, command, { signal }).then(formatResult),
-    runReadOnly: (root, command, signal) => runCapture(root, command, { signal, readOnly: true }).then(formatResult),
+    runReadOnly: (root, command, signal) => runCapture(root, command, { signal, readOnly: true, network: false }).then(formatResult),
   };
 }
 
@@ -329,7 +332,7 @@ function containerRunner(engine: "docker" | "podman"): SandboxRunner {
   const runCapture: SandboxRunner["runCapture"] = async (root, command, opts) => {
     try {
       const args = [engine, "run", "--rm"];
-      if (!NETWORK_ENABLED) args.push("--network", "none");
+      if (!(opts?.network ?? NETWORK_ENABLED)) args.push("--network", "none");
       args.push("--memory", "2g", "--cpus", "2");
       // Runtime hardening: drop every Linux capability, forbid privilege
       // escalation, and run tini as PID 1 so child processes get reaped.
@@ -362,7 +365,7 @@ function containerRunner(engine: "docker" | "podman"): SandboxRunner {
     name: engine,
     runCapture,
     run: (root, command, signal) => runCapture(root, command, { signal }).then(formatResult),
-    runReadOnly: (root, command, signal) => runCapture(root, command, { signal, readOnly: true }).then(formatResult),
+    runReadOnly: (root, command, signal) => runCapture(root, command, { signal, readOnly: true, network: false }).then(formatResult),
     warmup: async () => {
       try {
         await resolveImageRef();

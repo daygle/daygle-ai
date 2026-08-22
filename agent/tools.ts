@@ -222,7 +222,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     function: {
       name: "run_command",
       description:
-        "Run a shell command in the repo (tests, typecheck, builds, git status, etc.). Read-only inspection commands run automatically; commands that mutate files, execute code, or use the network require user approval, and destructive or credential-accessing commands are blocked.",
+        "Run a shell command in the repo (tests, typecheck, builds, git status, etc.). Commands require a sandbox by default; trusted users may explicitly opt into host execution. Read-only inspection commands run automatically; commands that mutate files, execute code, or use the network require user approval, and destructive or credential-accessing commands are blocked.",
       parameters: {
         type: "object",
         properties: {
@@ -312,7 +312,12 @@ export function isReviewSafeCommand(command: string, root?: string): boolean {
   return segments.every((segment) => {
     const tokens = segment.split(/\s+/);
     const program = tokens[0];
-    if (program === "cd") return tokens.length === 2;
+    if (program === "cd") {
+      const target = tokens[1] ?? "";
+      // Keep reviewer/QA commands below the mounted repository. Absolute paths
+      // and `..` traversal would make the verification target ambiguous.
+      return tokens.length === 2 && Boolean(target) && !path.isAbsolute(target) && !target.split(/[\\/]+/).includes("..");
+    }
     if (PACKAGE_MANAGERS.has(program)) return isSafePackageInvocation(tokens, root);
     if (program === "git") return Boolean(tokens[1]) && SAFE_GIT.has(tokens[1]);
     if ((program === "node" || program === "deno") && (tokens[1] === "--version" || tokens[1] === "-v") && tokens.length === 2) return true;
@@ -417,22 +422,62 @@ function splitPaths(root: string, rel: string): string[] {
   return paths;
 }
 
+function findUniqueNestedPath(root: string, requested: string): string | null {
+  const normalized = normalizeToolPath(requested);
+  if (!normalized || normalized === "." || normalized.includes("/") || path.isAbsolute(normalized) || normalized === "..") return null;
+  const matches: string[] = [];
+  const walk = (dirAbs: string, relDir: string, depth: number) => {
+    if (matches.length > 1 || depth > 12) return;
+    let entries: fs.Dirent[];
+    try { entries = fs.readdirSync(dirAbs, { withFileTypes: true }); } catch { return; }
+    for (const entry of entries) {
+      if (matches.length > 1) return;
+      if (entry.name === ".git" || entry.name === "node_modules" || entry.name === "dist" || entry.name === ".ollama") continue;
+      const childRel = relDir ? `${relDir}/${entry.name}` : entry.name;
+      if (entry.name === normalized) matches.push(childRel);
+      if (entry.isDirectory()) walk(path.join(dirAbs, entry.name), childRel, depth + 1);
+    }
+  };
+  walk(root, "", 0);
+  return matches.length === 1 ? matches[0] : null;
+}
+
+function findExistingTarget(root: string, requested: string): { abs: string; path: string; resolvedFrom?: string } | null {
+  const normalized = normalizeToolPath(requested);
+  try {
+    const abs = safeResolve(root, normalized);
+    fs.statSync(abs);
+    return { abs, path: normalized };
+  } catch {
+    const recovered = findUniqueNestedPath(root, normalized);
+    if (!recovered) return null;
+    try {
+      const abs = safeResolve(root, recovered);
+      fs.statSync(abs);
+      return { abs, path: recovered, resolvedFrom: normalized };
+    } catch {
+      return null;
+    }
+  }
+}
+
 function listFiles(root: string, rel: string): string {
   const out: string[] = [];
   const missing: string[] = [];
+  const resolvedNotes: string[] = [];
 
-  const listOne = (single: string) => {
-    let abs: string;
-    let stat: fs.Stats;
-    try {
-      abs = safeResolve(root, single);
-      stat = fs.statSync(abs);
-    } catch {
+  const listOne = (requested: string) => {
+    const target = findExistingTarget(root, requested);
+    if (!target) {
       // One bad path shouldn't sink a multi-path call (the model passes
       // space-separated paths); record it and keep going.
-      missing.push(single);
+      missing.push(normalizeToolPath(requested));
       return;
     }
+    const single = target.path;
+    const abs = target.abs;
+    const stat = fs.statSync(abs);
+    if (target.resolvedFrom) resolvedNotes.push(`(resolved ${target.resolvedFrom} to ${target.path})`);
     if (stat.isFile()) {
       out.push(single);
       return;
@@ -486,6 +531,7 @@ function listFiles(root: string, rel: string): string {
   // narrow the query instead of assuming it saw everything.
   if (out.length >= MAX_LIST) lines.push(`(truncated at ${MAX_LIST} entries)`);
   if (missing.length > 0) lines.push(`(not found: ${missing.join(", ")})`);
+  lines.push(...resolvedNotes);
   return lines.join("\n");
 }
 
@@ -665,19 +711,20 @@ async function searchFiles(root: string, pattern: string, rel?: string, semantic
   // string as one path (which made statSync throw ENOENT).
   const targets = splitPaths(root, rel || ".");
   const missing: string[] = [];
+  const resolvedNotes: string[] = [];
   const collected: string[] = [];
-  for (const target of targets) {
-    let abs: string;
-    try {
-      abs = safeResolve(root, target);
-      if (fs.statSync(abs).isFile()) {
-        collected.push(abs);
-        continue;
-      }
-      collectFiles(abs, collected, { count: 0 });
-    } catch {
-      missing.push(target);
+  for (const requested of targets) {
+    const target = findExistingTarget(root, requested);
+    if (!target) {
+      missing.push(normalizeToolPath(requested));
+      continue;
     }
+    if (target.resolvedFrom) resolvedNotes.push(`(resolved ${target.resolvedFrom} to ${target.path})`);
+    if (fs.statSync(target.abs).isFile()) {
+      collected.push(target.abs);
+      continue;
+    }
+    collectFiles(target.abs, collected, { count: 0 });
   }
 
   if (collected.length === 0 && missing.length > 0) {
@@ -735,8 +782,8 @@ async function searchFiles(root: string, pattern: string, rel?: string, semantic
   if (semantic) matches.sort((a, b) => b.score - a.score);
   // Surface skipped paths so the model can correct course instead of
   // assuming every target was searched.
-  const note = missing.length > 0 ? `\n(not found: ${missing.join(", ")})` : "";
-  return matches.slice(0, MAX_SEARCH_MATCHES).map((match) => match.text).join("\n") + note;
+  const notes = [...resolvedNotes, ...(missing.length > 0 ? [`(not found: ${missing.join(", ")})`] : [])];
+  return matches.slice(0, MAX_SEARCH_MATCHES).map((match) => match.text).join("\n") + (notes.length ? `\n${notes.join("\n")}` : "");
 }
 
 async function writeFile(root: string, rel: string, content: string, approve?: CommandApprover): Promise<string> {
@@ -911,6 +958,9 @@ async function runCommand(
   const decision = classifyCommand(command);
   if (decision === "block") {
     throw new Error(`Blocked for safety: ${command}`);
+  }
+  if (!sandbox && process.env.DAYGLE_ALLOW_HOST_COMMANDS !== "1") {
+    return "Command denied: no command sandbox is available. Start Docker/Podman/bubblewrap, or explicitly set DAYGLE_ALLOW_HOST_COMMANDS=1 for a trusted checkout.";
   }
   if (decision === "approve") {
     if (!approve) {

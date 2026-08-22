@@ -18,11 +18,13 @@ describe("QA sandbox policy", () => {
     mkdirSync(join(root, "node_modules"));
     writeFileSync(join(root, "package.json"), JSON.stringify({ scripts: { test: "bun test" } }));
     const commands: string[] = [];
+    const captureOptions: Array<{ readOnly?: boolean; network?: boolean }> = [];
     const sandbox: SandboxRunner = {
       name: "test-sandbox",
       run: async () => "exit code: 0",
-      runCapture: async (_root, command) => {
+      runCapture: async (_root, command, options) => {
         commands.push(command);
+        captureOptions.push({ readOnly: options?.readOnly, network: options?.network });
         return { code: 0, stdout: "ok", stderr: "", timedOut: false, overflow: false };
       },
     };
@@ -30,5 +32,6 @@ describe("QA sandbox policy", () => {
     const result = await runQaGate({ root, sandbox });
     expect(result.passed).toBe(true);
     expect(commands).toEqual(["npm run test"]);
+    expect(captureOptions).toEqual([{ readOnly: true, network: false }]);
   });
 });
