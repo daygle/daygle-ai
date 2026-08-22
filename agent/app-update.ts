@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { execSync } from "node:child_process";
+import { execSync, spawn } from "node:child_process";
 
 const REPO_OWNER = "daygle";
 const REPO_NAME = "daygle-ai";
@@ -160,20 +160,23 @@ export async function performAppUpdate(
       execSync("yarn install", { cwd: appDir, stdio: "pipe" });
     } else {
       execSync("npm install", { cwd: appDir, stdio: "pipe" });
-    }
-
-    updateProgress = { status: "building", message: "Building application...", startedAt: updateProgress?.startedAt ?? Date.now() };
+    }updateProgress = { status: "building", message: "Building application...", startedAt: updateProgress?.startedAt ?? Date.now() };
     emit({ type: "update_progress", message: "Building application..." });
 
     // Build the project
     execSync("npm run build", { cwd: appDir, stdio: "pipe" });
 
-    updateProgress = { status: "complete", message: "Update complete! Restart the application to use the new version.", startedAt: updateProgress?.startedAt ?? Date.now() };
+    updateProgress = { status: "restarting", message: "Restarting agent server...", startedAt: updateProgress?.startedAt ?? Date.now() };
+    emit({ type: "update_progress", message: "Restarting agent server..." });
+
+    // Restart the agent server
+    await restartAgentServer(appDir);
+
+    updateProgress = { status: "complete", message: "Update complete! Server is restarting.", startedAt: updateProgress?.startedAt ?? Date.now() };
     emit({
       type: "update_complete",
-      message: "Update complete! Restart the application to use the new version.",
-      success: true,
-    });
+      message: "Update complete! Server is restarting. The page will reload automatically.",
+      success: true,});
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     updateProgress = { status: "failed", message: `Update failed: ${message}`, startedAt: updateProgress?.startedAt ?? Date.now() };
@@ -183,4 +186,46 @@ export async function performAppUpdate(
       success: false,
     });
   }
+}
+
+/**
+ * Restart the agent server by spawning a background process that:
+ * 1. Waits for the current request to complete
+ * 2. Kills the current server process
+ * 3. Starts a new server process
+ */
+async function restartAgentServer(appDir: string): Promise<void> {
+  const isWindows = process.platform === "win32";
+  const pid = process.pid;
+
+  // Create a restart script
+  const restartScript = isWindows
+    ? `@echo off\n` +
+      `timeout /t 2 /nobreak > nul\n` +
+      `taskkill /pid ${pid} /f > nul 2>&1\n` +
+      `cd /d "${appDir}"\n` +
+      `start /b bun run agent/server.ts\n`
+    : `#!/bin/bash\n` +
+      `sleep 2\n` +
+      `kill -9 ${pid} 2>/dev/null || true\n` +
+      `cd "${appDir}"\n` +
+      `nohup bun run agent/server.ts > /dev/null 2>&1 &\n`;
+
+  const scriptPath = path.join(appDir, isWindows ? "restart.bat" : "restart.sh");
+  fs.writeFileSync(scriptPath, restartScript, { encoding: "utf8" });
+
+  if (!isWindows) {
+    fs.chmodSync(scriptPath, 0o755);
+  }
+
+  // Spawn the restart script as a detached process
+  const child = spawn(isWindows ? "cmd" : "bash", [isWindows ? "/c" : scriptPath], {
+    detached: true,
+    stdio: "ignore",
+    windowsHide: true,
+  });
+  child.unref();
+
+  // Give the script time to start before we exit
+  await new Promise((resolve) => setTimeout(resolve, 1000));
 }

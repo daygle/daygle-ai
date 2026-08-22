@@ -61,9 +61,20 @@ export function AppUpdate({ serverUrl }: AppUpdateProps) {
 
               if (statusData.progress.status === "complete") {
                 clearInterval(pollInterval);
-                setUpdateMessage("Update complete! Refresh the page to use the new version.");
-                setUpdating(false);
-                setProgress(null);
+                setUpdateMessage("Update complete! Server is restarting...");
+                // Start polling for server to come back up
+                const reconnectInterval = setInterval(async () => {
+                  try {
+                    await fetch(`${serverUrl.replace(/\/$/, '')}/api/health`);
+                    // Server is back up, reload the page
+                    clearInterval(reconnectInterval);
+                    window.location.reload();
+                  } catch {
+                    // Server still restarting, keep waiting
+                  }
+                }, 1000);
+                // Stop trying after 30 seconds
+                setTimeout(() => clearInterval(reconnectInterval), 30000);
               } else if (statusData.progress.status === "failed") {
                 clearInterval(pollInterval);
                 setError(statusData.progress.message);
@@ -79,7 +90,7 @@ export function AppUpdate({ serverUrl }: AppUpdateProps) {
             }
           }
         } catch {
-          // Ignore polling errors
+          // Server is likely restarting, keep polling
         }
       }, 2000); // Poll every 2 seconds for better responsiveness
 
@@ -179,7 +190,9 @@ export function AppUpdate({ serverUrl }: AppUpdateProps) {
             <div className="mt-3 p-3 bg-muted/50 rounded-md">
               <div className="flex items-center gap-2 text-sm mb-2">
                 <Loader2 className="h-4 w-4 animate-spin text-accent" />
-                <span className="font-medium text-foreground">Updating...</span>
+                <span className="font-medium text-foreground">
+                  {progress.status === "restarting" ? "Restarting..." : "Updating..."}
+                </span>
               </div>
               <div className="text-xs text-muted-foreground">
                 {progress.message}
