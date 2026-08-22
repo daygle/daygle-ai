@@ -28,6 +28,15 @@ const MAX_OUTPUT = 12_000;
 const CAPTURE_LIMIT = 200_000;
 const COMMAND_TIMEOUT_MS = 180_000;
 
+/**
+ * Escapes a string for safe use in a shell command.
+ * Uses single quotes to prevent all shell interpretation.
+ */
+function shellEscape(arg: string): string {
+  // Wrap in single quotes and escape any single quotes inside
+  return "'" + arg.replace(/'/g, "'\"'\"'") + "'";
+}
+
 // Programs whose simple invocations are read-only and safe to run without approval.
 const SAFE_PROGRAMS = new Set([
   "ls",
@@ -1186,19 +1195,19 @@ async function runCommand(
 async function createPr(root: string, title: string, body: string, base: string, approve?: CommandApprover): Promise<string> {
   if (!title.trim()) throw new Error("create_pr: title is required.");
   if (!body.trim()) throw new Error("create_pr: body is required.");
-  // Commit all changes first.
-  const commitResult = await runCommand(root, "git add -A && git commit -m \"" + title.replace(/"/g, '\\"') + "\"", approve);
+  // Commit all changes first - use shellEscape for title to prevent injection.
+  const commitResult = await runCommand(root, `git add -A && git commit -m ${shellEscape(title)}`, approve);
   if (commitResult.includes("nothing to commit")) {
     return "No changes to commit. Nothing was pushed or opened as a PR.";
   }
   // Push the current branch.
   const branch = (await executeCommand(root, "git branch --show-current", undefined)).trim() || "main";
   await runCommand(root, `git push -u origin ${branch}`, approve);
-  // Create the PR using gh CLI.
+  // Create the PR using gh CLI - use shellEscape for title to prevent injection.
   const bodyFile = path.join(root, ".daygle-pr-body.md");
   fs.writeFileSync(bodyFile, body, "utf8");
   try {
-    const prResult = await executeCommand(root, `gh pr create --base ${base} --head ${branch} --title "${title.replace(/"/g, '\\"')}" --body-file .daygle-pr-body.md`, undefined);
+    const prResult = await executeCommand(root, `gh pr create --base ${base} --head ${branch} --title ${shellEscape(title)} --body-file .daygle-pr-body.md`, undefined);
     const urlMatch = prResult.match(/https:\/\/github\.com\/[^\s]+/);
     return urlMatch ? `PR created: ${urlMatch[0]}` : `PR created: ${prResult.trim()}`;
   } finally {

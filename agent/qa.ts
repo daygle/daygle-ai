@@ -6,6 +6,26 @@ import { isReviewSafeCommand } from "./tools";
 
 const INSTALL_RUNNERS = new Set(["npm", "pnpm", "yarn", "bun"]);
 
+/** Whitelist of allowed programs for QA command execution. */
+const ALLOWED_QA_PROGRAMS = new Set([
+  // Package managers
+  "npm", "pnpm", "yarn", "bun",
+  // Test runners
+  "node", "deno", "bunx", "npx",
+  // Git
+  "git",
+  // Build tools
+  "make", "cargo", "go",
+  // Python
+  "python", "python3", "pip", "pip3",
+  // Common utilities
+  "ls", "cat", "head", "tail", "find", "grep", "wc",
+  "echo", "mkdir", "cp", "mv", "rm", "touch",
+  "chmod", "chown", "ln",
+  // Version checks
+  "tsc", "eslint", "prettier",
+]);
+
 export interface QaResult {
   /** Whether any verification command actually ran (false = nothing to verify). */
   ran: boolean;
@@ -78,6 +98,17 @@ function spawnCapture(
     const argv = splitCommandLine(command);
     if (argv.length === 0) {
       resolve({ code: 1, stdout: "", stderr: "Empty command.", timedOut: false });
+      return;
+    }
+    // Validate that the program is in our whitelist to prevent command injection.
+    const program = argv[0];
+    if (!ALLOWED_QA_PROGRAMS.has(program)) {
+      resolve({
+        code: 1,
+        stdout: "",
+        stderr: `QA command rejected: "${program}" is not in the allowed programs list.`,
+        timedOut: false,
+      });
       return;
     }
     // Package scripts are accepted only when their body passes the same
