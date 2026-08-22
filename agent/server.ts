@@ -1356,9 +1356,36 @@ const server = http.createServer((req, res) => {
       // and register a cancel handle so Stop works from a reconnected view.
       session.busy = true;
       activeChatRuns.set(sessionId, cancelRun);
+      let lastCheckpointTime = Date.now();
       try {
         for await (const event of streamChat(session, body.message.trim(), approve, sandbox ?? undefined, controller.signal, image)) {
           res.write(`data: ${JSON.stringify(event)}\n\n`);
+          // Incremental checkpointing: after file edits, snapshot the working
+          // tree so a crash mid-generation doesn't lose changes. Throttle to
+          // at most once every 10 seconds to avoid excessive I/O.
+          if (
+            session.root &&
+            (event.type === "tool_result") &&
+            (event.name === "write_file" || event.name === "str_replace") &&
+            !event.result?.startsWith("Error") &&
+            !event.result?.startsWith("Edit denied") &&
+            Date.now() - lastCheckpointTime > 10_000
+          ) {
+            lastCheckpointTime = Date.now();
+            try {
+              const cpId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+              const cpDir = path.join(CHECKPOINT_ROOT, sessionId, cpId);
+              const checkpoint = await createCheckpoint(session.root, cpDir);
+              const records = loadChatCheckpoints(sessionId);
+              const record: ChatCheckpointRecord = { sessionId, id: cpId, createdAt: Date.now(), checkpoint };
+              records.push(record);
+              records.sort((a, b) => a.createdAt - b.createdAt);
+              saveCheckpointManifest(record);
+              pruneChatCheckpoints(records);
+            } catch {
+              // checkpoint is best-effort
+            }
+          }
         }
       } catch (err) {
         if (!(err instanceof Error && err.name === "AbortError")) {

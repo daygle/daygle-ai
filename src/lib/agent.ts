@@ -358,6 +358,7 @@ export type ChatEvent =
   | { type: "model_done"; content: string }
   | { type: "tool_start"; name: string; args: Record<string, unknown> }
   | { type: "tool_result"; name: string; result: string; diff?: string }
+  | { type: "diff_preview"; name: string; path: string; diff: string; requestId: string }
   | { type: "approval_requested"; requestId: string; command: string }
   | { type: "approval_resolved"; requestId: string; decision: "approve" | "deny" }
   | { type: "clarification_requested"; requestId: string; question: string; options: Array<{ label: string; description?: string }> }

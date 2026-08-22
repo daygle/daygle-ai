@@ -156,6 +156,21 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     type: "function",
     function: {
+      name: "read_headers",
+      description: "Read the first N lines of one or more files to see imports, exports, type definitions, and module structure without loading the full file. Useful for understanding dependencies before editing.",
+      parameters: {
+        type: "object",
+        properties: {
+          paths: { type: "string", description: "Space-separated file paths relative to the repo root." },
+          lines: { type: "number", description: "Number of lines to read from the top of each file (default 40)." },
+        },
+        required: ["paths"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "read_file",
       description: "Read a file from the repository, returning numbered lines (up to 1500 lines).",
       parameters: {
@@ -563,6 +578,54 @@ function readFile(root: string, rel: string, startLine?: number, endLine?: numbe
     throw new Error(`Requested range is too large (${lines.length} lines). Read at most ${MAX_READ_LINES} lines at a time.`);
   }
   return lines.map((line, i) => `${String(firstLine + i).padStart(4, " ")} | ${line}`).join("\n");
+}
+
+/**
+ * Read the first N lines of one or more files to show imports, exports, and
+ * type definitions — enough to understand module structure without loading
+ * the full file.
+ */
+function readHeaders(root: string, pathsStr: string, lines: number): string {
+  const paths = splitPaths(root, pathsStr);
+  const maxLines = Math.min(lines, 100);
+  const results: string[] = [];
+  for (const requested of paths) {
+    const target = findExistingTarget(root, requested);
+    if (!target) {
+      results.push(`${requested}: not found`);
+      continue;
+    }
+    try {
+      const stat = fs.statSync(target.abs);
+      if (stat.isDirectory()) {
+        results.push(`${target.path}: is a directory`);
+        continue;
+      }
+      if (stat.size > MAX_READ_BYTES) {
+        results.push(`${target.path}: file too large (${stat.size} bytes)`);
+        continue;
+      }
+    } catch {
+      results.push(`${requested}: not found`);
+      continue;
+    }
+    let content: string;
+    try {
+      content = fs.readFileSync(target.abs, "utf8");
+    } catch {
+      results.push(`${target.path}: could not read`);
+      continue;
+    }
+    if (content.includes("\u0000")) {
+      results.push(`${target.path}: binary file`);
+      continue;
+    }
+    const fileLines = content.split("\n").slice(0, maxLines);
+    const numbered = fileLines.map((line, i) => `${String(i + 1).padStart(4, " ")} | ${line}`).join("\n");
+    results.push(`--- ${target.path} (first ${fileLines.length} lines) ---\n${numbered}`);
+    if (target.resolvedFrom) results.push(`(resolved ${target.resolvedFrom} to ${target.path})`);
+  }
+  return results.join("\n\n");
 }
 
 function collectFiles(dirAbs: string, out: string[], budget: { count: number }): void {
@@ -993,6 +1056,8 @@ export async function runTool(
   switch (name) {
     case "list_files":
       return listFiles(root, typeof args.path === "string" ? args.path : ".");
+    case "read_headers":
+      return readHeaders(root, String(args.paths ?? ""), asNumber(args.lines) || 40);
     case "read_file":
       return readFile(root, String(args.path ?? ""), asNumber(args.start_line), asNumber(args.end_line));
     case "search":

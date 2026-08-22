@@ -1312,6 +1312,22 @@ export function AgentPage() {
           setStatusText("Thinking…");
           break;
 
+        case "diff_preview":
+          setMessages((prev) => {
+            // Update the last tool card with the preview diff so the user can see it
+            // while deciding on the approval that follows.
+            for (let i = prev.length - 1; i >= 0; i--) {
+              if (prev[i].role === "tool" && prev[i].toolName === event.name && !prev[i].toolResult) {
+                const updated = [...prev];
+                updated[i] = { ...updated[i], toolDiff: event.diff };
+                return updated;
+              }
+            }
+            return prev;
+          });
+          setStatusText("Reviewing changes…");
+          break;
+
         case "approval_requested":
           setMessages((prev) => [
             ...prev,

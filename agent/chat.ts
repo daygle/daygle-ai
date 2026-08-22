@@ -50,6 +50,7 @@ export type ChatEvent =
   | { type: "model_done"; content: string }
   | { type: "tool_start"; name: string; args: Record<string, unknown> }
   | { type: "tool_result"; name: string; result: string; diff?: string }
+  | { type: "diff_preview"; name: string; path: string; diff: string; requestId: string }
   | { type: "approval_requested"; requestId: string; command: string }
   | { type: "approval_resolved"; requestId: string; decision: "approve" | "deny" }
   | { type: "clarification_requested"; requestId: string; question: string; options: Array<{ label: string; description?: string }> }
@@ -245,12 +246,14 @@ These do nothing - they are just text. To use a tool you MUST invoke it through 
 Available tools:
 - list_files(path) - list files/directories under a path; use the exact nested path returned (for example api/src, not src)
 - read_file(path, start_line?, end_line?) - read a file with numbered lines
+- read_headers(paths, lines?) - read the first N lines (default 40) of one or more files to see imports, exports, and type definitions. Use this BEFORE editing to understand module boundaries and dependencies.
 - search(pattern, path?, semantic?) - regex-search files; use semantic=true for local embedding retrieval with a lexical fallback when exact names are unknown. Use exact repository paths from list_files; do not assume a root-level src directory.
 - write_file(path, content) - create or overwrite a file with its COMPLETE contents
 - str_replace(path, old_string, new_string, replace_all?) - replace exact text in place
 - run_command(command) - run a shell command (tests, typecheck, etc.) through the command sandbox; without one, execution is denied unless trusted host fallback is explicitly enabled.
   IMPORTANT: For commands that need to run in a subdirectory, use "cd <dir> && <command>" as a single command string.
 
+Before editing any file, use read_headers to check its imports and exports so you understand how it connects to the rest of the codebase.
 Use str_replace for small, targeted edits (find-and-replace, fixing a line). Only use write_file for a new file or a full rewrite, and include every line.
 
 When you are unsure how to proceed, ask for clarification by outputting a JSON object in your response like this:
@@ -497,13 +500,46 @@ export async function* streamChat(
       const args = call.function.arguments ?? {};
       yield { type: "tool_start", name, args };
 
-      // For file edits, snapshot the previous contents so we can show a diff.
+      // For file edits, compute a preview diff and require approval for large changes.
       let before: string | undefined;
       if ((name === "write_file" || name === "str_replace") && typeof args.path === "string") {
         try {
           before = fs.readFileSync(path.resolve(session.root, args.path), "utf8");
         } catch {
           before = ""; // new file
+        }
+      }
+
+      // Diff preview: show what will change before applying.
+      if (before !== undefined && (name === "write_file" || name === "str_replace")) {
+        let previewDiff = "";
+        if (name === "write_file" && typeof args.content === "string") {
+          previewDiff = lineDiff(before, args.content);
+        } else if (name === "str_replace" && typeof args.old_string === "string" && typeof args.new_string === "string") {
+          const oldStr = args.old_string;
+          const newStr = args.new_string;
+          const replaceAll = args.replace_all === true;
+          try {
+            const after = replaceAll
+              ? before.split(oldStr).join(newStr)
+              : before.replace(oldStr, newStr);
+            previewDiff = lineDiff(before, after);
+          } catch { /* pattern error caught by runTool */ }
+        }
+        if (previewDiff && previewDiff !== "(no changes)") {
+          const changedLines = previewDiff.split("\n").filter((l) => l.startsWith("+") || l.startsWith("-")).length;
+          // Require approval when the edit changes more than 20 lines.
+          if (changedLines > 20 && approve) {
+            const requestId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+            const filePath = String(args.path ?? "");
+            yield { type: "diff_preview", name, path: filePath, diff: previewDiff, requestId };
+            const decision = await approve(`edit ${filePath}: ${changedLines} lines changed`);
+            if (decision !== "approve") {
+              yield { type: "tool_result", name, result: `Edit denied: ${filePath} was not changed.`, diff: previewDiff };
+              session.messages.push({ role: "tool", content: `Edit denied: ${filePath} was not changed.`, tool_name: name });
+              continue;
+            }
+          }
         }
       }
 
