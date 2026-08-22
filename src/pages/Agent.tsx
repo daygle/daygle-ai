@@ -721,20 +721,21 @@ function WorkspacePanel({
             <div key={id} className="border-b border-border">
               <button
                 onClick={() => onTabChange(isOpen ? "" as WorkspaceTab : id)}
-                className={`flex w-full items-center gap-2 px-3 py-2.5 text-[11px] font-medium transition-colors ${
-                  isOpen ? "bg-accent/10 text-accent" : "text-muted-foreground hover:bg-muted/50 hover:text-foreground"
+                title={isOpen ? undefined : label}
+                className={`flex w-full items-center transition-colors ${
+                  isOpen
+                    ? "gap-2 px-3 py-2.5 text-[11px] font-medium bg-accent/10 text-accent"
+                    : "justify-center px-3 py-2 text-muted-foreground hover:bg-muted/50 hover:text-foreground"
                 }`}
               >
-                {isOpen ? (
-                  <ChevronDown className="h-3 w-3 shrink-0" />
-                ) : (
-                  <ChevronRight className="h-3 w-3 shrink-0" />
-                )}
-                <Icon className="h-3.5 w-3.5 shrink-0" />
-                <span className="flex-1 text-left">{label}</span>
-                {count !== undefined && count > 0 && <span className="rounded-full bg-muted px-1.5 text-[10px]">{count}</span>}
-                {id === "files" && showRefresh && (
-                  <button onClick={(e) => { e.stopPropagation(); onRefresh(); }} className="rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground" title="Refresh">
+                {isOpen && <ChevronDown className="h-3 w-3 shrink-0" />}
+                {!isOpen && <ChevronRight className="h-3 w-3 shrink-0" />}
+                <Icon className={isOpen ? "h-3.5 w-3.5 shrink-0" : "h-4 w-4"} />
+                {isOpen && <span className="flex-1 text-left">{label}</span>}
+                {isOpen && count !== undefined && count > 0 && <span className="rounded-full bg-muted px-1.5 text-[10px]">{count}</span>}
+                {!isOpen && count !== undefined && count > 0 && <span className="ml-0.5 rounded-full bg-muted px-1 text-[9px]">{count}</span>}
+                {isOpen && id === "files" && showRefresh && (
+                  <button onClick={(e) => { e.stopPropagation(); onRefresh(); }} className="ml-auto rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground" title="Refresh">
                     <RefreshCw className={`h-3 w-3 ${refreshing ? "animate-spin" : ""}`} />
                   </button>
                 )}
