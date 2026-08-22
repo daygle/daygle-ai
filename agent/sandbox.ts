@@ -35,9 +35,8 @@ const MAX_OUTPUT = 12_000;
 // Resource limits for the bubblewrap path (bwrap itself has no rlimit option,
 // so we set them in a wrapper shell before exec; they're inherited by the
 // whole sandbox tree). Values mirror the container sandbox's limits:
-//   - RLIMIT_DATA (2 GiB, in 1024-byte blocks): bounds writable anonymous
-//     memory - the kernel only counts private writable mappings, so modern
-//     runtimes' PROT_NONE virtual reservations (V8's cage) don't trip it.
+//   - RLIMIT_AS (2 GiB, in 1024-byte blocks): bounds virtual memory.
+//     Uses -v (RLIMIT_AS) instead of -d (RLIMIT_DATA) for broader compatibility.
 //   - RLIMIT_CPU (seconds, per process): hard cap against infinite loops
 //     (Docker's --cpus 2 is a proportional share, which bwrap can't express).
 //   - RLIMIT_NPROC: cap on processes/threads in the sandbox against fork bombs.
@@ -204,7 +203,7 @@ function bwrapRunner(): SandboxRunner {
       "-c",
       [
         "set -e",
-        `ulimit -d ${SANDBOX_MEM_LIMIT_KB} -t ${SANDBOX_CPU_LIMIT_S} -u ${SANDBOX_NPROC_LIMIT}`,
+        `ulimit -v ${SANDBOX_MEM_LIMIT_KB} -t ${SANDBOX_CPU_LIMIT_S} -u ${SANDBOX_NPROC_LIMIT}`,
         'exec "$@"',
       ].join("\n"),
       "bwrap-sandbox",
