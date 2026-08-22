@@ -308,7 +308,8 @@ function isSafeScriptBody(body: string, root: string): boolean {
   // Do not recursively execute package scripts. That makes the inspection
   // compositional and prevents a harmless-looking `test` script from hiding a
   // second package-manager invocation or an arbitrary shell chain.
-  if (/[;&|<>`$()]/.test(body) || body.includes("&&")) return false;
+  // (The metachar test above already rejects `&`, so `&&` chains can't appear.)
+  if (/[;&|<>`$()]/.test(body)) return false;
   const tokens = body.trim().split(/\s+/).filter(Boolean);
   if (tokens.length === 0) return false;
   const program = tokens[0];

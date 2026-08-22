@@ -10,29 +10,39 @@ export function isSafeExternalUrl(value: string): boolean {
     const url = new URL(value);
     if (url.protocol !== "https:" && url.protocol !== "http:") return false;
     const h = url.hostname.toLowerCase();
-    // Block IPv6 loopback
-    if (h === "[::1]" || h === "::1") return false;
+    // Block ALL literal IPv6 hosts (e.g. [::1], [fc00::1], [::ffff:127.0.0.1]).
+    // Legitimate cloud providers use domain names, so nothing is lost.
+    if (h.startsWith("[")) return false;
     // Parse IPv4 if present
     const ipv4 = h.includes(".") ? h : "";
     if (ipv4) {
-      const parts = ipv4.split(".").map(Number);
-      if (parts.length !== 4 || parts.some((p) => !Number.isFinite(p) || p < 0 || p > 255)) return false;
+      const parts = ipv4.split(".");
+      // Reject octal/hex encodings (leading zeros): "0177.0.0.1" must not
+      // normalize to 127.0.0.1 in a resolver while parsing as 177 here.
+      if (parts.length !== 4 || parts.some((p) => !/^(0|[1-9]\d*)$/.test(p))) return false;
+      const nums = parts.map(Number);
+      if (nums.some((p) => !Number.isFinite(p) || p < 0 || p > 255)) return false;
       // Loopback 127.0.0.0/8
-      if (parts[0] === 127) return false;
+      if (nums[0] === 127) return false;
       // Private 10.0.0.0/8
-      if (parts[0] === 10) return false;
+      if (nums[0] === 10) return false;
       // Private 172.16.0.0/12
-      if (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) return false;
+      if (nums[0] === 172 && nums[1] >= 16 && nums[1] <= 31) return false;
       // Private 192.168.0.0/16
-      if (parts[0] === 192 && parts[1] === 168) return false;
-      // Link-local 169.254.0.0/16
-      if (parts[0] === 169 && parts[1] === 254) return false;
-      // Cloud metadata 169.254.169.254
-      if (ipv4 === "169.254.169.254") return false;
+      if (nums[0] === 192 && nums[1] === 168) return false;
+      // Link-local 169.254.0.0/16 (incl. cloud metadata)
+      if (nums[0] === 169 && nums[1] === 254) return false;
+      // This-host 0.0.0.0/8
+      if (nums[0] === 0) return false;
+    } else {
+      // Dotted-quad bypasses: a bare decimal integer ("2130706433" =
+      // 127.0.0.1) resolves in some HTTP stacks but has no dots here.
+      if (/^\d+$/.test(h)) return false;
     }
-    // Block common internal hostnames
+    // Block common internal hostnames and suffixes
     const blocked = ["localhost", "metadata.google.internal", "169.254.169.254"];
     if (blocked.includes(h)) return false;
+    if (h.endsWith(".internal") || h.endsWith(".local") || h.endsWith(".localhost")) return false;
     return true;
   } catch {
     return false;

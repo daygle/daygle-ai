@@ -141,7 +141,12 @@ export async function changedFiles(dir: string): Promise<string[]> {
   const out = await runRaw("git", ["status", "--porcelain"], dir);
   return out
     .split("\n")
-    .map((line) => line.slice(3).trim())
+    .map((line) => {
+      const entry = line.slice(3).trim();
+      // Rename entries look like "old -> new"; the new path is what matters.
+      const arrow = entry.indexOf(" -> ");
+      return arrow >= 0 ? entry.slice(arrow + 4) : entry;
+    })
     .filter(Boolean);
 }
 

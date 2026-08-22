@@ -49,6 +49,8 @@ export interface ChatSession {
   title?: string;
   /** Chat provider — when set, used instead of the raw Ollama fetch. */
   provider?: ChatProvider;
+  /** Timestamp the workspace payload was last computed, for client polling. */
+  lastWorkspaceUpdate?: number;
 }
 
 export type ChatEvent =
@@ -411,6 +413,11 @@ export async function* streamChat(
       let res: Response | undefined;
       let lastError = "";
       for (const tryModel of modelsToTry) {
+        if (tryModel !== session.model) {
+          // Announce the fallback BEFORE attempting it, so the user sees why
+          // the response is delayed rather than a notice after the fact.
+          yield { type: "status", message: `Primary model failed, trying ${tryModel}…` };
+        }
         const attempt = await fetch(`${session.ollamaUrl.replace(/\/+$/, "")}/api/chat`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -426,9 +433,6 @@ export async function* streamChat(
         });
         if (attempt.ok) { res = attempt; break; }
         lastError = await attempt.text().catch(() => "");
-        if (tryModel !== session.model) {
-          yield { type: "status", message: `Primary model failed, trying ${tryModel}…` };
-        }
       }
       if (!res) {
         yield { type: "error", message: `Ollama failed: ${lastError.slice(0, 300)}` };

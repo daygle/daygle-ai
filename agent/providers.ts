@@ -125,23 +125,18 @@ class OllamaProvider implements ChatProvider {
   ): Promise<ChatCompletionResult> {
     const { temperature, numCtx, signal, onDelta } = options;
     let res: Response;
-    try {
-      res = await fetch(this.url("/api/chat"), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model,
-          messages,
-          tools,
-          stream: true,
-          options: { temperature, num_ctx: numCtx },
-        }),
-        signal,
-      });
-    } catch (err) {
-      if (signal?.aborted) throw err;
-      throw err;
-    }
+    res = await fetch(this.url("/api/chat"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model,
+        messages,
+        tools,
+        stream: true,
+        options: { temperature, num_ctx: numCtx },
+      }),
+      signal,
+    });
 
     if (!res.ok) {
       const text = await res.text().catch(() => "");
@@ -171,38 +166,46 @@ class OllamaProvider implements ChatProvider {
     const decoder = new TextDecoder();
     let content = "";
     const toolCallMap = new Map<number, ParsedToolCall>();
+    // NDJSON lines can span network chunks; buffer the remainder so a JSON
+    // object split across reads isn't silently dropped.
+    let buffer = "";
+
+    const handleLine = (line: string) => {
+      if (!line.trim()) return;
+      try {
+        const obj = JSON.parse(line) as { message?: { content?: string; tool_calls?: unknown[] }; done?: boolean };
+        if (obj.message?.content) {
+          content += obj.message.content;
+          onDelta?.(obj.message.content);
+        }
+        if (obj.message?.tool_calls) {
+          for (const raw of obj.message.tool_calls) {
+            const call = raw as any;
+            const idx = call.index ?? 0;
+            if (!toolCallMap.has(idx)) {
+              toolCallMap.set(idx, { id: call.id, function: { name: call.function?.name ?? "", arguments: {} } });
+            }
+            const existing = toolCallMap.get(idx)!;
+            if (call.function?.name) existing.function.name = call.function.name;
+            if (call.function?.arguments) {
+              const argStr = typeof call.function.arguments === "string" ? call.function.arguments : JSON.stringify(call.function.arguments);
+              const prev = typeof existing.function.arguments === "object" ? JSON.stringify(existing.function.arguments) : "";
+              try { existing.function.arguments = JSON.parse(prev + argStr); } catch { /* partial JSON */ }
+            }
+          }
+        }
+      } catch { /* skip malformed lines */ }
+    };
 
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
-      const chunk = decoder.decode(value, { stream: true });
-      for (const line of chunk.split("\n")) {
-        if (!line.trim()) continue;
-        try {
-          const obj = JSON.parse(line) as { message?: { content?: string; tool_calls?: unknown[] }; done?: boolean };
-          if (obj.message?.content) {
-            content += obj.message.content;
-            onDelta?.(obj.message.content);
-          }
-          if (obj.message?.tool_calls) {
-            for (const raw of obj.message.tool_calls) {
-              const call = raw as any;
-              const idx = call.index ?? 0;
-              if (!toolCallMap.has(idx)) {
-                toolCallMap.set(idx, { id: call.id, function: { name: call.function?.name ?? "", arguments: {} } });
-              }
-              const existing = toolCallMap.get(idx)!;
-              if (call.function?.name) existing.function.name = call.function.name;
-              if (call.function?.arguments) {
-                const argStr = typeof call.function.arguments === "string" ? call.function.arguments : JSON.stringify(call.function.arguments);
-                const prev = typeof existing.function.arguments === "object" ? JSON.stringify(existing.function.arguments) : "";
-                try { existing.function.arguments = JSON.parse(prev + argStr); } catch { /* partial JSON */ }
-              }
-            }
-          }
-        } catch { /* skip malformed lines */ }
-      }
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+      for (const line of lines) handleLine(line);
     }
+    if (buffer.trim()) handleLine(buffer);
 
     return { content, toolCalls: [...toolCallMap.values()] };
   }
@@ -293,17 +296,12 @@ class OpenAICompatibleProvider implements ChatProvider {
       }));
     }
 
-    let res: Response;
-    try {
-      res = await fetch(this.url("/chat/completions"), {
-        method: "POST",
-        headers: this.headers(),
-        body: JSON.stringify(body),
-        signal,
-      });
-    } catch (err) {
-      throw err;
-    }
+    const res = await fetch(this.url("/chat/completions"), {
+      method: "POST",
+      headers: this.headers(),
+      body: JSON.stringify(body),
+      signal,
+    });
 
     if (!res.ok) {
       const text = await res.text().catch(() => "");
@@ -328,12 +326,11 @@ class OpenAICompatibleProvider implements ChatProvider {
     let content = "";
     const toolCallMap = new Map<number, ParsedToolCall>();
     const toolArgBuffers = new Map<number, string>();
+    // SSE/NDJSON lines can span network chunks; buffer the remainder so an
+    // event split across reads isn't dropped mid-stream.
+    let buffer = "";
 
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      const chunk = decoder.decode(value, { stream: true });
-
+    const handleChunk = (chunk: string) => {
       // SSE format: lines starting with "data: "
       // NDJSON format: raw JSON lines
       const lines = chunk.includes("data: ")
@@ -367,11 +364,26 @@ class OpenAICompatibleProvider implements ChatProvider {
           }
         } catch { /* skip malformed lines */ }
       }
-    }
+    };
 
-    // Finalize tool call arguments (they arrive as partial JSON strings)
-    const toolCalls: ParsedToolCall[] = [...toolCallMap.values()].map((tc, i) => {
-      const rawJson = toolArgBuffers.get(i);
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      // Keep the last (possibly incomplete) line buffered. When the provider
+      // uses SSE framing we can't know if it's complete, so hold it back; a
+      // trailing flush below handles providers that end without a newline.
+      buffer = lines.pop() ?? "";
+      for (const line of lines) handleChunk(line);
+    }
+    if (buffer.trim()) handleChunk(buffer);
+
+    // Finalize tool call arguments (they arrive as partial JSON strings).
+    // Look up each argument buffer by its own tool-call index — array position
+    // would desync when a provider skips index 0 (e.g. parallel tool calls).
+    const toolCalls: ParsedToolCall[] = [...toolCallMap.entries()].map(([idx, tc]) => {
+      const rawJson = toolArgBuffers.get(idx);
       let args: Record<string, unknown> = {};
       if (rawJson) {
         try { args = JSON.parse(rawJson); } catch { /* partial */ }

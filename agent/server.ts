@@ -112,15 +112,13 @@ async function detectCoverageCommand(root: string, sandbox?: SandboxRunner | nul
     { check: "cargo --version", cmd: "cargo tarpaulin --skip-clean" },
   ];
   for (const candidate of candidates) {
+    // Coverage detection requires executing the tool's version check, which
+    // is only safe inside a sandbox. Without one, skip detection entirely —
+    // probing the host or guessing from file names would be unreliable.
+    if (!sandbox) return null;
     try {
-      if (sandbox) {
-        const result = await sandbox.runCapture(root, candidate.check, { timeoutMs: 10_000 });
-        if (result.code === 0) return candidate.cmd;
-      } else {
-        // Host fallback: just check if the file exists
-        const tool = candidate.check.split(" ")[0];
-        if (tool && fs.existsSync(path.join(root, tool))) return candidate.cmd;
-      }
+      const result = await sandbox.runCapture(root, candidate.check, { timeoutMs: 10_000 });
+      if (result.code === 0) return candidate.cmd;
     } catch { /* skip */ }
   }
   return null;
@@ -413,6 +411,24 @@ chatSweeper.unref?.();
 
 const historyStore = new HistoryStore(path.join(os.homedir(), ".daygle", "history"));
 const chatHistoryStore = new ChatHistoryStore(path.join(os.homedir(), ".daygle", "chat-history"));
+
+// ---- Saved repositories (module scope: stateless helpers, defined once) ----
+const REPOS_PATH = path.join(os.homedir(), ".daygle", "saved-repos.json");
+
+function loadSavedRepos(): Array<{ id: string; url: string; name: string; addedAt: number }> {
+  try {
+    return JSON.parse(fs.readFileSync(REPOS_PATH, "utf8")) as Array<{ id: string; url: string; name: string; addedAt: number }>;
+  } catch {
+    return [];
+  }
+}
+
+function saveSavedRepos(repos: Array<{ id: string; url: string; name: string; addedAt: number }>): void {
+  try {
+    fs.mkdirSync(path.dirname(REPOS_PATH), { recursive: true, mode: 0o700 });
+    fs.writeFileSync(REPOS_PATH, JSON.stringify(repos, null, 2), { encoding: "utf8", mode: 0o600 });
+  } catch { /* best effort */ }
+}
 
 function persistChat(session: ChatSession): void {
   const messages = session.messages.length > MAX_CHAT_HISTORY_MESSAGES
@@ -1041,23 +1057,6 @@ const server = http.createServer((req, res) => {
     }
 
     // ---- Saved repositories ----
-    const REPOS_PATH = path.join(os.homedir(), ".daygle", "saved-repos.json");
-
-    function loadSavedRepos(): Array<{ id: string; url: string; name: string; addedAt: number }> {
-      try {
-        return JSON.parse(fs.readFileSync(REPOS_PATH, "utf8")) as any;
-      } catch {
-        return [];
-      }
-    }
-
-    function saveSavedRepos(repos: Array<{ id: string; url: string; name: string; addedAt: number }>): void {
-      try {
-        fs.mkdirSync(path.dirname(REPOS_PATH), { recursive: true, mode: 0o700 });
-        fs.writeFileSync(REPOS_PATH, JSON.stringify(repos, null, 2), { encoding: "utf8", mode: 0o600 });
-      } catch { /* best effort */ }
-    }
-
     if (req.method === "GET" && url.pathname === "/api/repos") {
       sendJson(res, 200, { repos: loadSavedRepos() });
       return;
@@ -1293,9 +1292,8 @@ const server = http.createServer((req, res) => {
         pruneChatCheckpoints(checkpoints);
         // Include a lastModified timestamp so the client can skip re-rendering
         // when nothing changed since the last poll.
-        const prevUpdate = (session as unknown as { lastWorkspaceUpdate?: number }).lastWorkspaceUpdate;
-        const lastModified = changed.length > 0 ? Date.now() : (prevUpdate ?? Date.now());
-        (session as unknown as { lastWorkspaceUpdate: number }).lastWorkspaceUpdate = lastModified;
+        const lastModified = changed.length > 0 ? Date.now() : (session.lastWorkspaceUpdate ?? Date.now());
+        session.lastWorkspaceUpdate = lastModified;
         sendJson(res, 200, {
           files,
           changedFiles: changed,
@@ -1566,7 +1564,7 @@ const server = http.createServer((req, res) => {
       // Detect a fallback model for automatic retry on failure (Ollama only).
       if (!session.provider) {
         try {
-          const modelsRes = await fetch(`${ollamaUrl.replace(/\/+$/, "")}/api/tags`);
+          const modelsRes = await fetch(`${ollamaUrl.replace(/\/+$/, "")}/api/tags`, { signal: AbortSignal.timeout(3_000) });
           if (modelsRes.ok) {
             const modelsData = (await modelsRes.json()) as { models?: Array<{ name: string }> };
             const modelNames = (modelsData.models ?? []).map((m) => m.name);
