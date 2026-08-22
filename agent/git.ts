@@ -97,6 +97,12 @@ export async function createBranch(dir: string, branch: string): Promise<void> {
 const MAX_STAT = 4_000;
 const MAX_DIFF = 100_000;
 
+interface IndexEntry {
+  mode: string;
+  hash: string;
+  path: string;
+}
+
 export interface WorkingTreeCheckpoint {
   head: string;
   directory: string;
@@ -111,6 +117,9 @@ export interface WorkingTreeCheckpoint {
   trackedFiles?: string[];
   trackedDeletedFiles?: string[];
   trackedSnapshotComplete?: boolean;
+  /** Staged index entries and deletions for patch-free index restore. */
+  indexModifications?: IndexEntry[];
+  indexDeletions?: string[];
 }
 
 function truncate(text: string, max: number): string {
@@ -258,7 +267,30 @@ export async function createCheckpoint(dir: string, directory: string): Promise<
     fs.cpSync(source, destination, { verbatimSymlinks: true, force: true });
     ignoredBytes += stat.size;
   }
+  // Capture staged index state for patch-free restore.
+  const rawStaged = await runRaw("git", ["diff", "cached", "--raw"], dir);
+  const indexModifications: IndexEntry[] = [];
+  const indexDeletions: string[] = [];
+  // Format per line: :old_mode new_mode old_hash new_hash status_score\tpath
+  for (const line of rawStaged.split("\n")) {
+    if (!line.startsWith(":")) continue;
+    const tabIdx = line.lastIndexOf("\t");
+    const meta = tabIdx >= 0 ? line.slice(1, tabIdx) : line.slice(1);
+    const filePath = tabIdx >= 0 ? line.slice(tabIdx + 1) : "";
+    const parts = meta.split(/\s+/);
+    // parts: [old_mode, new_mode, old_hash, new_hash, status_score]
+    const newHash = parts[3] ?? "";
+    const status = parts[4] ?? "";
+    const code = status.charAt(0);
+    if (code === "D") {
+      indexDeletions.push(filePath.replaceAll("\\", "/"));
+    } else if (newHash && newHash !== "0000000000000000000000000000000000000000") {
+      const mode = parts[1] ?? "100644";
+      indexModifications.push({ mode, hash: newHash, path: filePath.replaceAll("\\", "/") });
+    }
+  }
   fs.writeFileSync(path.join(directory, "ignored.json"), JSON.stringify(ignored), "utf8");
+  fs.writeFileSync(path.join(directory, "index.json"), JSON.stringify({ modifications: indexModifications, deletions: indexDeletions }), "utf8");
   return {
     head,
     directory,
@@ -270,6 +302,8 @@ export async function createCheckpoint(dir: string, directory: string): Promise<
     trackedFiles,
     trackedDeletedFiles,
     trackedSnapshotComplete,
+    indexModifications,
+    indexDeletions,
   };
 }
 
@@ -301,21 +335,25 @@ export async function restoreCheckpoint(dir: string, checkpoint: WorkingTreeChec
   const trackedFiles = checkpoint.trackedFiles ?? [];
   const trackedDeletedFiles = checkpoint.trackedDeletedFiles ?? [];
 
-  const stagedPatch = checkpoint.stagedPatchPath ?? path.join(checkpoint.directory, "staged.patch");
-  const unstagedPatch = checkpoint.unstagedPatchPath ?? path.join(checkpoint.directory, "unstaged.patch");
-  if (exactWorktree) {
-    // Restore only the index from the staged patch. The exact worktree
-    // snapshot below restores file bytes directly, bypassing Git's
-    // binary-patch format which varies across Git versions.
-    if (fs.existsSync(stagedPatch) && fs.statSync(stagedPatch).size > 0) {
-      await run("git", ["apply", "--binary", "--cached", stagedPatch], dir);
+  // Restore index state — prefer patch-free index-info when available.
+  const indexData = checkpoint.indexModifications
+    ? { modifications: checkpoint.indexModifications, deletions: checkpoint.indexDeletions ?? [] }
+    : JSON.parse(fs.readFileSync(path.join(checkpoint.directory, "index.json"), "utf8") ?? "null") as { modifications: IndexEntry[]; deletions: string[] } | null;
+  if (indexData) {
+    for (const filePath of indexData.deletions) {
+      await run("git", ["rm", "--cached", "--quiet", "--", filePath], dir).catch(() => {});
+    }
+    for (const entry of indexData.modifications) {
+      await run("git", ["update-index", "--cacheinfo", `${entry.mode},${entry.hash},${entry.path}`], dir);
     }
   } else {
+    // Legacy checkpoint: fall back to binary patches.
+    const stagedPatch = checkpoint.stagedPatchPath ?? path.join(checkpoint.directory, "staged.patch");
+    const unstagedPatch = checkpoint.unstagedPatchPath ?? path.join(checkpoint.directory, "unstaged.patch");
     if (fs.existsSync(stagedPatch) && fs.statSync(stagedPatch).size > 0) {
       await run("git", ["apply", "--binary", "--cached", stagedPatch], dir);
       await run("git", ["apply", "--binary", stagedPatch], dir);
     } else {
-      // Compatibility with checkpoints written by the previous format.
       const legacyPatch = path.join(checkpoint.directory, "working.patch");
       if (fs.existsSync(legacyPatch) && fs.statSync(legacyPatch).size > 0) {
         await run("git", ["apply", "--binary", legacyPatch], dir);
@@ -325,7 +363,7 @@ export async function restoreCheckpoint(dir: string, checkpoint: WorkingTreeChec
       await run("git", ["apply", "--binary", unstagedPatch], dir);
     }
   }
-  // Apply exact worktree snapshot after any patch-based restore.
+  // Apply exact worktree snapshot after any index restore.
   if (exactWorktree) {
     for (const relative of trackedDeletedFiles) {
       fs.rmSync(checkpointRelativePath(dir, relative), { recursive: true, force: true });
@@ -336,6 +374,11 @@ export async function restoreCheckpoint(dir: string, checkpoint: WorkingTreeChec
       const destination = checkpointRelativePath(dir, relative);
       fs.mkdirSync(path.dirname(destination), { recursive: true });
       fs.cpSync(source, destination, { verbatimSymlinks: true, force: true });
+    }
+  } else {
+    const unstagedPatch = checkpoint.unstagedPatchPath ?? path.join(checkpoint.directory, "unstaged.patch");
+    if (fs.existsSync(unstagedPatch) && fs.statSync(unstagedPatch).size > 0) {
+      await run("git", ["apply", "--binary", unstagedPatch], dir);
     }
   }
   const untrackedDir = path.join(checkpoint.directory, "untracked");
