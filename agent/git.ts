@@ -301,13 +301,16 @@ export async function restoreCheckpoint(dir: string, checkpoint: WorkingTreeChec
   const trackedFiles = checkpoint.trackedFiles ?? [];
   const trackedDeletedFiles = checkpoint.trackedDeletedFiles ?? [];
 
+  const stagedPatch = checkpoint.stagedPatchPath ?? path.join(checkpoint.directory, "staged.patch");
+  const unstagedPatch = checkpoint.unstagedPatchPath ?? path.join(checkpoint.directory, "unstaged.patch");
   if (exactWorktree) {
-    // Exact worktree snapshot exists: skip patch application entirely and
-    // restore file bytes directly. This avoids Git binary-patch format
-    // incompatibilities across Git versions.
+    // Restore only the index from the staged patch. The exact worktree
+    // snapshot below restores file bytes directly, bypassing Git's
+    // binary-patch format which varies across Git versions.
+    if (fs.existsSync(stagedPatch) && fs.statSync(stagedPatch).size > 0) {
+      await run("git", ["apply", "--binary", "--cached", stagedPatch], dir);
+    }
   } else {
-    const stagedPatch = checkpoint.stagedPatchPath ?? path.join(checkpoint.directory, "staged.patch");
-    const unstagedPatch = checkpoint.unstagedPatchPath ?? path.join(checkpoint.directory, "unstaged.patch");
     if (fs.existsSync(stagedPatch) && fs.statSync(stagedPatch).size > 0) {
       await run("git", ["apply", "--binary", "--cached", stagedPatch], dir);
       await run("git", ["apply", "--binary", stagedPatch], dir);
