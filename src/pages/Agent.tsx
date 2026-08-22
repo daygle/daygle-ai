@@ -979,9 +979,15 @@ export function AgentPage() {
 
   const [repoUrl, setRepoUrl] = useState("");
   const [sessionRepo, setSessionRepo] = useState("");  const [savedRepos, setSavedRepos] = useState<SavedRepo[]>([]);
-  const [providerKind, setProviderKind] = useState<"ollama" | "openai">("ollama");
-  const [cloudBaseUrl, setCloudBaseUrl] = useState("");
-  const [cloudApiKey, setCloudApiKey] = useState("");
+  const [providerKind, setProviderKind] = useState<"ollama" | "openai">(() => {
+    try { return (JSON.parse(localStorage.getItem("daygle.cloudProvider") ?? "{}") as any).kind || "ollama"; } catch { return "ollama"; }
+  });
+  const [cloudBaseUrl, setCloudBaseUrl] = useState(() => {
+    try { return (JSON.parse(localStorage.getItem("daygle.cloudProvider") ?? "{}") as any).baseUrl || ""; } catch { return ""; }
+  });
+  const [cloudApiKey, setCloudApiKey] = useState(() => {
+    try { return (JSON.parse(localStorage.getItem("daygle.cloudProvider") ?? "{}") as any).apiKey || ""; } catch { return ""; }
+  });
 
   const [models, setModels] = useState<string[]>([]);
   const [model, setModel] = useState("");
@@ -2218,6 +2224,9 @@ export function AgentPage() {
         <span className="hidden text-sm font-medium sm:inline">Agent</span>
         <span className="hidden max-w-xs truncate text-xs text-muted-foreground sm:inline">
           {activeChatTitle}
+        </span>
+        <span className="hidden rounded-full border border-border px-2 py-0.5 text-[10px] text-muted-foreground sm:inline" title={providerKind === "openai" ? `Cloud: ${cloudBaseUrl || "(no URL set)"}` : "Local Ollama"}>
+          {providerKind === "openai" ? "☁ Cloud" : "◉ Local"}
         </span>
         {sessionRepo ? (
           <>

@@ -373,6 +373,8 @@ Use the local Ollama server and give the agent a GitHub token.
         </div>
       </section>
 
+      <CloudProviderSection />
+
       <section className="space-y-4">
         <div className="flex items-center gap-2.5">
           <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-accent/15 text-accent">
@@ -486,5 +488,109 @@ function NumField({
       />
       {hint && <p className="text-[11px] text-muted-foreground">{hint}</p>}
     </div>
+  );
+}
+
+const CLOUD_PROVIDER_STORAGE_KEY = "daygle.cloudProvider";
+
+function loadCloudProvider(): { kind: string; baseUrl: string; apiKey: string } {
+  try {
+    return JSON.parse(localStorage.getItem(CLOUD_PROVIDER_STORAGE_KEY) ?? "{}") as any;
+  } catch {
+    return { kind: "ollama", baseUrl: "", apiKey: "" };
+  }
+}
+
+function saveCloudProvider(config: { kind: string; baseUrl: string; apiKey: string }): void {
+  try {
+    localStorage.setItem(CLOUD_PROVIDER_STORAGE_KEY, JSON.stringify(config));
+  } catch { /* ignore */ }
+}
+
+function CloudProviderSection() {
+  const [kind, setKind] = useState(() => loadCloudProvider().kind || "ollama");
+  const [baseUrl, setBaseUrl] = useState(() => loadCloudProvider().baseUrl || "");
+  const [apiKey, setApiKey] = useState(() => loadCloudProvider().apiKey || "");
+  const [saved, setSaved] = useState(false);
+
+  function handleSave() {
+    saveCloudProvider({ kind, baseUrl, apiKey });
+    setSaved(true);
+    setTimeout(() => setSaved(false), 1500);
+  }
+
+  return (
+    <section className="space-y-4">
+      <div className="flex items-center gap-2.5">
+        <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-accent/15 text-accent">
+          <Server className="h-4 w-4" />
+        </div>
+        <h2 className="text-sm font-semibold">Cloud Provider</h2>
+      </div>
+
+      <div className="rounded-2xl border border-border bg-card p-5">
+        <p className="text-xs text-muted-foreground">
+          Use an OpenAI-compatible API (Hugging Face, Together AI, Groq, DeepSeek, etc.) as an alternative to local Ollama.
+          These settings are stored in the browser and used as the default for new chats.
+        </p>
+
+        <div className="mt-4 flex gap-1 rounded-lg border border-border bg-background p-1">
+          <button
+            type="button"
+            onClick={() => setKind("ollama")}
+            className={`flex-1 rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+              kind === "ollama"
+                ? "bg-accent/15 text-accent"
+                : "text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            Local (Ollama)
+          </button>
+          <button
+            type="button"
+            onClick={() => setKind("openai")}
+            className={`flex-1 rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+              kind === "openai"
+                ? "bg-accent/15 text-accent"
+                : "text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            Cloud (OpenAI-compatible)
+          </button>
+        </div>
+
+        {kind === "openai" && (
+          <div className="mt-4 space-y-3">
+            <div className="space-y-1">
+              <label className="text-xs font-medium text-muted-foreground">Base URL</label>
+              <Input
+                value={baseUrl}
+                onChange={(e) => setBaseUrl(e.target.value)}
+                placeholder="https://api.together.xyz/v1"
+                className="font-mono"
+              />
+              <p className="text-[11px] text-muted-foreground">
+                Common endpoints: Together AI (<code>api.together.xyz/v1</code>), Groq (<code>api.groq.com/openai/v1</code>), DeepSeek (<code>api.deepseek.com/v1</code>), Hugging Face (<code>api-inference.huggingface.co/v1</code>)
+              </p>
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs font-medium text-muted-foreground">API Key</label>
+              <Input
+                type="password"
+                value={apiKey}
+                onChange={(e) => setApiKey(e.target.value)}
+                placeholder="Optional for some providers"
+                className="font-mono"
+              />
+            </div>
+          </div>
+        )}
+
+        <div className="mt-4 flex items-center gap-2">
+          <Button onClick={handleSave}>Save</Button>
+          {saved && <span className="text-xs text-accent">Saved</span>}
+        </div>
+      </div>
+    </section>
   );
 }
