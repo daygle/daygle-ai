@@ -529,10 +529,21 @@ function FileTreeRow({
   );
 }
 
+function collectDirPaths(nodes: FileNode[]): string[] {
+  const paths: string[] = [];
+  for (const node of nodes) {
+    if (node.isDir) {
+      paths.push(node.path);
+      paths.push(...collectDirPaths(node.children));
+    }
+  }
+  return paths;
+}
+
 function FileTree({ files }: { files: string[] }) {
-  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const tree = useRef<FileNode[]>([]);
   tree.current = buildFileTree(files);
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set(collectDirPaths(tree.current)));
 
   const toggleDir = useCallback((path: string) => {
     setCollapsed((prev) => {
