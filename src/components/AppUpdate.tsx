@@ -19,6 +19,7 @@ export function AppUpdate({ serverUrl }: AppUpdateProps) {
   const [updateMessage, setUpdateMessage] = useState<string | null>(null);
   const [progress, setProgress] = useState<AppUpdateProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [lastChecked, setLastChecked] = useState<Date | null>(null);
 
   // Check for updates on mount
   useEffect(() => {
@@ -32,6 +33,7 @@ export function AppUpdate({ serverUrl }: AppUpdateProps) {
     try {
       const info = await checkAppUpdate(serverUrl);
       setUpdateInfo(info);
+      setLastChecked(new Date());
       if (info.error) setError(info.error);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to check for updates");
@@ -121,6 +123,11 @@ export function AppUpdate({ serverUrl }: AppUpdateProps) {
           {checking ? "Checking..." : "Check for updates"}
         </button>
       </div>
+      {lastChecked && !checking && (
+        <p className="text-[10px] text-muted-foreground mb-2">
+          Last checked: {lastChecked.toLocaleTimeString()}
+        </p>
+      )}
 
       {error && (
         <div className="text-sm text-red-500 mb-3">{error}</div>
