@@ -296,25 +296,33 @@ export async function restoreCheckpoint(dir: string, checkpoint: WorkingTreeChec
     }
   }
 
-  const stagedPatch = checkpoint.stagedPatchPath ?? path.join(checkpoint.directory, "staged.patch");
-  const unstagedPatch = checkpoint.unstagedPatchPath ?? path.join(checkpoint.directory, "unstaged.patch");
   const exactWorktree = checkpoint.trackedSnapshotComplete === true;
-  if (fs.existsSync(stagedPatch) && fs.statSync(stagedPatch).size > 0) {
-    // Apply the index independently. When no exact worktree snapshot exists,
-    // also apply the staged patch to the checkout so the unstaged patch has
-    // the correct staged content as its base.
-    await run("git", ["apply", "--binary", "--cached", stagedPatch], dir);
-    if (!exactWorktree) await run("git", ["apply", "--binary", stagedPatch], dir);
-  } else {
-    // Compatibility with checkpoints written by the previous format.
-    const legacyPatch = path.join(checkpoint.directory, "working.patch");
-    if (fs.existsSync(legacyPatch) && fs.statSync(legacyPatch).size > 0) {
-      await run("git", ["apply", "--binary", legacyPatch], dir);
-    }
-  }
   const trackedSnapshotDirectory = checkpoint.trackedSnapshotDirectory ?? path.join(checkpoint.directory, "tracked");
   const trackedFiles = checkpoint.trackedFiles ?? [];
   const trackedDeletedFiles = checkpoint.trackedDeletedFiles ?? [];
+
+  if (exactWorktree) {
+    // Exact worktree snapshot exists: skip patch application entirely and
+    // restore file bytes directly. This avoids Git binary-patch format
+    // incompatibilities across Git versions.
+  } else {
+    const stagedPatch = checkpoint.stagedPatchPath ?? path.join(checkpoint.directory, "staged.patch");
+    const unstagedPatch = checkpoint.unstagedPatchPath ?? path.join(checkpoint.directory, "unstaged.patch");
+    if (fs.existsSync(stagedPatch) && fs.statSync(stagedPatch).size > 0) {
+      await run("git", ["apply", "--binary", "--cached", stagedPatch], dir);
+      await run("git", ["apply", "--binary", stagedPatch], dir);
+    } else {
+      // Compatibility with checkpoints written by the previous format.
+      const legacyPatch = path.join(checkpoint.directory, "working.patch");
+      if (fs.existsSync(legacyPatch) && fs.statSync(legacyPatch).size > 0) {
+        await run("git", ["apply", "--binary", legacyPatch], dir);
+      }
+    }
+    if (fs.existsSync(unstagedPatch) && fs.statSync(unstagedPatch).size > 0) {
+      await run("git", ["apply", "--binary", unstagedPatch], dir);
+    }
+  }
+  // Apply exact worktree snapshot after any patch-based restore.
   if (exactWorktree) {
     for (const relative of trackedDeletedFiles) {
       fs.rmSync(checkpointRelativePath(dir, relative), { recursive: true, force: true });
@@ -326,8 +334,6 @@ export async function restoreCheckpoint(dir: string, checkpoint: WorkingTreeChec
       fs.mkdirSync(path.dirname(destination), { recursive: true });
       fs.cpSync(source, destination, { verbatimSymlinks: true, force: true });
     }
-  } else if (fs.existsSync(unstagedPatch) && fs.statSync(unstagedPatch).size > 0) {
-    await run("git", ["apply", "--binary", unstagedPatch], dir);
   }
   const untrackedDir = path.join(checkpoint.directory, "untracked");
   if (fs.existsSync(untrackedDir)) {
