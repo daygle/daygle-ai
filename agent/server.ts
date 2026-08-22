@@ -1021,11 +1021,17 @@ const server = http.createServer((req, res) => {
           : filesResult.split(/\r?\n/).filter(Boolean);
         const checkpoints = loadChatCheckpoints(sessionId);
         pruneChatCheckpoints(checkpoints);
+        // Include a lastModified timestamp so the client can skip re-rendering
+        // when nothing changed since the last poll.
+        const prevUpdate = (session as unknown as { lastWorkspaceUpdate?: number }).lastWorkspaceUpdate;
+        const lastModified = changed.length > 0 ? Date.now() : (prevUpdate ?? Date.now());
+        (session as unknown as { lastWorkspaceUpdate: number }).lastWorkspaceUpdate = lastModified;
         sendJson(res, 200, {
           files,
           changedFiles: changed,
           stat,
           diff,
+          lastModified,
           checkpoints: checkpoints.map(({ id, createdAt }) => ({ id, createdAt })),
         });
       } catch (err) {
@@ -1271,6 +1277,16 @@ const server = http.createServer((req, res) => {
         lastActivity: Date.now(),
         options: body.options,
       };
+      // Detect a fallback model for automatic retry on failure.
+      try {
+        const modelsRes = await fetch(`${ollamaUrl.replace(/\/+$/, "")}/api/tags`);
+        if (modelsRes.ok) {
+          const modelsData = (await modelsRes.json()) as { models?: Array<{ name: string }> };
+          const modelNames = (modelsData.models ?? []).map((m) => m.name);
+          const fallback = modelNames.find((name) => name !== session.model && !name.includes("embedding"));
+          if (fallback) session.fallbackModel = fallback;
+        }
+      } catch { /* fallback detection is best-effort */ }
       chatSessions.set(id, session);
       sendJson(res, 200, { id, repoUrl: session.repoUrl });
       return;
@@ -1422,6 +1438,16 @@ const server = http.createServer((req, res) => {
               pruneChatCheckpoints(records);
             } catch {
               // checkpoint is best-effort
+            }
+            // Emit real-time workspace update so the UI sees changes immediately.
+            try {
+              const filesResult = await runTool(session.root, "list_files", {});
+              const { diff } = await workingDiff(session.root);
+              const files = filesResult === "(empty)" ? [] : filesResult.split(/\r?\n/).filter(Boolean);
+              const changed = await changedFiles(session.root);
+              res.write(`data: ${JSON.stringify({ type: "workspace_update", files, changedFiles: changed, diff })}\n\n`);
+            } catch {
+              // workspace update is best-effort
             }
           }
         }

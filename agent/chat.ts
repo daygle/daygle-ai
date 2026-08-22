@@ -42,6 +42,8 @@ export interface ChatSession {
   options?: GenOptions;
   /** True while a generation is streaming, so a reconnecting client can resume. */
   busy?: boolean;
+  /** Fallback model used when the primary model fails. */
+  fallbackModel?: string;
 }
 
 export type ChatEvent =
@@ -59,6 +61,7 @@ export type ChatEvent =
   | { type: "qa"; command: string; output: string; passed: boolean; skipped?: boolean }
   | { type: "review"; verdict: "approved" | "changes_requested"; text: string }
   | { type: "verify_done" }
+  | { type: "workspace_update"; files: string[]; changedFiles: string[]; diff: string }
   | { type: "error"; message: string };
 
 /**
@@ -365,27 +368,36 @@ export async function* streamChat(
 
     yield { type: "status", message: `Thinking… (Step ${step + 1})` };
 
-    const res = await fetch(`${session.ollamaUrl.replace(/\/+$/, "")}/api/chat`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: session.model,
-        messages: compactMessages(session.messages, Math.max(32_000, Math.min(MAX_CHAT_CONTEXT_CHARS, genOptions.num_ctx * 3))).map((message) => {
-          const { imageMimeTypes, ...ollamaMessage } = message;
-          void imageMimeTypes;
-          return ollamaMessage;
+    // Try the primary model, then fall back if available.
+    const modelsToTry = [session.model, session.fallbackModel].filter(Boolean) as string[];
+    let res: Response | undefined;
+    let lastError = "";
+    for (const tryModel of modelsToTry) {
+      const attempt = await fetch(`${session.ollamaUrl.replace(/\/+$/, "")}/api/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: tryModel,
+          messages: compactMessages(session.messages, Math.max(32_000, Math.min(MAX_CHAT_CONTEXT_CHARS, genOptions.num_ctx * 3))).map((message) => {
+            const { imageMimeTypes, ...ollamaMessage } = message;
+            void imageMimeTypes;
+            return ollamaMessage;
+          }),
+          tools: hasRepo ? TOOL_DEFINITIONS : undefined,
+          stream: true,
+          keep_alive: normalizeKeepAlive(opts.keep_alive),
+          options: genOptions,
         }),
-        tools: hasRepo ? TOOL_DEFINITIONS : undefined,
-        stream: true,
-        keep_alive: normalizeKeepAlive(opts.keep_alive),
-        options: genOptions,
-      }),
-      signal,
-    });
-
-    if (!res.ok) {
-      const text = await res.text().catch(() => "");
-      yield { type: "error", message: `Ollama failed (${res.status}): ${text.slice(0, 300)}` };
+        signal,
+      });
+      if (attempt.ok) { res = attempt; break; }
+      lastError = await attempt.text().catch(() => "");
+      if (tryModel !== session.model) {
+        yield { type: "status", message: `Primary model failed, trying ${tryModel}…` };
+      }
+    }
+    if (!res) {
+      yield { type: "error", message: `Ollama failed: ${lastError.slice(0, 300)}` };
       return;
     }
 

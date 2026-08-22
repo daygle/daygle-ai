@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import type { SandboxRunner } from "./sandbox";
 
@@ -244,6 +245,22 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
           command: { type: "string", description: "Shell command to run." },
         },
         required: ["command"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "create_pr",
+      description: "Commit all changes, push the branch, and open a pull request on GitHub. Requires the GitHub CLI (gh) to be authenticated.",
+      parameters: {
+        type: "object",
+        properties: {
+          title: { type: "string", description: "PR title." },
+          body: { type: "string", description: "PR description (markdown)." },
+          base: { type: "string", description: "Base branch (default: main)." },
+        },
+        required: ["title", "body"],
       },
     },
   },
@@ -657,10 +674,34 @@ interface EmbeddingDocument {
 }
 
 const EMBEDDING_CACHE = new Map<string, { signature: string; documents: EmbeddingDocument[] }>();
+const EMBEDDING_CACHE_DIR = path.join(os.homedir(), ".daygle", "embeddings");
 const EMBEDDING_CHUNK_LINES = 80;
 const MAX_EMBEDDING_DOCUMENTS = 512;
 const EMBEDDING_MODEL = process.env.DAYGLE_EMBED_MODEL ?? "nomic-embed-text";
 const EMBEDDING_URL = process.env.DAYGLE_OLLAMA_URL ?? "http://127.0.0.1:11434";
+
+/** Load a previously-persisted embedding cache for the given root. */
+function loadEmbeddingCache(root: string): void {
+  const cacheKey = root.replace(/[^a-z0-9]/gi, "_").slice(0, 80);
+  const cachePath = path.join(EMBEDDING_CACHE_DIR, `${cacheKey}.json`);
+  try {
+    const data = JSON.parse(fs.readFileSync(cachePath, "utf8")) as { signature: string; documents: EmbeddingDocument[] };
+    if (data.signature && Array.isArray(data.documents)) {
+      EMBEDDING_CACHE.set(root, data);
+    }
+  } catch { /* cache miss */ }
+}
+
+/** Persist the embedding cache for a root to disk. */
+function saveEmbeddingCache(root: string): void {
+  const cached = EMBEDDING_CACHE.get(root);
+  if (!cached) return;
+  const cacheKey = root.replace(/[^a-z0-9]/gi, "_").slice(0, 80);
+  try {
+    fs.mkdirSync(EMBEDDING_CACHE_DIR, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(path.join(EMBEDDING_CACHE_DIR, `${cacheKey}.json`), JSON.stringify({ signature: cached.signature, documents: cached.documents }), { encoding: "utf8", mode: 0o600 });
+  } catch { /* best effort */ }
+}
 
 function cosineSimilarity(a: number[], b: number[]): number {
   let dot = 0;
@@ -693,7 +734,12 @@ function buildEmbeddingDocuments(root: string, files: string[]): EmbeddingDocume
       return `${file}:missing`;
     }
   }).join("|");
-  const cached = EMBEDDING_CACHE.get(root);
+  // Check in-memory cache first, then try loading from disk.
+  let cached = EMBEDDING_CACHE.get(root);
+  if (!cached) {
+    loadEmbeddingCache(root);
+    cached = EMBEDDING_CACHE.get(root);
+  }
   if (cached?.signature === signature) return cached.documents;
 
   const documents: EmbeddingDocument[] = [];
@@ -715,6 +761,8 @@ function buildEmbeddingDocuments(root: string, files: string[]): EmbeddingDocume
     }
   }
   EMBEDDING_CACHE.set(root, { signature, documents });
+  // Persist to disk so embeddings survive server restarts.
+  saveEmbeddingCache(root);
   return documents;
 }
 
@@ -1044,6 +1092,29 @@ async function runCommand(
   return executeCommand(root, command, signal);
 }
 
+async function createPr(root: string, title: string, body: string, base: string, approve?: CommandApprover): Promise<string> {
+  if (!title.trim()) throw new Error("create_pr: title is required.");
+  if (!body.trim()) throw new Error("create_pr: body is required.");
+  // Commit all changes first.
+  const commitResult = await runCommand(root, "git add -A && git commit -m \"" + title.replace(/"/g, '\\"') + "\"", approve);
+  if (commitResult.includes("nothing to commit")) {
+    return "No changes to commit. Nothing was pushed or opened as a PR.";
+  }
+  // Push the current branch.
+  const branch = (await executeCommand(root, "git branch --show-current", undefined)).trim() || "main";
+  await runCommand(root, `git push -u origin ${branch}`, approve);
+  // Create the PR using gh CLI.
+  const bodyFile = path.join(root, ".daygle-pr-body.md");
+  fs.writeFileSync(bodyFile, body, "utf8");
+  try {
+    const prResult = await executeCommand(root, `gh pr create --base ${base} --head ${branch} --title "${title.replace(/"/g, '\\"')}" --body-file .daygle-pr-body.md`, undefined);
+    const urlMatch = prResult.match(/https:\/\/github\.com\/[^\s]+/);
+    return urlMatch ? `PR created: ${urlMatch[0]}` : `PR created: ${prResult.trim()}`;
+  } finally {
+    try { fs.rmSync(bodyFile, { force: true }); } catch { /* best effort */ }
+  }
+}
+
 export async function runTool(
   root: string,
   name: string,
@@ -1080,6 +1151,8 @@ export async function runTool(
       );
     case "run_command":
       return runCommand(root, String(args.command ?? ""), approve, sandbox, signal, readOnlySandbox);
+    case "create_pr":
+      return createPr(root, String(args.title ?? ""), String(args.body ?? ""), String(args.base ?? "main"), approve);
     default:
       throw new Error(`Unknown tool: ${name}`);
   }
