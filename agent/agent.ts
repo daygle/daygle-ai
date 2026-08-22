@@ -54,6 +54,12 @@ export interface AgentConfig {
   generateTests?: boolean;
   /** Max tool-using steps for the test-generation pass. */
   maxTestGenSteps?: number;
+  /** Hard limit on total tool calls per job (default 500). */
+  maxToolCalls?: number;
+  /** Hard limit on total output bytes from tool results (default 5MB). */
+  maxOutputBytes?: number;
+  /** Hard limit on total bytes written by write_file/str_replace (default 2MB). */
+  maxDiskWriteBytes?: number;
 }
 
 const DEFAULT_MAX_STEPS = 40;
@@ -63,7 +69,9 @@ const MIN_NUM_CTX = 4096;
 const MAX_NUM_CTX = 131072;
 const MAX_MODEL_CONTEXT_CHARS = 60_000;
 const MAX_AGENT_RUNTIME_MS = 30 * 60 * 1000;
-const MAX_TOOL_CALLS_PER_LOOP = 500;
+const DEFAULT_MAX_TOOL_CALLS = 500;
+const DEFAULT_MAX_OUTPUT_BYTES = 5 * 1024 * 1024;
+const DEFAULT_MAX_DISK_WRITE_BYTES = 2 * 1024 * 1024;
 
 function boundedNumCtx(value: number): number {
   return Math.max(MIN_NUM_CTX, Math.min(MAX_NUM_CTX, Math.floor(Number.isFinite(value) ? value : DEFAULT_NUM_CTX)));
@@ -77,20 +85,54 @@ function limitModelContext(text: string): string {
   return `${text.slice(0, head)}\n… (middle omitted; diff limited to ${MAX_MODEL_CONTEXT_CHARS} characters) …\n${text.slice(-tail)}`;
 }
 
+// --- Token counting with Ollama tokenize fallback ---
+let tokenizeEndpoint: string | null | undefined; // undefined = not checked yet
+
+function getTokenizerEndpoint(ollamaUrl: string): string | null {
+  if (tokenizeEndpoint !== undefined) return tokenizeEndpoint;
+  try {
+    const url = new URL(ollamaUrl);
+    if (url.protocol === "http:" && ["127.0.0.1", "localhost", "::1"].includes(url.hostname)) {
+      tokenizeEndpoint = `${url.origin}/api/tokenize`;
+      return tokenizeEndpoint;
+    }
+  } catch { /* ignore */ }
+  tokenizeEndpoint = null;
+  return null;
+}
+
+/** Count tokens using Ollama's /api/tokenize, or fall back to a heuristic. */
+export async function countTokens(ollamaUrl: string, model: string, text: string): Promise<number> {
+  const endpoint = getTokenizerEndpoint(ollamaUrl);
+  if (endpoint) {
+    try {
+      const res = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model, content: text }),
+        signal: AbortSignal.timeout(2_000),
+      });
+      if (res.ok) {
+        const data = (await res.json()) as { tokens?: number };
+        if (typeof data.tokens === "number") return data.tokens;
+      }
+    } catch { /* fall through to heuristic */ }
+  }
+  // Heuristic: code ~3.2 chars/token, text ~4.2, JSON ~3
+  const isCode = text.includes("```") || text.includes(";");
+  return Math.ceil(text.length / (isCode ? 3.2 : 4.2));
+}
+
 /**
- * Token-aware size estimate. Different content has different densities:
- * code ~3.5 chars/token, natural language ~4.5 chars/token, JSON ~3 chars/token.
- * Tool-call JSON is dense with punctuation so it costs more tokens per character.
+ * Synchronous token estimate for compaction (no async available).
+ * Uses the same heuristic as the async fallback.
  */
 function estimateTokens(message: AgentMessage): number {
   const textLen = message.content.length;
   const jsonLen = JSON.stringify(message.tool_calls ?? []).length;
-  // Code-heavy content (has backticks or semicolons) is denser.
   const isCode = message.content.includes("```") || message.content.includes(";");
   const charsPerToken = isCode ? 3.2 : 4.2;
-  const textTokens = Math.ceil(textLen / charsPerToken);
-  const jsonTokens = Math.ceil(jsonLen / 3); // JSON is very dense
-  return textTokens + jsonTokens;
+  return Math.ceil(textLen / charsPerToken) + Math.ceil(jsonLen / 3);
 }
 
 function compactAgentMessages(messages: AgentMessage[], maxChars: number): AgentMessage[] {
@@ -317,10 +359,18 @@ export async function runAgentLoop(opts: {
   ];
   const startedAt = Date.now();
   let toolCallsUsed = 0;
+  let totalOutputBytes = 0;
+  let totalDiskWriteBytes = 0;
+  const maxToolCalls = opts.config?.maxToolCalls ?? DEFAULT_MAX_TOOL_CALLS;
+  const maxOutputBytes = opts.config?.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
+  const maxDiskWriteBytes = opts.config?.maxDiskWriteBytes ?? DEFAULT_MAX_DISK_WRITE_BYTES;
 
   for (let step = 0; step < maxSteps; step++) {
     throwIfCancelled();
     if (Date.now() - startedAt > MAX_AGENT_RUNTIME_MS) throw new Error("Agent runtime limit reached (30 minutes).");
+    if (toolCallsUsed >= maxToolCalls) throw new Error(`Agent tool-call limit reached (${maxToolCalls} calls).`);
+    if (totalOutputBytes >= maxOutputBytes) throw new Error(`Agent output limit reached (${Math.round(maxOutputBytes / 1024 / 1024)}MB).`);
+    if (totalDiskWriteBytes >= maxDiskWriteBytes) throw new Error(`Agent disk write limit reached (${Math.round(maxDiskWriteBytes / 1024 / 1024)}MB).`);
     emit({ type: "status", message: `Thinking… (Step ${step + 1}/${maxSteps})` });
     const { content, toolCalls } = await chatOnce(
       ollamaUrl,
@@ -346,10 +396,16 @@ export async function runAgentLoop(opts: {
 
     for (const call of toolCalls) {
       toolCallsUsed += 1;
-      if (toolCallsUsed > MAX_TOOL_CALLS_PER_LOOP) throw new Error("Agent tool-call limit reached (500 calls).");
       const name = call.function.name;
       const args = call.function.arguments ?? {};
       emit({ type: "tool_start", name, args });
+
+      // Track disk writes for quota enforcement.
+      if (name === "write_file" && typeof args.content === "string") {
+        totalDiskWriteBytes += Buffer.byteLength(args.content, "utf8");
+      } else if (name === "str_replace" && typeof args.new_string === "string") {
+        totalDiskWriteBytes += Buffer.byteLength(args.new_string, "utf8");
+      }
 
       let result: string;
       try {
@@ -366,6 +422,7 @@ export async function runAgentLoop(opts: {
         if (err instanceof CancelledError) throw err;
         result = `Error: ${err instanceof Error ? err.message : String(err)}`;
       }
+      totalOutputBytes += Buffer.byteLength(result, "utf8");
       emit({ type: "tool_result", name, result });
       messages.push({ role: "tool", content: result, tool_name: name });
     }

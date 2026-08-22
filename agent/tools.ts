@@ -703,6 +703,97 @@ function saveEmbeddingCache(root: string): void {
   } catch { /* best effort */ }
 }
 
+// --- Symbol index for fast "find the function that does X" search ---
+interface SymbolEntry {
+  name: string;
+  kind: string; // function, class, const, export, etc.
+  file: string;
+  line: number;
+}
+
+const SYMBOL_CACHE = new Map<string, SymbolEntry[]>();
+
+/** Extract symbols from a file's content. */
+function extractSymbols(filePath: string, content: string): SymbolEntry[] {
+  const symbols: SymbolEntry[] = [];
+  const lines = content.split("\n");
+  // Match common declaration patterns: function, class, const/let/var exports,
+  // interface, type, enum, export default/export async/function/export class.
+  const patterns = [
+    /(?:export\s+)?(?:async\s+)?function\s+([a-zA-Z_$][a-zA-Z0-9_$]*)/,
+    /(?:export\s+)?class\s+([a-zA-Z_$][a-zA-Z0-9_$]*)/,
+    /(?:export\s+)?(?:const|let|var)\s+([a-zA-Z_$][a-zA-Z0-9_$]*)\s*[=:]/,
+    /(?:export\s+)?interface\s+([a-zA-Z_$][a-zA-Z0-9_$]*)/,
+    /(?:export\s+)?type\s+([a-zA-Z_$][a-zA-Z0-9_$]*)/,
+    /(?:export\s+)?enum\s+([a-zA-Z_$][a-zA-Z0-9_$]*)/,
+  ];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    for (const pattern of patterns) {
+      const match = line.match(pattern);
+      if (match) {
+        const name = match[1];
+        const kind = line.includes("function") ? "function"
+          : line.includes("class") ? "class"
+          : line.includes("interface") ? "interface"
+          : line.includes("type ") ? "type"
+          : line.includes("enum") ? "enum"
+          : "const";
+        symbols.push({ name, kind, file: filePath, line: i + 1 });
+        break;
+      }
+    }
+  }
+  return symbols;
+}
+
+/** Build or update the symbol index for a repository. */
+function buildSymbolIndex(root: string, files: string[]): SymbolEntry[] {
+  const cacheKey = root.replace(/[^a-z0-9]/gi, "_").slice(0, 80);
+  const cached = SYMBOL_CACHE.get(cacheKey);
+  if (cached) return cached;
+
+  // Try loading from disk first.
+  const indexPath = path.join(EMBEDDING_CACHE_DIR, `${cacheKey}-symbols.json`);
+  try {
+    const data = JSON.parse(fs.readFileSync(indexPath, "utf8")) as SymbolEntry[];
+    if (Array.isArray(data) && data.length > 0) {
+      SYMBOL_CACHE.set(cacheKey, data);
+      return data;
+    }
+  } catch { /* cache miss */ }
+
+  const allSymbols: SymbolEntry[] = [];
+  for (const file of files) {
+    try {
+      if (fs.statSync(file).size > MAX_SEARCH_FILE) continue;
+      const content = fs.readFileSync(file, "utf8");
+      if (content.includes("\u0000")) continue;
+      const relPath = path.relative(root, file).replaceAll("\\", "/");
+      allSymbols.push(...extractSymbols(relPath, content));
+    } catch { /* skip */ }
+  }
+
+  SYMBOL_CACHE.set(cacheKey, allSymbols);
+  // Persist to disk.
+  try {
+    fs.mkdirSync(EMBEDDING_CACHE_DIR, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(indexPath, JSON.stringify(allSymbols), { encoding: "utf8", mode: 0o600 });
+  } catch { /* best effort */ }
+  return allSymbols;
+}
+
+/** Search the symbol index for names matching a query. */
+export function searchSymbols(root: string, query: string, files: string[]): string[] {
+  const symbols = buildSymbolIndex(root, files);
+  if (symbols.length === 0) return [];
+  const q = query.toLowerCase();
+  return symbols
+    .filter((s) => s.name.toLowerCase().includes(q))
+    .slice(0, 20)
+    .map((s) => `${s.file}:${s.line}: ${s.kind} ${s.name}`);
+}
+
 function cosineSimilarity(a: number[], b: number[]): number {
   let dot = 0;
   let aa = 0;

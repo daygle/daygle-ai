@@ -51,11 +51,69 @@ const PREFS_DIR = path.join(os.homedir(), ".daygle", "prefs");
 
 let sandbox: SandboxRunner | null = null;
 
+// Session lock: prevents two clients from mutating the same session concurrently.
+const sessionLocks = new Map<string, { owner: string; timer: ReturnType<typeof setTimeout> }>();
+const SESSION_LOCK_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+
+function acquireSessionLock(sessionId: string, clientId: string): boolean {
+  const existing = sessionLocks.get(sessionId);
+  if (existing) {
+    if (existing.owner === clientId) {
+      // Same client re-acquiring — refresh the timer.
+      clearTimeout(existing.timer);
+      existing.timer = setTimeout(() => sessionLocks.delete(sessionId), SESSION_LOCK_TIMEOUT_MS);
+      return true;
+    }
+    return false; // another client holds the lock
+  }
+  const timer = setTimeout(() => sessionLocks.delete(sessionId), SESSION_LOCK_TIMEOUT_MS);
+  sessionLocks.set(sessionId, { owner: clientId, timer });
+  return true;
+}
+
+function releaseSessionLock(sessionId: string, clientId: string): void {
+  const existing = sessionLocks.get(sessionId);
+  if (existing && existing.owner === clientId) {
+    clearTimeout(existing.timer);
+    sessionLocks.delete(sessionId);
+  }
+}
+
 /**
  * Load project-level preferences that persist across sessions for the same
  * repo URL. These are injected into the system prompt so the model can
  * leverage knowledge from previous sessions.
  */
+/** Detect a coverage command available in the repository. */
+async function detectCoverageCommand(root: string, sandbox?: SandboxRunner | null): Promise<string | null> {
+  const candidates = [
+    // JavaScript/TypeScript
+    { check: "npx c8 --version", cmd: "npx c8 --reporter=text vitest run" },
+    { check: "npx c8 --version", cmd: "npx c8 --reporter=text npm test" },
+    { check: "npx jest --version", cmd: "npx jest --coverage" },
+    // Python
+    { check: "python -m pytest --version", cmd: "python -m pytest --cov=. --cov-report=term" },
+    { check: "python3 -m pytest --version", cmd: "python3 -m pytest --cov=. --cov-report=term" },
+    // Go
+    { check: "go version", cmd: "go test -cover ./..." },
+    // Rust
+    { check: "cargo --version", cmd: "cargo tarpaulin --skip-clean" },
+  ];
+  for (const candidate of candidates) {
+    try {
+      if (sandbox) {
+        const result = await sandbox.runCapture(root, candidate.check, { timeoutMs: 10_000 });
+        if (result.code === 0) return candidate.cmd;
+      } else {
+        // Host fallback: just check if the file exists
+        const tool = candidate.check.split(" ")[0];
+        if (tool && fs.existsSync(path.join(root, tool))) return candidate.cmd;
+      }
+    } catch { /* skip */ }
+  }
+  return null;
+}
+
 function loadProjectPrefs(repoUrl: string): string[] {
   if (!repoUrl) return [];
   const key = repoUrl.replace(/[^a-z0-9]/gi, "_").slice(0, 80);
@@ -674,6 +732,20 @@ async function executeJob(job: Job): Promise<void> {
             publish(job, { type: "diff", stat: snapshot.stat, diff: snapshot.diff });
           } catch {
             // best-effort snapshot
+          }
+          // Run coverage if available to report test quality.
+          try {
+            const coverageCmd = await detectCoverageCommand(workDir, sandbox);
+            if (coverageCmd) {
+              emit({ type: "status", message: `Running coverage: ${coverageCmd}` });
+              const coverageResult = sandbox
+                ? await sandbox.runCapture(workDir, coverageCmd, { signal, timeoutMs: 300_000 })
+                : { code: 0, stdout: "", stderr: "", timedOut: false, overflow: false };
+              const coverageOutput = `${coverageResult.stdout}\n${coverageResult.stderr}`.trim().slice(0, 4_000);
+              publish(job, { type: "qa", command: coverageCmd, output: coverageOutput, passed: coverageResult.code === 0 });
+            }
+          } catch {
+            // coverage is best-effort
           }
           changed = await changedFiles(workDir);
         }
@@ -1313,6 +1385,12 @@ const server = http.createServer((req, res) => {
         sendJson(res, 409, { error: "This chat is already working. Queue the message in the client and try again when it finishes." });
         return;
       }
+      // Prevent concurrent mutations from multiple browser tabs.
+      const clientId = `${sessionId}-${req.socket.remoteAddress ?? "unknown"}`;
+      if (!acquireSessionLock(sessionId, clientId)) {
+        sendJson(res, 409, { error: "This chat is open in another tab. Close the other tab or wait for it to finish." });
+        return;
+      }
       let body: { message?: string; image?: { data?: string; mimeType?: string } };
       try {
         body = JSON.parse(await readBody(req, 12_000_000)) as typeof body;
@@ -1457,6 +1535,7 @@ const server = http.createServer((req, res) => {
         }
       } finally {
         session.busy = false;
+        releaseSessionLock(sessionId, clientId);
         if (activeChatRuns.get(sessionId) === cancelRun) activeChatRuns.delete(sessionId);
       }
       // Persist the transcript so the conversation survives restarts / TTL eviction.
