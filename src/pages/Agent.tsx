@@ -693,9 +693,9 @@ function WorkspacePanel({
     { id: "audit", label: "Audit", icon: ClipboardList },
   ];
   const tabs = hasRepo ? allTabs : allTabs.filter((item) => !repoOnly.has(item.id));
-  // Fall back to Queue if the selected tab isn't available (e.g. repo tabs on a
-  // plain chat) so the body never renders a hidden tab's content.
-  const activeTab: WorkspaceTab = tabs.some((item) => item.id === tab) ? tab : "queue";
+  // If the selected tab isn't available (e.g. repo tabs on a plain chat),
+  // collapse all sections so nothing is open by default.
+  const activeTab: WorkspaceTab = tabs.some((item) => item.id === tab) ? tab : ("" as WorkspaceTab);
   const terminalEntries = messages.filter((message) => message.role === "tool" && message.toolName === "run_command");
   const showRefresh = activeTab === "files" || activeTab === "changes";
   const [dragIndex, setDragIndex] = useState<number | null>(null);
