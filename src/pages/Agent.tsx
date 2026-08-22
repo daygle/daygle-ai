@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { Bot, Check, ClipboardList, ChevronDown, ChevronRight, ChevronUp, CircleAlert, Copy, Eye, ExternalLink, FileEdit, Files, Folder, GitBranch, GitCompare, GripVertical, ImagePlus, ListTodo, Loader2, MessageSquarePlus, PanelRightClose, PanelRightOpen, RefreshCw, RotateCcw, Rocket, Search, Send, ShieldCheck, Square, Terminal, Trash2, User, X } from "lucide-react";
+import { Bot, Check, ClipboardList, ChevronDown, ChevronRight, ChevronUp, CircleAlert, Copy, Eye, ExternalLink, FileEdit, Files, Folder, GitBranch, GitCompare, GripVertical, ImagePlus, ListTodo, Loader2, MessageSquarePlus, Pencil, PanelRightClose, PanelRightOpen, Plus, RefreshCw, RotateCcw, Rocket, Search, Send, ShieldCheck, Square, Terminal, Trash2, User, X } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
@@ -9,6 +9,13 @@ import {
   cancelChat,
   createChatSession,
   deleteChatSession,
+  renameChatSession,
+  listSavedRepos,
+  saveRepo,
+  deleteSavedRepo,
+  listProviderModels,
+  type SavedRepo,
+  type ProviderConfig,
   getChatSession,
   getAuditLog,
   getChatWorkspace,
@@ -245,6 +252,8 @@ function imageMime(mime: string | undefined): string {
 
 /** Lightweight markdown for assistant messages - headings, lists, code, links. */
 function Markdown({ children }: { children: string }) {
+  const [checked, setChecked] = useState<Set<number>>(() => new Set());
+
   return (
     <div className="space-y-2 text-sm leading-relaxed [&_a]:text-accent [&_a]:underline [&_h1]:text-base [&_h1]:font-semibold [&_h2]:text-sm [&_h2]:font-semibold [&_h3]:font-semibold [&_li]:ml-4 [&_ol]:list-decimal [&_p]:my-0 [&_ul]:list-disc">
       <ReactMarkdown
@@ -268,6 +277,38 @@ function Markdown({ children }: { children: string }) {
                 {children}
               </pre>
             );
+          },
+          li({ node, children, ...props }) {
+            // GFM task list items have dataChecked set by remarkGfm → rehype
+            const dataChecked = node?.properties?.dataChecked;
+            if (dataChecked !== undefined) {
+              // Use a stable index from position info to track local toggle state
+              const pos = node ? (node.position?.start.line ?? 0) * 1000 + (node.position?.start.column ?? 0) : 0;
+              const isChecked = dataChecked === true || dataChecked === "true" || checked.has(pos);
+              return (
+                <li
+                  className="!ml-4 !list-none flex items-start gap-2 py-0.5"
+                  {...props}
+                >
+                  <input
+                    type="checkbox"
+                    checked={isChecked}
+                    readOnly
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setChecked((prev) => {
+                        const next = new Set(prev);
+                        if (next.has(pos)) next.delete(pos); else next.add(pos);
+                        return next;
+                      });
+                    }}
+                    className="mt-0.5 h-4 w-4 shrink-0 cursor-pointer rounded border-border bg-background accent-accent"
+                  />
+                  <span className="flex-1 leading-relaxed [&_p]:my-0">{children}</span>
+                </li>
+              );
+            }
+            return <li {...props}>{children}</li>;
           },
         }}
       >
@@ -730,11 +771,14 @@ function WorkspacePanel({
         )}
       </button>
 
-      <div className="flex flex-col">
-        {tabs.map(({ id, label, icon: Icon, count }) => {
+      <div className="flex flex-1 flex-col">
+        {tabs.map(({ id, label, icon: Icon, count }, idx) => {
           const isOpen = activeTab === id && sidebarExpanded;
+          // In collapsed mode, insert a thin divider between logical groups
+          // (after Queue and after Changes) to match the activity-bar style.
+          const showDivider = !sidebarExpanded && (idx === 0 || idx === 3);
           return (
-            <div key={id} className="border-b border-border">
+            <div key={id} className={showDivider ? "border-t border-border/50" : ""}>
               <button
                 onClick={() => {
                   if (sidebarExpanded) {
@@ -747,14 +791,21 @@ function WorkspacePanel({
                 title={sidebarExpanded ? (isOpen ? undefined : label) : label}
                 className={`flex w-full items-center transition-colors ${
                   !sidebarExpanded
-                    ? "justify-center px-3 py-2.5 text-muted-foreground hover:bg-muted/50 hover:text-foreground"
+                    ? `justify-center py-3 text-muted-foreground hover:bg-muted/50 hover:text-foreground ${isOpen ? "bg-accent/10 text-accent" : ""}`
                     : isOpen
                       ? "gap-2 px-3 py-2.5 text-[11px] font-medium bg-accent/10 text-accent"
                       : "gap-2 px-3 py-2 text-muted-foreground hover:bg-muted/50 hover:text-foreground"
                 }`}
               >
                 {!sidebarExpanded ? (
-                  <Icon className="h-4 w-4" />
+                  <span className="relative">
+                    <Icon className="h-[18px] w-[18px]" />
+                    {count !== undefined && count > 0 && (
+                      <span className="absolute -right-1.5 -top-1.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-accent px-0.5 text-[8px] font-bold text-accent-foreground">
+                        {count > 99 ? "99+" : count}
+                      </span>
+                    )}
+                  </span>
                 ) : (
                   <>
                     {isOpen ? <ChevronDown className="h-3 w-3 shrink-0" /> : <ChevronRight className="h-3 w-3 shrink-0" />}
@@ -927,7 +978,11 @@ export function AgentPage() {
   const [agentUrl] = useState(DEFAULT_AGENT_URL);
 
   const [repoUrl, setRepoUrl] = useState("");
-  const [sessionRepo, setSessionRepo] = useState("");
+  const [sessionRepo, setSessionRepo] = useState("");  const [savedRepos, setSavedRepos] = useState<SavedRepo[]>([]);
+  const [providerKind, setProviderKind] = useState<"ollama" | "openai">("ollama");
+  const [cloudBaseUrl, setCloudBaseUrl] = useState("");
+  const [cloudApiKey, setCloudApiKey] = useState("");
+
   const [models, setModels] = useState<string[]>([]);
   const [model, setModel] = useState("");
   const [sessionId, setSessionId] = useState<string | null>(null);
@@ -955,6 +1010,8 @@ export function AgentPage() {
   const [autoSendQueued, setAutoSendQueued] = useState(false);
   const [taskOpen, setTaskOpen] = useState(false);
   const [confirmDeleteChat, setConfirmDeleteChat] = useState<string | null>(null);
+  const [renamingChatId, setRenamingChatId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState("");
   const [chatsSidebarOpen, setChatsSidebarOpen] = useState(() => !isMobile);
   const [chatsSidebarWidth, setChatsSidebarWidth] = useState(() => loadPanelWidth("daygle.agent.chatsWidth", 256, 220, 420));
   const [verifying, setVerifying] = useState(false);
@@ -1092,26 +1149,41 @@ export function AgentPage() {
   const paramModel = searchParams.get("model");
 
   useEffect(() => {
-    listModels(ollamaUrl)
-      .then((m) => {
-        const names = m.map((model) => model.name);
-        setModels(names);
-        // Only pick an initial model when the current one is unset/unavailable -
-        // never override a selection the user (or a resumed chat) already made,
-        // otherwise changing the model just snaps back to the default.
-        setModel((current) => {
-          if (current && names.includes(current)) return current;
-          const preferredModel = loadModelPreference();
-          if (paramModel && names.includes(paramModel)) return paramModel;
-          if (preferredModel && names.includes(preferredModel)) return preferredModel;
-          return names.length > 0 ? names[0] : current;
-        });
-      })
-      .catch(() => {});
-  }, [ollamaUrl, paramModel]);
+    if (providerKind === "openai" && cloudBaseUrl.trim()) {
+      // List models from cloud provider
+      listProviderModels(agentUrl, "openai", cloudBaseUrl.trim(), cloudApiKey || undefined)
+        .then((names) => {
+          setModels(names);
+          setModel((current) => {
+            if (current && names.includes(current)) return current;
+            return names.length > 0 ? names[0] : current;
+          });
+        })
+        .catch(() => setModels([]));
+    } else {
+      // List models from local Ollama
+      listModels(ollamaUrl)
+        .then((m) => {
+          const names = m.map((model) => model.name);
+          setModels(names);
+          setModel((current) => {
+            if (current && names.includes(current)) return current;
+            const preferredModel = loadModelPreference();
+            if (paramModel && names.includes(paramModel)) return paramModel;
+            if (preferredModel && names.includes(preferredModel)) return preferredModel;
+            return names.length > 0 ? names[0] : current;
+          });
+        })
+        .catch(() => {});
+    }
+  }, [ollamaUrl, paramModel, providerKind, cloudBaseUrl, cloudApiKey, agentUrl]);
 
   const refreshHistory = useCallback(() => {
     listChatSessions(agentUrl).then(setHistory).catch(() => {});
+  }, [agentUrl]);
+
+  const refreshSavedRepos = useCallback(() => {
+    listSavedRepos(agentUrl).then(setSavedRepos).catch(() => {});
   }, [agentUrl]);
 
   useEffect(() => {
@@ -1123,6 +1195,7 @@ export function AgentPage() {
   // Load the conversation list, and auto-resume the last open chat on refresh.
   useEffect(() => {
     refreshHistory();
+    refreshSavedRepos();
     let lastId: string | null = null;
     try {
       lastId = localStorage.getItem("daygle.chatSessionId");
@@ -1142,12 +1215,31 @@ export function AgentPage() {
     }
   }
 
+  async function handleSaveRepo() {
+    const url = repoUrl.trim();
+    if (!url) return;
+    try {
+      const repos = await saveRepo(agentUrl, url);
+      setSavedRepos(repos);
+    } catch { /* best effort */ }
+  }
+
+  async function handleDeleteSavedRepo(id: string) {
+    try {
+      const repos = await deleteSavedRepo(agentUrl, id);
+      setSavedRepos(repos);
+    } catch { /* best effort */ }
+  }
+
   async function handleConnect() {
     if (!model) return;
     const repo = repoUrl.trim();
     setLoading(true);
     try {
-      const session = await createChatSession(agentUrl, repo, model, LOCAL_OLLAMA_URL, loadGenOptions());
+      const providerConfig: ProviderConfig | undefined = providerKind === "openai" && cloudBaseUrl.trim()
+        ? { kind: "openai", baseUrl: cloudBaseUrl.trim(), apiKey: cloudApiKey || undefined }
+        : undefined;
+      const session = await createChatSession(agentUrl, repo, model, LOCAL_OLLAMA_URL, loadGenOptions(), providerConfig);
       setSessionId(session.id);
       setSessionRepo(repo);
       rememberSession(session.id);
@@ -1286,6 +1378,19 @@ export function AgentPage() {
     }
     if (id === sessionId) startNewChat();
     else refreshHistory();
+  }
+
+  async function handleRenameChat(id: string, newTitle: string) {
+    const trimmed = newTitle.trim();
+    if (!trimmed) return;
+    // Optimistically update the list
+    setHistory((prev) => prev.map((c) => c.id === id ? { ...c, title: trimmed } : c));
+    setRenamingChatId(null);
+    try {
+      await renameChatSession(agentUrl, id, trimmed);
+    } catch {
+      refreshHistory();
+    }
   }
 
   function handleImageSelected(event: ChangeEvent<HTMLInputElement>) {
@@ -1764,17 +1869,96 @@ export function AgentPage() {
           <div className="space-y-4 px-6 py-5">
             <div className="space-y-1.5">
               <label className="text-xs font-medium text-muted-foreground">Repository <span className="font-normal opacity-70">(Optional)</span></label>
-              <div className="relative">
-                <GitBranch className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                <Input
-                  value={repoUrl}
-                  onChange={(e) => setRepoUrl(e.target.value)}
-                  placeholder="https://github.com/owner/repo"
-                  className="pl-9 font-mono"
-                  onKeyDown={(e) => e.key === "Enter" && handleConnect()}
-                />
+              <div className="flex gap-2">
+                <div className="relative flex-1">
+                  <GitBranch className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                  <Input
+                    value={repoUrl}
+                    onChange={(e) => setRepoUrl(e.target.value)}
+                    placeholder="https://github.com/owner/repo"
+                    className="pl-9 font-mono"
+                    onKeyDown={(e) => e.key === "Enter" && handleConnect()}
+                  />
+                </div>
+                {repoUrl.trim() && !savedRepos.some((r) => r.url === repoUrl.trim()) && (
+                  <Button variant="outline" size="sm" onClick={handleSaveRepo} className="shrink-0" title="Save this repo">
+                    <Plus className="h-3.5 w-3.5" />
+                  </Button>
+                )}
               </div>
+              {savedRepos.length > 0 && (
+                <div className="flex flex-wrap gap-1.5 pt-1">
+                  {savedRepos.map((repo) => (
+                    <div key={repo.id} className="group flex items-center gap-1 rounded-full border border-border bg-background px-2.5 py-1 text-[11px]">
+                      <button
+                        onClick={() => setRepoUrl(repo.url)}
+                        className="flex items-center gap-1 text-muted-foreground hover:text-foreground"
+                        title={repo.url}
+                      >
+                        <GitBranch className="h-3 w-3" />
+                        <span className="max-w-[160px] truncate">{repo.name}</span>
+                      </button>
+                      <button
+                        onClick={() => handleDeleteSavedRepo(repo.id)}
+                        className="ml-0.5 rounded-full p-0.5 text-muted-foreground opacity-0 transition hover:bg-muted hover:text-destructive group-hover:opacity-100"
+                        title="Remove"
+                      >
+                        <X className="h-2.5 w-2.5" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
               <p className="text-[11px] text-muted-foreground">Leave blank to just chat with the model.</p>
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-muted-foreground">Provider</label>
+              <div className="flex gap-1 rounded-lg border border-border bg-background p-1">
+                <button
+                  type="button"
+                  onClick={() => setProviderKind("ollama")}
+                  className={`flex-1 rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+                    providerKind === "ollama"
+                      ? "bg-accent/15 text-accent"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  Local (Ollama)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setProviderKind("openai")}
+                  className={`flex-1 rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+                    providerKind === "openai"
+                      ? "bg-accent/15 text-accent"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  Cloud (OpenAI-compatible)
+                </button>
+              </div>
+              {providerKind === "openai" && (
+                <div className="space-y-2 pt-1">
+                  <div className="relative">
+                    <Input
+                      value={cloudBaseUrl}
+                      onChange={(e) => setCloudBaseUrl(e.target.value)}
+                      placeholder="https://api.together.xyz/v1"
+                      className="font-mono text-xs"
+                    />
+                  </div>
+                  <div className="relative">
+                    <Input
+                      type="password"
+                      value={cloudApiKey}
+                      onChange={(e) => setCloudApiKey(e.target.value)}
+                      placeholder="API key (optional for some providers)"
+                      className="font-mono text-xs"
+                    />
+                  </div>
+                </div>
+              )}
             </div>
 
             <div className="space-y-1.5">
@@ -1843,13 +2027,22 @@ export function AgentPage() {
                         </button>
                       </div>
                     ) : (
-                      <button
-                        onClick={() => setConfirmDeleteChat(chat.id)}
-                        className="shrink-0 rounded p-1 text-muted-foreground opacity-60 transition hover:bg-muted hover:text-destructive hover:opacity-100"
-                        title="Delete chat"
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </button>
+                      <div className="flex shrink-0 items-center gap-1 opacity-60 transition hover:opacity-100">
+                        <button
+                          onClick={() => { setRenamingChatId(chat.id); setRenameValue(chat.title); }}
+                          className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+                          title="Rename chat"
+                        >
+                          <Pencil className="h-3.5 w-3.5" />
+                        </button>
+                        <button
+                          onClick={() => setConfirmDeleteChat(chat.id)}
+                          className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-destructive"
+                          title="Delete chat"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
                     )}
                   </div>
                 ))}
@@ -1916,6 +2109,21 @@ export function AgentPage() {
                     key={chat.id}
                     className={`group mb-1 flex items-center gap-2 rounded-md border px-2 py-2 transition-colors ${isActive ? "border-accent/50 bg-accent/10" : "border-transparent hover:bg-muted/60"}`}
                   >
+                    {renamingChatId === chat.id ? (
+                      <form
+                        onSubmit={(e) => { e.preventDefault(); handleRenameChat(chat.id, renameValue); }}
+                        className="flex min-w-0 flex-1 items-center gap-1"
+                      >
+                        <input
+                          autoFocus
+                          value={renameValue}
+                          onChange={(e) => setRenameValue(e.target.value)}
+                          onBlur={() => handleRenameChat(chat.id, renameValue)}
+                          onKeyDown={(e) => { if (e.key === "Escape") setRenamingChatId(null); }}
+                          className="min-w-0 flex-1 rounded bg-background px-1.5 py-0.5 text-xs font-medium text-foreground outline-none ring-1 ring-accent"
+                        />
+                      </form>
+                    ) : (
                     <button
                       onClick={() => switchChat(chat.id)}
                       className="flex min-w-0 flex-1 items-start gap-2 text-left"
@@ -1931,6 +2139,7 @@ export function AgentPage() {
                       </span>
                       {isActive && <span className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full bg-accent" />}
                     </button>
+                    )}
                     {confirmDeleteChat === chat.id ? (
                       <div className="flex shrink-0 items-center gap-0.5">
                         <button
@@ -1949,13 +2158,22 @@ export function AgentPage() {
                         </button>
                       </div>
                     ) : (
-                      <button
-                        onClick={() => setConfirmDeleteChat(chat.id)}
-                        className="shrink-0 rounded p-1 text-muted-foreground opacity-0 transition hover:bg-muted hover:text-destructive group-hover:opacity-100"
-                        title="Delete chat"
-                      >
-                        <Trash2 className="h-3 w-3" />
-                      </button>
+                      <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition group-hover:opacity-100">
+                        <button
+                          onClick={() => { setRenamingChatId(chat.id); setRenameValue(chat.title); }}
+                          className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+                          title="Rename chat"
+                        >
+                          <Pencil className="h-3 w-3" />
+                        </button>
+                        <button
+                          onClick={() => setConfirmDeleteChat(chat.id)}
+                          className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-destructive"
+                          title="Delete chat"
+                        >
+                          <Trash2 className="h-3 w-3" />
+                        </button>
+                      </div>
                     )}
                   </div>
                 );

@@ -1,5 +1,6 @@
 import { REVIEW_TOOL_DEFINITIONS, TOOL_DEFINITIONS, runTool, type CommandApprover, type ToolDefinition } from "./tools";
 import type { SandboxRunner } from "./sandbox";
+import type { ChatProvider } from "./providers";
 
 export interface ToolCall {
   function: { name: string; arguments: Record<string, unknown> };
@@ -193,30 +194,10 @@ Rules:
 - Do not commit, push, or open pull requests - the harness handles that after you finish.
 - If the task cannot be completed with the available information, explain why and stop.`;
 
-interface RawToolCall {
-  function?: { name?: string; arguments?: unknown };
-}
 
-function parseToolCalls(raw: RawToolCall[] | undefined): ToolCall[] {
-  return (raw ?? []).map((call) => {
-    const name = call.function?.name ?? "unknown";
-    let args: unknown = call.function?.arguments ?? {};
-    if (typeof args === "string") {
-      try {
-        args = JSON.parse(args);
-      } catch {
-        args = {};
-      }
-    }
-    if (typeof args !== "object" || args === null || Array.isArray(args)) {
-      args = {};
-    }
-    return { function: { name, arguments: args as Record<string, unknown> } };
-  });
-}
 
 async function chatOnce(
-  ollamaUrl: string,
+  provider: ChatProvider,
   model: string,
   messages: AgentMessage[],
   tools: ToolDefinition[],
@@ -227,93 +208,8 @@ async function chatOnce(
     onDelta?: (chunk: string) => void;
   },
 ): Promise<{ content: string; toolCalls: ToolCall[] }> {
-  const { temperature, numCtx, signal, onDelta } = options;
-  let res: Response;
-  try {
-    res = await fetch(`${ollamaUrl.replace(/\/+$/, "")}/api/chat`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model,
-        messages,
-        tools,
-        stream: true,
-        options: { temperature, num_ctx: numCtx },
-      }),
-      signal,
-    });
-  } catch (err) {
-    if (signal?.aborted) throw new CancelledError();
-    throw err;
-  }
-
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`Ollama /api/chat failed (${res.status}): ${text.slice(0, 500)}`);
-  }
-
-  const contentType = res.headers.get("content-type") ?? "";
-  const isStream =
-    contentType.includes("application/x-ndjson") || contentType.includes("text/event-stream");
-
-  // Some servers ignore `stream: true`; fall back to a single JSON body.
-  if (!isStream) {
-    const data = (await res.json()) as { message?: { content?: string; tool_calls?: RawToolCall[] } };
-    const message = data.message ?? {};
-    const content = typeof message.content === "string" ? message.content : "";
-    if (content) onDelta?.(content);
-    return { content, toolCalls: parseToolCalls(message.tool_calls) };
-  }
-
-  const reader = res.body?.getReader();
-  if (!reader) {
-    const data = (await res.json()) as { message?: { content?: string; tool_calls?: RawToolCall[] } };
-    const message = data.message ?? {};
-    const content = typeof message.content === "string" ? message.content : "";
-    if (content) onDelta?.(content);
-    return { content, toolCalls: parseToolCalls(message.tool_calls) };
-  }
-
-  const decoder = new TextDecoder();
-  let content = "";
-  let rawToolCalls: RawToolCall[] | undefined;
-  let buffer = "";
-
-  const consumeLine = (line: string) => {
-    const trimmed = line.trim();
-    if (!trimmed) return;
-    let data: { message?: { content?: string; tool_calls?: RawToolCall[] } };
-    try {
-      data = JSON.parse(trimmed) as typeof data;
-    } catch {
-      return;
-    }
-    const message = data.message ?? {};
-    const delta = typeof message.content === "string" ? message.content : "";
-    if (delta) {
-      content += delta;
-      onDelta?.(delta);
-    }
-    if (message.tool_calls?.length) rawToolCalls = message.tool_calls;
-  };
-
-  for (;;) {
-    let chunk: Awaited<ReturnType<typeof reader.read>>;
-    try {
-      chunk = await reader.read();
-    } catch (err) {
-      if (signal?.aborted) throw new CancelledError();
-      throw err;
-    }
-    if (chunk.done) break;
-    buffer += decoder.decode(chunk.value, { stream: true });
-    const lines = buffer.split("\n");
-    buffer = lines.pop() ?? "";
-    for (const line of lines) consumeLine(line);
-  }
-  if (buffer.trim()) consumeLine(buffer);
-
-  return { content, toolCalls: parseToolCalls(rawToolCalls) };
+  const result = await provider.chat(model, messages as any, tools, options);
+  return { content: result.content, toolCalls: result.toolCalls as ToolCall[] };
 }
 
 function isLikelyTestPath(value: string): boolean {
@@ -326,7 +222,7 @@ export async function runAgentLoop(opts: {
   root: string;
   task: string;
   model: string;
-  ollamaUrl: string;
+  provider: ChatProvider;
   emit: (event: AgentEvent) => void;
   approve?: CommandApprover;
   sandbox?: SandboxRunner;
@@ -335,7 +231,7 @@ export async function runAgentLoop(opts: {
   /** Optional write guard used by restricted passes such as test generation. */
   writePathPolicy?: (path: string) => boolean;
 }): Promise<string> {
-  const { root, task, model, ollamaUrl, emit, approve, sandbox, signal } = opts;
+  const { root, task, model, provider, emit, approve, sandbox, signal } = opts;
   const temperature = opts.config?.temperature ?? DEFAULT_TEMPERATURE;
   const numCtx = boundedNumCtx(opts.config?.numCtx ?? DEFAULT_NUM_CTX);
   const maxSteps = Math.max(1, Math.min(200, opts.config?.maxSteps ?? DEFAULT_MAX_STEPS));
@@ -373,7 +269,7 @@ export async function runAgentLoop(opts: {
     if (totalDiskWriteBytes >= maxDiskWriteBytes) throw new Error(`Agent disk write limit reached (${Math.round(maxDiskWriteBytes / 1024 / 1024)}MB).`);
     emit({ type: "status", message: `Thinking… (Step ${step + 1}/${maxSteps})` });
     const { content, toolCalls } = await chatOnce(
-      ollamaUrl,
+      provider,
       model,
       compactAgentMessages(messages, Math.max(32_000, Math.min(96_000, numCtx * 3))),
       TOOL_DEFINITIONS,
@@ -462,20 +358,20 @@ export async function runTestGeneration(opts: {
   task: string;
   diff: string;
   model: string;
-  ollamaUrl: string;
+  provider: ChatProvider;
   emit: (event: AgentEvent) => void;
   approve?: CommandApprover;
   sandbox?: SandboxRunner;
   signal?: AbortSignal;
   config?: AgentConfig;
 }): Promise<string> {
-  const { root, task, diff, model, ollamaUrl, emit, approve, sandbox, signal } = opts;
+  const { root, task, diff, model, provider, emit, approve, sandbox, signal } = opts;
   const taskText = `A change was just made to the repository to accomplish this task:\n${task}\n\nHere is the diff of that change:\n\n${limitModelContext(diff)}\n\nWrite automated tests that cover this change, following the project's existing test framework and conventions, and make them pass.`;
   return runAgentLoop({
     root,
     task: taskText,
     model,
-    ollamaUrl,
+    provider,
     emit,
     approve,
     sandbox,
@@ -524,7 +420,7 @@ export function parseReviewVerdict(text: string): ReviewResult["verdict"] {
  * Emits a single `review` event with the verdict and the full review text.
  */
 export async function runReview(opts: {
-  ollamaUrl: string;
+  provider: ChatProvider;
   model: string;
   task: string;
   diff: string;
@@ -532,13 +428,13 @@ export async function runReview(opts: {
   signal?: AbortSignal;
   config?: AgentConfig;
 }): Promise<ReviewResult> {
-  const { ollamaUrl, model, task, diff, emit, signal } = opts;
+  const { provider, model, task, diff, emit, signal } = opts;
   const temperature = opts.config?.temperature ?? DEFAULT_TEMPERATURE;
   const numCtx = boundedNumCtx(opts.config?.numCtx ?? DEFAULT_NUM_CTX);
 
   const user = `Task being implemented:\n${task}\n\nDiff to review:\n\n${limitModelContext(diff)}`;
   const { content } = await chatOnce(
-    ollamaUrl,
+    provider,
     model,
     [
       { role: "system", content: REVIEW_SYSTEM_PROMPT },
@@ -582,7 +478,7 @@ Then: a short summary and, if changes are requested, a numbered list of concrete
  */
 export async function runAgenticReview(opts: {
   root: string;
-  ollamaUrl: string;
+  provider: ChatProvider;
   model: string;
   task: string;
   diff: string;
@@ -593,7 +489,7 @@ export async function runAgenticReview(opts: {
   config?: AgentConfig;
   writePathPolicy?: (path: string) => boolean;
 }): Promise<ReviewResult> {
-  const { root, ollamaUrl, model, task, diff, emit, approve, sandbox, signal } = opts;
+  const { root, provider, model, task, diff, emit, approve, sandbox, signal } = opts;
   if (!sandbox) {
     throw new Error(
       "Agentic review refused: a command sandbox is unavailable. Start Docker/Podman/bubblewrap before running a review that executes repository checks.",
@@ -620,7 +516,7 @@ export async function runAgenticReview(opts: {
     throwIfCancelled();
     emit({ type: "status", message: `Reviewing… (step ${step + 1}/${maxSteps})` });
     const { content, toolCalls } = await chatOnce(
-      ollamaUrl,
+      provider,
       model,
       compactAgentMessages(messages, Math.max(32_000, Math.min(96_000, numCtx * 3))),
       REVIEW_TOOL_DEFINITIONS,

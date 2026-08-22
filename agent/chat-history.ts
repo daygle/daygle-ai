@@ -120,18 +120,30 @@ ${conversation}`;
         stream: false,
         options: { temperature: 0.3, num_predict: 20 },
       }),
-      signal: AbortSignal.timeout(5000), // 5 second timeout
+      signal: AbortSignal.timeout(10_000),
     });
 
     if (response.ok) {
       const data: any = await response.json();
-      const title = data.message?.content?.trim();
-      if (title && title.length > 3 && title.length < 80) {
-        return title;
+      const raw = data.message?.content?.trim();
+      if (raw) {
+        // Strip common prefixes / suffixes models emit even when told not to
+        const cleaned = raw
+          .replace(/^\s*(?:title|label|heading)[:\s-]+/i, "")
+          .replace(/[""「」'']/g, "")
+          .replace(/^\n+|\n+$/g, "")
+          .replace(/\n.*/s, "") // take only the first line
+          .trim();
+        if (cleaned.length >= 3 && cleaned.length < 80) {
+          return cleaned;
+        }
+        // Even if validation fails, return the cleaned title rather than
+        // falling back to the raw user-message dump.
+        if (cleaned.length > 0) return cleaned;
       }
     }
-  } catch {
-    // Fall back to deriveTitle
+  } catch (err) {
+    console.error("generateTitle failed:", err);
   }
 
   return deriveTitle(messages);

@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { CancelledError, runAgentLoop, runAgenticReview, runReview, runTestGeneration, type AgentConfig, type AgentEvent } from "./agent";
+import { createProvider, type ChatProvider, type ProviderConfig } from "./providers";
 import { ChatSession, streamChat, type ChatEvent, type GenOptions } from "./chat";
 import { ChatHistoryStore, deriveTitle, generateTitle } from "./chat-history";
 import {
@@ -32,7 +33,7 @@ import { reviewApproverForRoot, runTool, type CommandApprover } from "./tools";
 import { HistoryStore, type StoredJob } from "./history";
 import { runQaGate, type QaResult } from "./qa";
 import { checkModelUpdate } from "./updates";
-import { checkForAppUpdate, getUpdateProgress, performAppUpdate } from "./app-update";
+import { checkForAppUpdate, checkForAppUpdateCached, getUpdateProgress, performAppUpdate } from "./app-update";
 import { getAllowedUiOrigins, isAllowedUiOrigin, isLoopbackUrl, LOOPBACK_HOST } from "./security";
 
 const PORT = Number(process.env.PORT ?? 8787);
@@ -45,6 +46,16 @@ const DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434";
 function localOllamaUrl(value?: string): string | null {
   const url = (value ?? DEFAULT_OLLAMA_URL).trim();
   return isLoopbackUrl(url) ? url : null;
+}
+
+/**
+ * Create a ChatProvider from the session's ollamaUrl.
+ * When the URL points to a loopback address, use the local Ollama provider.
+ * When a cloud provider config is stored on the session, use that instead.
+ */
+function providerFor(ollamaUrl: string, providerConfig?: ProviderConfig): ChatProvider {
+  if (providerConfig) return createProvider(providerConfig);
+  return createProvider({ kind: "ollama", baseUrl: ollamaUrl });
 }
 
 const TOKEN_PATH = path.join(os.homedir(), ".daygle", "github-token");
@@ -711,7 +722,7 @@ async function executeJob(job: Job): Promise<void> {
       root: workDir,
       task: job.task,
       model: job.model,
-      ollamaUrl: job.ollamaUrl,
+      provider: providerFor(job.ollamaUrl),
       emit,
       approve: makeApprover(job),
       sandbox: sandbox ?? undefined,
@@ -739,7 +750,7 @@ async function executeJob(job: Job): Promise<void> {
             task: job.task,
             diff,
             model: job.model,
-            ollamaUrl: job.ollamaUrl,
+            provider: providerFor(job.ollamaUrl),
             emit,
             approve: makeApprover(job),
             sandbox: sandbox ?? undefined,
@@ -794,7 +805,7 @@ async function executeJob(job: Job): Promise<void> {
             root: workDir,
             task: `A QA verification gate ran "${qa.command}" and reported failures:\n\n${qa.output}\n\nFix the failures, re-verify, and finish.`,
             model: job.model,
-            ollamaUrl: job.ollamaUrl,
+            provider: providerFor(job.ollamaUrl),
             emit,
             approve: makeApprover(job),
             sandbox: sandbox ?? undefined,
@@ -826,7 +837,7 @@ async function executeJob(job: Job): Promise<void> {
           const review = agentic
             ? await runAgenticReview({
                 root: workDir,
-                ollamaUrl: job.ollamaUrl,
+                provider: providerFor(job.ollamaUrl),
                 model: reviewModel,
                 task: job.task,
                 diff,
@@ -837,7 +848,7 @@ async function executeJob(job: Job): Promise<void> {
                 config: job.config,
               })
             : await runReview({
-                ollamaUrl: job.ollamaUrl,
+                provider: providerFor(job.ollamaUrl),
                 model: reviewModel,
                 task: job.task,
                 diff,
@@ -860,7 +871,7 @@ async function executeJob(job: Job): Promise<void> {
             root: workDir,
             task: `A code reviewer requested the following changes:\n\n${review.text}\n\nAddress these issues, verify your work, and finish.`,
             model: job.model,
-            ollamaUrl: job.ollamaUrl,
+            provider: providerFor(job.ollamaUrl),
             emit,
             approve: makeApprover(job),
             sandbox: sandbox ?? undefined,
@@ -1023,6 +1034,78 @@ const server = http.createServer((req, res) => {
         sendJson(res, 200, { ok: true });
         return;
       }
+    }
+
+    // ---- Saved repositories ----
+    const REPOS_PATH = path.join(os.homedir(), ".daygle", "saved-repos.json");
+
+    function loadSavedRepos(): Array<{ id: string; url: string; name: string; addedAt: number }> {
+      try {
+        return JSON.parse(fs.readFileSync(REPOS_PATH, "utf8")) as any;
+      } catch {
+        return [];
+      }
+    }
+
+    function saveSavedRepos(repos: Array<{ id: string; url: string; name: string; addedAt: number }>): void {
+      try {
+        fs.mkdirSync(path.dirname(REPOS_PATH), { recursive: true, mode: 0o700 });
+        fs.writeFileSync(REPOS_PATH, JSON.stringify(repos, null, 2), { encoding: "utf8", mode: 0o600 });
+      } catch { /* best effort */ }
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/repos") {
+      sendJson(res, 200, { repos: loadSavedRepos() });
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/repos") {
+      let body: { url?: string; name?: string };
+      try {
+        body = JSON.parse(await readBody(req)) as typeof body;
+      } catch {
+        sendJson(res, 400, { error: "Invalid JSON body." });
+        return;
+      }
+      const repoUrl = body.url?.trim();
+      if (!repoUrl) {
+        sendJson(res, 400, { error: "url is required." });
+        return;
+      }
+      const repos = loadSavedRepos();
+      if (repos.some((r) => r.url === repoUrl)) {
+        sendJson(res, 200, { ok: true, repos });
+        return;
+      }
+      const name = body.name?.trim() || repoUrl.replace(/^https?:\/\/(www\.)?github\.com\//, "").replace(/\.git$/, "");
+      repos.push({ id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`, url: repoUrl, name, addedAt: Date.now() });
+      saveSavedRepos(repos);
+      sendJson(res, 200, { ok: true, repos });
+      return;
+    }
+
+    const repoDeleteMatch = url.pathname.match(/^\/api\/repos\/([^/]+)$/);
+    if (repoDeleteMatch && req.method === "DELETE") {
+      const id = repoDeleteMatch[1];
+      const repos = loadSavedRepos().filter((r) => r.id !== id);
+      saveSavedRepos(repos);
+      sendJson(res, 200, { ok: true, repos });
+      return;
+    }
+
+    // ---- Model listing (supports cloud providers) ----
+    if (req.method === "GET" && url.pathname === "/api/models") {
+      const kind = url.searchParams.get("kind") ?? "ollama";
+      const baseUrl = url.searchParams.get("baseUrl") ?? DEFAULT_OLLAMA_URL;
+      const apiKey = url.searchParams.get("apiKey") ?? "";
+      try {
+        const provider = createProvider({ kind: kind as any, baseUrl, apiKey });
+        const models = await provider.listModels();
+        sendJson(res, 200, { models });
+      } catch (err) {
+        sendJson(res, 200, { models: [], error: errMessage(err) });
+      }
+      return;
     }
 
     // ---- Chat sessions (interactive agent chat) ----
@@ -1214,7 +1297,7 @@ const server = http.createServer((req, res) => {
             const review = agentic
               ? await runAgenticReview({
                   root: session.root,
-                  ollamaUrl: session.ollamaUrl,
+                  provider: providerFor(session.ollamaUrl),
                   model: reviewModel,
                   task: deriveTitle(session.messages) || "the requested changes",
                   diff,
@@ -1225,7 +1308,7 @@ const server = http.createServer((req, res) => {
                   config: reviewConfig,
                 })
               : await runReview({
-                  ollamaUrl: session.ollamaUrl,
+                  provider: providerFor(session.ollamaUrl),
                   model: reviewModel,
                   task: deriveTitle(session.messages) || "the requested changes",
                   diff,
@@ -1297,7 +1380,7 @@ const server = http.createServer((req, res) => {
 
     if (chatIdMatch && req.method === "PATCH") {
       const id = chatIdMatch[1];
-      let body: { model?: string; options?: GenOptions };
+      let body: { title?: string; model?: string; options?: GenOptions };
       try {
         body = JSON.parse(await readBody(req)) as typeof body;
       } catch {
@@ -1306,8 +1389,19 @@ const server = http.createServer((req, res) => {
       }
       const live = chatSessions.get(id);
       if (!live) {
-        sendJson(res, 404, { error: "Chat not found." });
+        // Try updating the on-disk transcript directly.
+        const stored = chatHistoryStore.load(id);
+        if (!stored) {
+          sendJson(res, 404, { error: "Chat not found." });
+          return;
+        }
+        if (body.title !== undefined) stored.title = body.title.trim();
+        chatHistoryStore.save(stored);
+        sendJson(res, 200, { ok: true, title: stored.title });
         return;
+      }
+      if (body.title !== undefined) {
+        live.title = body.title.trim();
       }
       if (body.model?.trim()) {
         live.model = body.model.trim();
@@ -1315,12 +1409,20 @@ const server = http.createServer((req, res) => {
       if (body.options) {
         live.options = body.options;
       }
-      sendJson(res, 200, { ok: true, model: live.model });
+      // Persist the title change so it survives restarts.
+      if (body.title !== undefined) {
+        const stored = chatHistoryStore.load(id);
+        if (stored) {
+          stored.title = live.title ?? stored.title;
+          chatHistoryStore.save(stored);
+        }
+      }
+      sendJson(res, 200, { ok: true, title: live.title ?? "", model: live.model });
       return;
     }
 
     if (req.method === "POST" && url.pathname === "/api/chat/sessions") {
-      let body: { repoUrl?: string; model?: string; ollamaUrl?: string; options?: GenOptions };
+      let body: { repoUrl?: string; model?: string; ollamaUrl?: string; options?: GenOptions; providerConfig?: ProviderConfig };
       try {
         body = JSON.parse(await readBody(req)) as typeof body;
       } catch {
@@ -1331,11 +1433,7 @@ const server = http.createServer((req, res) => {
         sendJson(res, 400, { error: "model is required." });
         return;
       }
-      const ollamaUrl = localOllamaUrl(body.ollamaUrl);
-      if (!ollamaUrl) {
-        sendJson(res, 400, { error: "ollamaUrl must point to the local Ollama server." });
-        return;
-      }
+      const ollamaUrl = localOllamaUrl(body.ollamaUrl) ?? DEFAULT_OLLAMA_URL;
       const repoUrl = body.repoUrl?.trim() ?? "";
       const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
       // A repo is optional: with one, we clone for tool use; without, it's a
@@ -1368,17 +1466,20 @@ const server = http.createServer((req, res) => {
         createdAt: Date.now(),
         lastActivity: Date.now(),
         options: body.options,
+        provider: body.providerConfig ? createProvider(body.providerConfig) : undefined,
       };
-      // Detect a fallback model for automatic retry on failure.
-      try {
-        const modelsRes = await fetch(`${ollamaUrl.replace(/\/+$/, "")}/api/tags`);
-        if (modelsRes.ok) {
-          const modelsData = (await modelsRes.json()) as { models?: Array<{ name: string }> };
-          const modelNames = (modelsData.models ?? []).map((m) => m.name);
-          const fallback = modelNames.find((name) => name !== session.model && !name.includes("embedding"));
-          if (fallback) session.fallbackModel = fallback;
-        }
-      } catch { /* fallback detection is best-effort */ }
+      // Detect a fallback model for automatic retry on failure (Ollama only).
+      if (!session.provider) {
+        try {
+          const modelsRes = await fetch(`${ollamaUrl.replace(/\/+$/, "")}/api/tags`);
+          if (modelsRes.ok) {
+            const modelsData = (await modelsRes.json()) as { models?: Array<{ name: string }> };
+            const modelNames = (modelsData.models ?? []).map((m) => m.name);
+            const fallback = modelNames.find((name) => name !== session.model && !name.includes("embedding"));
+            if (fallback) session.fallbackModel = fallback;
+          }
+        } catch { /* fallback detection is best-effort */ }
+      }
       chatSessions.set(id, session);
       sendJson(res, 200, { id, repoUrl: session.repoUrl });
       return;
@@ -1628,7 +1729,7 @@ const server = http.createServer((req, res) => {
     }
 
     if (req.method === "GET" && url.pathname === "/api/app-update/status") {
-      const info = await checkForAppUpdate();
+      const info = await checkForAppUpdateCached();
       const progress = getUpdateProgress();
       sendJson(res, 200, {
         currentVersion: info.currentVersion,

@@ -159,6 +159,7 @@ export interface AppUpdateInfo {
   releaseNotes?: string;
   releaseUrl?: string;
   publishedAt?: string;
+  error?: string;
 }
 
 /** Check for application updates from GitHub releases. */
@@ -310,10 +311,59 @@ export async function deleteChatSession(serverUrl: string, id: string): Promise<
   if (!res.ok) throw new Error(`Failed to delete chat (${res.status})`);
 }
 
+export async function renameChatSession(serverUrl: string, id: string, title: string): Promise<void> {
+  const res = await fetch(`${strip(serverUrl)}/api/chat/sessions/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title }),
+  });
+  if (!res.ok) throw new Error(`Failed to rename chat (${res.status})`);
+}
+
+// ── Saved repositories ──────────────────────────────────────────────────────
+
+export interface SavedRepo {
+  id: string;
+  url: string;
+  name: string;
+  addedAt: number;
+}
+
+export async function listSavedRepos(serverUrl: string): Promise<SavedRepo[]> {
+  const res = await fetch(`${strip(serverUrl)}/api/repos`);
+  if (!res.ok) throw new Error(`Failed to list repos (${res.status})`);
+  const data = (await res.json()) as { repos: SavedRepo[] };
+  return data.repos ?? [];
+}
+
+export async function saveRepo(serverUrl: string, url: string, name?: string): Promise<SavedRepo[]> {
+  const res = await fetch(`${strip(serverUrl)}/api/repos`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ url, name }),
+  });
+  if (!res.ok) throw new Error(`Failed to save repo (${res.status})`);
+  const data = (await res.json()) as { repos: SavedRepo[] };
+  return data.repos ?? [];
+}
+
+export async function deleteSavedRepo(serverUrl: string, id: string): Promise<SavedRepo[]> {
+  const res = await fetch(`${strip(serverUrl)}/api/repos/${id}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(`Failed to delete repo (${res.status})`);
+  const data = (await res.json()) as { repos: SavedRepo[] };
+  return data.repos ?? [];
+}
+
 export async function getChatWorkspace(serverUrl: string, sessionId: string): Promise<ChatWorkspace> {
   const res = await fetch(`${strip(serverUrl)}/api/chat/sessions/${sessionId}/workspace`);
   if (!res.ok) throw new Error(`Failed to load workspace (${res.status})`);
   return (await res.json()) as ChatWorkspace;
+}
+
+export interface ProviderConfig {
+  kind: "ollama" | "openai";
+  baseUrl: string;
+  apiKey?: string;
 }
 
 export async function createChatSession(
@@ -322,17 +372,27 @@ export async function createChatSession(
   model: string,
   ollamaUrl: string,
   options?: GenOptions,
+  providerConfig?: ProviderConfig,
 ): Promise<ChatSessionInfo> {
   const res = await fetch(`${strip(serverUrl)}/api/chat/sessions`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ repoUrl, model, ollamaUrl, options }),
+    body: JSON.stringify({ repoUrl, model, ollamaUrl, options, providerConfig }),
   });
   if (!res.ok) {
     const text = await res.text().catch(() => "");
     throw new Error(`Failed to create chat session (${res.status}) ${text}`);
   }
   return (await res.json()) as ChatSessionInfo;
+}
+
+export async function listProviderModels(serverUrl: string, kind: string, baseUrl: string, apiKey?: string): Promise<string[]> {
+  const params = new URLSearchParams({ kind, baseUrl });
+  if (apiKey) params.set("apiKey", apiKey);
+  const res = await fetch(`${strip(serverUrl)}/api/models?${params}`);
+  if (!res.ok) throw new Error(`Failed to list models (${res.status})`);
+  const data = (await res.json()) as { models: string[] };
+  return data.models ?? [];
 }
 
 export function sendChatMessage(

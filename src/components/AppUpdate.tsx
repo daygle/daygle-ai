@@ -32,6 +32,7 @@ export function AppUpdate({ serverUrl }: AppUpdateProps) {
     try {
       const info = await checkAppUpdate(serverUrl);
       setUpdateInfo(info);
+      if (info.error) setError(info.error);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to check for updates");
     } finally {

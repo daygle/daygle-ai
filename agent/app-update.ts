@@ -12,6 +12,8 @@ export interface AppUpdateInfo {
   releaseNotes?: string;
   releaseUrl?: string;
   publishedAt?: string;
+  /** Non-null when the update check itself failed (e.g. rate-limited). */
+  error?: string;
 }
 
 /**
@@ -55,46 +57,78 @@ function normalizeVersion(tag: string): string {
 /**
  * Check GitHub for the latest release of the application.
  */
+const GH_HEADERS = {
+  Accept: "application/vnd.github.v3+json",
+  "User-Agent": "daygle-ai-updater",
+};
+
+async function ghFetch<T>(url: string): Promise<{ data: T | null; error?: string }> {
+  try {
+    const res = await fetch(url, { headers: GH_HEADERS });
+    if (!res.ok) {
+      const label = res.status === 403 ? "GitHub API rate-limited" : `GitHub API ${res.status}`;
+      console.error(label, url);
+      return { data: null, error: label };
+    }
+    return { data: (await res.json()) as T };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error("GitHub API fetch failed:", msg);
+    return { data: null, error: msg };
+  }
+}
+
 export async function checkForAppUpdate(): Promise<AppUpdateInfo> {
   const currentVersion = getCurrentVersion();
+  const base = `https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}`;
 
   try {
-    // Try using Octokit (GitHub App auth) first, fall back to unauthenticated
-    let latestRelease: any = null;
+    // 1. Try /releases/latest (non-draft, non-prerelease).
+    const latest = await ghFetch<any>(`${base}/releases/latest`);
+    if (latest.data) {
+      return buildReleaseInfo(currentVersion, latest.data);
+    }
 
-    // Use GitHub API (unauthenticated for public repos)
-    const response = await fetch(
-      `https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/releases/latest`,
-      {
-        headers: {
-          Accept: "application/vnd.github.v3+json",
-          "User-Agent": "daygle-ai-updater",
-        },
+    // 2. Fall back to the full releases list and pick the newest
+    //    non-draft, non-prerelease entry.
+    const relList = await ghFetch<any[]>(`${base}/releases?per_page=10`);
+    if (relList.data) {
+      const stable = relList.data.find((r: any) => !r.draft && !r.prerelease);
+      if (stable) {
+        return buildReleaseInfo(currentVersion, stable);
       }
-    );
-
-    if (response.ok) {
-      latestRelease = await response.json();
+      // If every release is a prerelease/draft, still surface the newest
+      // so the user knows something exists.
+      if (relList.data.length > 0) {
+        return buildReleaseInfo(currentVersion, relList.data[0]);
+      }
     }
 
-    if (!latestRelease) {
-      return {
-        currentVersion,
-        latestVersion: currentVersion,
-        updateAvailable: false,
-      };
+    // 3. Fall back to tags – the user may have pushed a version tag
+    //    without creating a formal release.
+    const tags = await ghFetch<Array<{ name: string }>>(`${base}/tags?per_page=10`);
+    if (tags.data && tags.data.length > 0) {
+      // Find the newest tag whose name looks like a semver version.
+      for (const tag of tags.data) {
+        const ver = normalizeVersion(tag.name);
+        if (/^\d+\.\d+/.test(ver) && compareVersions(ver, currentVersion) > 0) {
+          return {
+            currentVersion,
+            latestVersion: ver,
+            updateAvailable: true,
+            releaseUrl: `${base}/releases/tag/${encodeURIComponent(tag.name)}`,
+          };
+        }
+      }
     }
 
-    const latestVersion = normalizeVersion(latestRelease.tag_name || latestRelease.name || currentVersion);
-    const updateAvailable = compareVersions(latestVersion, currentVersion) > 0;
-
+    // Nothing newer found – but report any transient error.
+    const errMsg = latest.error ?? relList.error ?? tags.error;
     return {
       currentVersion,
-      latestVersion,
-      updateAvailable,
-      releaseNotes: latestRelease.body || "",
-      releaseUrl: latestRelease.html_url || "",
-      publishedAt: latestRelease.published_at || "",
+      latestVersion: currentVersion,
+      updateAvailable: false,
+      ...(errMsg ? { error: errMsg } : {}),
     };
   } catch (error) {
     console.error("Failed to check for app update:", error);
@@ -102,8 +136,36 @@ export async function checkForAppUpdate(): Promise<AppUpdateInfo> {
       currentVersion,
       latestVersion: currentVersion,
       updateAvailable: false,
+      error: error instanceof Error ? error.message : String(error),
     };
   }
+}
+
+function buildReleaseInfo(currentVersion: string, release: any): AppUpdateInfo {
+  const latestVersion = normalizeVersion(release.tag_name || release.name || currentVersion);
+  return {
+    currentVersion,
+    latestVersion,
+    updateAvailable: compareVersions(latestVersion, currentVersion) > 0,
+    releaseNotes: release.body || "",
+    releaseUrl: release.html_url || "",
+    publishedAt: release.published_at || "",
+  };
+}
+
+// Cached update check result so status polling doesn't re-hit GitHub API every 2s.
+let lastCheckResult: AppUpdateInfo | null = null;
+let lastCheckAt = 0;
+const CHECK_CACHE_TTL_MS = 60_000; // 1 minute
+
+/** Cached version of checkForAppUpdate used by the status endpoint. */
+export async function checkForAppUpdateCached(): Promise<AppUpdateInfo> {
+  if (lastCheckResult && Date.now() - lastCheckAt < CHECK_CACHE_TTL_MS) {
+    return lastCheckResult;
+  }
+  lastCheckResult = await checkForAppUpdate();
+  lastCheckAt = Date.now();
+  return lastCheckResult;
 }
 
 // Update progress tracking
@@ -141,8 +203,28 @@ export async function performAppUpdate(
       // Ignore stash errors (might be nothing to stash)
     }
 
+    // Detect the default branch (main, master, etc.)
+    let defaultBranch = "main";
+    try {
+      defaultBranch = execSync("git symbolic-ref refs/remotes/origin/HEAD", { cwd: appDir, stdio: "pipe" })
+        .toString().trim().replace("refs/remotes/origin/", "");
+    } catch {
+      // Fallback: check common branch names
+      for (const candidate of ["main", "master", "develop"]) {
+        try {
+          execSync(`git rev-parse --verify origin/${candidate}`, { cwd: appDir, stdio: "pipe" });
+          defaultBranch = candidate;
+          break;
+        } catch { /* try next */ }
+      }
+    }
+
     // Pull latest changes
-    execSync("git pull origin main", { cwd: appDir, stdio: "pipe" });
+    try {
+      execSync(`git pull origin ${defaultBranch}`, { cwd: appDir, stdio: "pipe" });
+    } catch (err) {
+      throw new Error(`git pull failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
 
     updateProgress = { status: "installing", message: "Installing dependencies...", startedAt: updateProgress?.startedAt ?? Date.now() };
     emit({ type: "update_progress", message: "Installing dependencies..." });
@@ -160,11 +242,17 @@ export async function performAppUpdate(
       execSync("yarn install", { cwd: appDir, stdio: "pipe" });
     } else {
       execSync("npm install", { cwd: appDir, stdio: "pipe" });
-    }updateProgress = { status: "building", message: "Building application...", startedAt: updateProgress?.startedAt ?? Date.now() };
+    }
+
+    updateProgress = { status: "building", message: "Building application...", startedAt: updateProgress?.startedAt ?? Date.now() };
     emit({ type: "update_progress", message: "Building application..." });
 
-    // Build the project
-    execSync("npm run build", { cwd: appDir, stdio: "pipe" });
+    // Build the project (use the same package manager)
+    if (hasBunLock) {
+      execSync("bun run build", { cwd: appDir, stdio: "pipe" });
+    } else {
+      execSync("npm run build", { cwd: appDir, stdio: "pipe" });
+    }
 
     updateProgress = { status: "restarting", message: "Restarting agent server...", startedAt: updateProgress?.startedAt ?? Date.now() };
     emit({ type: "update_progress", message: "Restarting agent server..." });

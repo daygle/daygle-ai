@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { TOOL_DEFINITIONS, runTool, type CommandApprover } from "./tools";
 import type { SandboxRunner } from "./sandbox";
+import type { ChatProvider } from "./providers";
 
 export interface ChatMessage {
   role: "system" | "user" | "assistant" | "tool";
@@ -46,6 +47,8 @@ export interface ChatSession {
   fallbackModel?: string;
   /** AI-generated title for the chat session. */
   title?: string;
+  /** Chat provider — when set, used instead of the raw Ollama fetch. */
+  provider?: ChatProvider;
 }
 
 export type ChatEvent =
@@ -370,64 +373,107 @@ export async function* streamChat(
 
     yield { type: "status", message: `Thinking… (Step ${step + 1})` };
 
-    // Try the primary model, then fall back if available.
-    const modelsToTry = [session.model, session.fallbackModel].filter(Boolean) as string[];
-    let res: Response | undefined;
-    let lastError = "";
-    for (const tryModel of modelsToTry) {
-      const attempt = await fetch(`${session.ollamaUrl.replace(/\/+$/, "")}/api/chat`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: tryModel,
-          messages: compactMessages(session.messages, Math.max(32_000, Math.min(MAX_CHAT_CONTEXT_CHARS, genOptions.num_ctx * 3))).map((message) => {
-            const { imageMimeTypes, ...ollamaMessage } = message;
-            void imageMimeTypes;
-            return ollamaMessage;
-          }),
-          tools: hasRepo ? TOOL_DEFINITIONS : undefined,
-          stream: true,
-          keep_alive: normalizeKeepAlive(opts.keep_alive),
-          options: genOptions,
-        }),
-        signal,
-      });
-      if (attempt.ok) { res = attempt; break; }
-      lastError = await attempt.text().catch(() => "");
-      if (tryModel !== session.model) {
-        yield { type: "status", message: `Primary model failed, trying ${tryModel}…` };
-      }
-    }
-    if (!res) {
-      yield { type: "error", message: `Ollama failed: ${lastError.slice(0, 300)}` };
-      return;
-    }
-
-    // Stream the response
-    const reader = res.body?.getReader();
-    if (!reader) return;
-
-    const decoder = new TextDecoder();
+    const compacted = compactMessages(session.messages, Math.max(32_000, Math.min(MAX_CHAT_CONTEXT_CHARS, genOptions.num_ctx * 3)));
+    const cleanedMessages = compacted.map((message) => {
+      const { imageMimeTypes, ...rest } = message;
+      void imageMimeTypes;
+      return rest;
+    });
     let content = "";
-    let rawToolCalls: Array<{ function?: { name?: string; arguments?: unknown } }> | undefined;
-    let buffer = "";
+    let toolCalls: Array<{ function: { name: string; arguments: Record<string, unknown> } }> = [];
 
-    for (;;) {
-      let chunk;
+    if (session.provider) {
+      // Use the provider abstraction (cloud or Ollama-via-provider).
       try {
-        chunk = await reader.read();
-      } catch {
+        const deltas: string[] = [];
+        const result = await session.provider.chat(
+          session.model,
+          cleanedMessages as any,
+          hasRepo ? TOOL_DEFINITIONS : [],
+          {
+            temperature: genOptions.temperature,
+            numCtx: genOptions.num_ctx,
+            signal,
+            onDelta: (delta) => deltas.push(delta),
+          },
+        );
+        content = result.content;
+        toolCalls = hasRepo ? (result.toolCalls as any[]) : [];
+        for (const delta of deltas) yield { type: "model_delta" as const, content: delta };
+      } catch (err) {
+        if (signal?.aborted) return;
+        yield { type: "error", message: `Provider failed: ${err instanceof Error ? err.message : String(err)}` };
         return;
       }
-      if (chunk.done) break;
-      buffer += decoder.decode(chunk.value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop() ?? "";
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed) continue;
+    } else {
+      // Fallback: direct Ollama fetch (legacy path).
+      const modelsToTry = [session.model, session.fallbackModel].filter(Boolean) as string[];
+      let res: Response | undefined;
+      let lastError = "";
+      for (const tryModel of modelsToTry) {
+        const attempt = await fetch(`${session.ollamaUrl.replace(/\/+$/, "")}/api/chat`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model: tryModel,
+            messages: cleanedMessages,
+            tools: hasRepo ? TOOL_DEFINITIONS : undefined,
+            stream: true,
+            keep_alive: normalizeKeepAlive(opts.keep_alive),
+            options: genOptions,
+          }),
+          signal,
+        });
+        if (attempt.ok) { res = attempt; break; }
+        lastError = await attempt.text().catch(() => "");
+        if (tryModel !== session.model) {
+          yield { type: "status", message: `Primary model failed, trying ${tryModel}…` };
+        }
+      }
+      if (!res) {
+        yield { type: "error", message: `Ollama failed: ${lastError.slice(0, 300)}` };
+        return;
+      }
+
+      // Stream the response
+      const reader = res.body?.getReader();
+      if (!reader) return;
+
+      const decoder = new TextDecoder();
+      let rawToolCalls: Array<{ function?: { name?: string; arguments?: unknown } }> | undefined;
+      let buffer = "";
+
+      for (;;) {
+        let chunk;
         try {
-          const data = JSON.parse(trimmed) as { message?: { content?: string; tool_calls?: Array<{ function?: { name?: string; arguments?: unknown } }> } };
+          chunk = await reader.read();
+        } catch {
+          return;
+        }
+        if (chunk.done) break;
+        buffer += decoder.decode(chunk.value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed) continue;
+          try {
+            const data = JSON.parse(trimmed) as { message?: { content?: string; tool_calls?: Array<{ function?: { name?: string; arguments?: unknown } }> } };
+            const msg = data.message ?? {};
+            const delta = typeof msg.content === "string" ? msg.content : "";
+            if (delta) {
+              content += delta;
+              yield { type: "model_delta", content: delta };
+            }
+            if (msg.tool_calls?.length) rawToolCalls = msg.tool_calls;
+          } catch {
+            // skip malformed lines
+          }
+        }
+      }
+      if (buffer.trim()) {
+        try {
+          const data = JSON.parse(buffer.trim()) as { message?: { content?: string; tool_calls?: Array<{ function?: { name?: string; arguments?: unknown } }> } };
           const msg = data.message ?? {};
           const delta = typeof msg.content === "string" ? msg.content : "";
           if (delta) {
@@ -436,38 +482,22 @@ export async function* streamChat(
           }
           if (msg.tool_calls?.length) rawToolCalls = msg.tool_calls;
         } catch {
-          // skip malformed lines
+          // skip
         }
       }
-    }
-    if (buffer.trim()) {
-      try {
-        const data = JSON.parse(buffer.trim()) as { message?: { content?: string; tool_calls?: Array<{ function?: { name?: string; arguments?: unknown } }> } };
-        const msg = data.message ?? {};
-        const delta = typeof msg.content === "string" ? msg.content : "";
-        if (delta) {
-          content += delta;
-          yield { type: "model_delta", content: delta };
-        }
-        if (msg.tool_calls?.length) rawToolCalls = msg.tool_calls;
-      } catch {
-        // skip
-      }
-    }
 
-    // Parse tool calls - first try structured format, then fallback to text parsing.
-    // Repo-less sessions are pure conversation, so tools are ignored entirely.
-    let toolCalls = hasRepo
-      ? (rawToolCalls ?? []).map((call) => {
-          const name = call.function?.name ?? "unknown";
-          let args: unknown = call.function?.arguments ?? {};
-          if (typeof args === "string") {
-            try { args = JSON.parse(args); } catch { args = {}; }
-          }
-          if (typeof args !== "object" || args === null || Array.isArray(args)) args = {};
-          return { function: { name, arguments: args as Record<string, unknown> } };
-        })
-      : [];
+      toolCalls = hasRepo
+        ? (rawToolCalls ?? []).map((call) => {
+            const name = call.function?.name ?? "unknown";
+            let args: unknown = call.function?.arguments ?? {};
+            if (typeof args === "string") {
+              try { args = JSON.parse(args); } catch { args = {}; }
+            }
+            if (typeof args !== "object" || args === null || Array.isArray(args)) args = {};
+            return { function: { name, arguments: args as Record<string, unknown> } };
+          })
+        : [];
+    }
 
     // Fallback: if no structured tool calls, try parsing from text content
     if (hasRepo && toolCalls.length === 0 && content) {

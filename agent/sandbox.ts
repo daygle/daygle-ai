@@ -203,7 +203,9 @@ function bwrapRunner(): SandboxRunner {
       "-c",
       [
         "set -e",
-        `ulimit -v ${SANDBOX_MEM_LIMIT_KB} -t ${SANDBOX_CPU_LIMIT_S} -u ${SANDBOX_NPROC_LIMIT}`,
+        `ulimit -v ${SANDBOX_MEM_LIMIT_KB}`,
+        `ulimit -t ${SANDBOX_CPU_LIMIT_S}`,
+        `ulimit -u ${SANDBOX_NPROC_LIMIT}`,
         'exec "$@"',
       ].join("\n"),
       "bwrap-sandbox",
