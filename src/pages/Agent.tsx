@@ -2064,7 +2064,7 @@ export function AgentPage() {
             // Show a "working" indicator while streaming, except when an assistant
             // bubble is actively typing (its blinking cursor already signals activity).
             const last = messages[messages.length - 1];
-            const typing = last?.role === "assistant" && last.streaming && !!last.content;
+            const typing = last?.role === "assistant" && last.streaming;
             if (!streaming || typing) return null;
             return (
               <div className="flex gap-3">
