@@ -148,11 +148,30 @@ function checkpointRelativePath(root: string, relative: string): string {
   return path.join(root, ...normalized.split("/"));
 }
 
+function expandIgnoredPath(root: string, relative: string, output: string[]): void {
+  const normalized = relative.replaceAll("\\", "/").replace(/\/+$/, "");
+  if (!normalized || IGNORED_COPY_EXCLUSIONS.has(normalized.split("/")[0])) return;
+  const absolute = checkpointRelativePath(root, normalized);
+  let stat: fs.Stats;
+  try { stat = fs.lstatSync(absolute); } catch { return; }
+  if (!stat.isDirectory()) {
+    output.push(normalized);
+    return;
+  }
+  let entries: fs.Dirent[];
+  try { entries = fs.readdirSync(absolute, { withFileTypes: true }); } catch { return; }
+  for (const entry of entries) {
+    expandIgnoredPath(root, `${normalized}/${entry.name}`, output);
+  }
+}
+
 async function ignoredFiles(dir: string): Promise<string[]> {
-  return (await runRaw("git", ["ls-files", "-z", "--others", "--ignored", "--exclude-standard"], dir))
+  const entries = (await runRaw("git", ["ls-files", "-z", "--others", "--ignored", "--exclude-standard"], dir))
     .split("\0")
-    .filter(Boolean)
-    .map((entry) => entry.replaceAll("\\", "/"));
+    .filter(Boolean);
+  const files: string[] = [];
+  for (const entry of entries) expandIgnoredPath(dir, entry, files);
+  return [...new Set(files)];
 }
 
 async function changedTrackedFiles(dir: string): Promise<string[]> {
