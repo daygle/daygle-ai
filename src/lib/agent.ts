@@ -34,6 +34,8 @@ export interface AgentConfig {
   /** Defaults to true; set false to skip the test-generation pass. */
   generateTests?: boolean;
   maxTestGenSteps?: number;
+  /** When true, the agent refuses to run without a sandbox (default for autonomous jobs). */
+  requireSandbox?: boolean;
 }
 
 export interface AgentJobRequest {

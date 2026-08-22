@@ -626,7 +626,7 @@ async function executeJob(job: Job): Promise<void> {
       type: "status",
       message: sandbox
         ? `Command sandbox: ${sandbox.name}`
-        : "No command sandbox available - command execution is disabled; QA and agentic review require Docker/Podman/bubblewrap.",
+        : "No command sandbox available - autonomous agent requires Docker/Podman/bubblewrap. Set requireSandbox: false in config to run without a sandbox.",
     });
     emit({ type: "status", message: `Running ${job.model}…` });
     let summary = await runAgentLoop({
@@ -1541,7 +1541,7 @@ const server = http.createServer((req, res) => {
         denied: new Set(),
         controller: new AbortController(),
         createdAt: Date.now(),
-        config: body.config,
+        config: { requireSandbox: true, ...body.config },
       };
       jobs.set(job.id, job);
       persist(job);

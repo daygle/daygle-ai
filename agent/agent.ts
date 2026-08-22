@@ -48,6 +48,8 @@ export interface AgentConfig {
   maxReviewSteps?: number;
   /** Block autonomous completion when review concerns remain after all fix rounds. */
   blockOnReviewConcerns?: boolean;
+  /** When true, the agent refuses to run without a sandbox (default for autonomous jobs). */
+  requireSandbox?: boolean;
   /** Defaults to true; set false to skip the test-generation pass. */
   generateTests?: boolean;
   /** Max tool-using steps for the test-generation pass. */
@@ -296,6 +298,14 @@ export async function runAgentLoop(opts: {
   const numCtx = boundedNumCtx(opts.config?.numCtx ?? DEFAULT_NUM_CTX);
   const maxSteps = Math.max(1, Math.min(200, opts.config?.maxSteps ?? DEFAULT_MAX_STEPS));
   const systemPrompt = opts.config?.systemPrompt?.trim() || DEFAULT_SYSTEM_PROMPT;
+
+  // Enforce sandbox requirement for autonomous jobs unless explicitly opted out.
+  if (opts.config?.requireSandbox && !sandbox) {
+    throw new Error(
+      "Agent requires a command sandbox but none is available. " +
+      "Start Docker/Podman/bubblewrap, or set requireSandbox: false in the agent config for trusted environments."
+    );
+  }
 
   const throwIfCancelled = () => {
     if (signal?.aborted) throw new CancelledError();
