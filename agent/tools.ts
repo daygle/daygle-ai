@@ -178,7 +178,8 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         type: "object",
         properties: {
           pattern: { type: "string", description: "Regular expression to search for." },
-          path: { type: "string", description: "Optional file or directory to search (defaults to the whole repo)." },
+          path: { type: "string", description: "Optional file or directory to search (defaults to the whole repo). Space-separated paths are accepted." },
+          semantic: { type: "boolean", description: "Use a lightweight word-based search when the exact regular expression is unknown." },
         },
         required: ["pattern"],
       },
@@ -188,7 +189,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     type: "function",
     function: {
       name: "write_file",
-      description: "Create a new file, or overwrite an existing file with its COMPLETE new contents. Only use this for new files or a deliberate full rewrite - for small edits use str_replace.",
+      description: "Create a new file, or overwrite an existing file with its COMPLETE new contents. Rewrites that remove most lines require explicit approval; for small edits use str_replace.",
       parameters: {
         type: "object",
         properties: {
@@ -203,7 +204,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     type: "function",
     function: {
       name: "str_replace",
-      description: "Replace exact text in a file in place, leaving the rest of the file untouched. Use this for small, targeted edits such as find-and-replace, fixing one line, or renaming an identifier. old_string must match the file exactly (including whitespace); if it appears more than once, make it more specific or set replace_all.",
+      description: "Replace exact text in a file in place, leaving the rest of the file untouched. Use this for small, targeted edits such as find-and-replace, fixing one line, or renaming an identifier. Large replace_all operations require explicit approval. old_string must match the file exactly (including whitespace); if it appears more than once, make it more specific or set replace_all.",
       parameters: {
         type: "object",
         properties: {
@@ -238,57 +239,86 @@ export const REVIEW_TOOL_DEFINITIONS: ToolDefinition[] = TOOL_DEFINITIONS.filter
   (tool) => tool.function.name !== "write_file" && tool.function.name !== "str_replace",
 );
 
-// Test / typecheck / build runners the agentic reviewer may execute on its own.
-// These run project scripts, so they're gated to this allowlist; anything
-// destructive, networked, or secret-accessing is still hard-blocked by
-// classifyCommand before it ever reaches the reviewer's approver.
-export const REVIEW_RUNNERS = new Set([
-  "npm", "pnpm", "yarn", "bun", "npx", "node", "deno", "tsc", "vitest", "jest",
-  "mocha", "eslint", "prettier", "biome", "go", "cargo", "python", "python3",
-  "pytest", "ruff", "mypy", "make", "gradle", "./gradlew", "mvn", "dotnet",
-  "rspec", "rake", "phpunit", "composer",
+// Only these package scripts are eligible for unattended reviewer execution.
+// The script body is inspected as well; names alone are not trusted because a
+// repo can define `test` as `rm -rf ...` or `curl ...`.
+const PACKAGE_MANAGERS = new Set(["npm", "pnpm", "yarn", "bun"]);
+const SAFE_SCRIPT_NAMES = new Set(["test", "typecheck", "build", "lint", "check", "verify", "test:unit", "test:ci"]);
+const REVIEW_RUNNERS = new Set([
+  "tsc", "vitest", "jest", "mocha", "eslint", "prettier", "biome", "pytest", "ruff", "mypy",
+  "go", "cargo", "dotnet", "rspec", "rake", "phpunit", "vite", "next", "webpack", "true", "false",
 ]);
+export { REVIEW_RUNNERS };
 
-// Runners that can execute inline code. Combined with -e/-c/-m style flags
-// they would hand the read-only reviewer arbitrary code execution (e.g.
-// `node -e 'fs.rmSync(...)'` or `python -m pip install`), so those flag
-// combinations are rejected outright - legit uses like `pytest` or
-// `node --version` are unaffected.
-const CODE_EXEC_RUNNERS = new Set(["node", "bun", "bunx", "deno", "npx", "python", "python3"]);
 const INLINE_CODE_FLAGS = new Set(["-e", "--eval", "-c", "--command", "-p", "--print", "--exec", "-m"]);
+const UNSAFE_SCRIPT_WORDS = /(?:curl|wget|nc|ncat|netcat|telnet|ssh|scp|sftp|rsync|ftp|gh|sudo|rm|chmod|chown|mkfs|mount|umount|git\s+(?:push|fetch|pull)|npm\s+install|pnpm\s+install|yarn\s+add|bun\s+add|PRIVATE\s+KEY)/i;
+
+function packageScript(root: string, script: string): string | undefined {
+  try {
+    const packageJson = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8")) as { scripts?: Record<string, unknown> };
+    const value = packageJson.scripts?.[script];
+    return typeof value === "string" ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function isSafeScriptBody(body: string, root: string): boolean {
+  const withoutAnd = body.replace(/&&/g, " ");
+  if (/[;&|<>`$()]/.test(withoutAnd)) return false;
+  return body.split("&&").map((part) => part.trim()).filter(Boolean).every((part) => {
+    const tokens = part.split(/\s+/);
+    const program = tokens[0];
+    if (PACKAGE_MANAGERS.has(program)) return Boolean(tokens[1]) && SAFE_SCRIPT_NAMES.has(tokens[1]) && tokens.slice(2).every((token) => token !== "--eval" && token !== "-e");
+    if ((program === "node" || program === "deno") && (tokens[1] === "--version" || tokens[1] === "-v")) return tokens.length === 2;
+    if (INLINE_CODE_FLAGS.has(tokens[1]) || tokens.slice(1).some((token) => INLINE_CODE_FLAGS.has(token))) return false;
+    if (SAFE_PROGRAMS.has(program)) return !isMutatingReadOnlyCommand(tokens);
+    return REVIEW_RUNNERS.has(program) && isReviewSafeCommand(part, root);
+  });
+}
+
+function isSafePackageInvocation(tokens: string[], root?: string): boolean {
+  const manager = tokens[0];
+  if (!PACKAGE_MANAGERS.has(manager)) return false;
+  const script = tokens[1] === "run" ? tokens[2] : tokens[1];
+  if (!script || !SAFE_SCRIPT_NAMES.has(script)) return false;
+  const body = root ? packageScript(root, script) : undefined;
+  // Without a checkout we can still validate the command shape, but callers
+  // with a root (the reviewer/QA) must also validate the package script body.
+  if (root && (!body || UNSAFE_SCRIPT_WORDS.test(body) || !isSafeScriptBody(body, root))) return false;
+  return true;
+}
 
 /**
- * Whether a command is safe for the agentic reviewer to run unattended: a
- * chain of `cd <dir>` and known verification runners (or the read-only
- * SAFE_PROGRAMS / safe git subcommands), with no shell plumbing beyond `&&`.
+ * Whether a command is safe for unattended review/QA. Package scripts are
+ * accepted only when their name and package.json body pass the verification
+ * policy; arbitrary `npm run <script>` and inline-code runners are rejected.
  */
-export function isReviewSafeCommand(command: string): boolean {
+export function isReviewSafeCommand(command: string, root?: string): boolean {
   const trimmed = command.trim();
   if (!trimmed) return false;
-  // Only `&&` chaining is allowed; reject pipes, redirects, subshells, etc.
   const withoutAnd = trimmed.replace(/&&/g, " ");
   if (/[;&|<>`$()]/.test(withoutAnd)) return false;
-
   const segments = trimmed.split("&&").map((s) => s.trim()).filter(Boolean);
   if (segments.length === 0) return false;
   return segments.every((segment) => {
     const tokens = segment.split(/\s+/);
     const program = tokens[0];
     if (program === "cd") return tokens.length === 2;
+    if (PACKAGE_MANAGERS.has(program)) return isSafePackageInvocation(tokens, root);
     if (program === "git") return Boolean(tokens[1]) && SAFE_GIT.has(tokens[1]);
-    if (CODE_EXEC_RUNNERS.has(program) && tokens.slice(1).some((t) => INLINE_CODE_FLAGS.has(t))) {
-      return false;
-    }
+    if ((program === "node" || program === "deno") && (tokens[1] === "--version" || tokens[1] === "-v") && tokens.length === 2) return true;
+    if (INLINE_CODE_FLAGS.has(tokens[1]) || tokens.slice(1).some((token) => INLINE_CODE_FLAGS.has(token))) return false;
     if (SAFE_PROGRAMS.has(program)) return !isMutatingReadOnlyCommand(tokens);
     return REVIEW_RUNNERS.has(program);
   });
 }
 
-/**
- * A CommandApprover for the agentic reviewer: auto-approves verification
- * commands from the allowlist and denies everything else, so the reviewer can
- * run tests unattended without prompting or gaining write access.
- */
+export function reviewApproverForRoot(root: string): CommandApprover {
+  return (command: string) => Promise.resolve(isReviewSafeCommand(command, root) ? "approve" : "deny");
+}
+
+/** Backwards-compatible policy for callers that do not have a checkout root. */
 export const reviewApprover: CommandApprover = (command: string) =>
   Promise.resolve(isReviewSafeCommand(command) ? "approve" : "deny");
 
@@ -338,11 +368,31 @@ function splitPaths(root: string, rel: string): string[] {
   // paths containing spaces work; otherwise fall back to splitting on
   // whitespace for the multi-path shorthand the model sometimes emits.
   try {
-    fs.statSync(safeResolve(root, trimmed));
-    return [trimmed];
+    // existsSync deliberately does not throw for a missing aggregate string;
+    // the old statSync-first path made the model's multi-path shorthand surface
+    // an ENOENT before searchFiles could split it.
+    if (fs.existsSync(safeResolve(root, trimmed))) return [trimmed];
   } catch {
-    return trimmed.split(/\s+/).filter(Boolean);
+    // An invalid/outside aggregate is still eligible for the safe token split;
+    // each resulting path is checked independently below.
   }
+  const paths: string[] = [];
+  let current = "";
+  let quote = "";
+  for (const char of trimmed) {
+    if ((char === "'" || char === '"') && (!quote || quote === char)) {
+      quote = quote ? "" : char;
+      continue;
+    }
+    if (/\s/.test(char) && !quote) {
+      if (current) paths.push(current);
+      current = "";
+    } else {
+      current += char;
+    }
+  }
+  if (current) paths.push(current);
+  return paths;
 }
 
 function listFiles(root: string, rel: string): string {
@@ -441,6 +491,9 @@ function readFile(root: string, rel: string, startLine?: number, endLine?: numbe
   } else if (lines.length > MAX_READ_LINES) {
     lines = lines.slice(0, MAX_READ_LINES);
   }
+  if (lines.length > MAX_READ_LINES) {
+    throw new Error(`Requested range is too large (${lines.length} lines). Read at most ${MAX_READ_LINES} lines at a time.`);
+  }
   return lines.map((line, i) => `${String(firstLine + i).padStart(4, " ")} | ${line}`).join("\n");
 }
 
@@ -465,15 +518,17 @@ function collectFiles(dirAbs: string, out: string[], budget: { count: number }):
   }
 }
 
-function searchFiles(root: string, pattern: string, rel?: string): string {
+function searchFiles(root: string, pattern: string, rel?: string, semantic = false): string {
   if (!pattern.trim()) {
     throw new Error("Missing search pattern.");
   }
-  let regex: RegExp;
-  try {
-    regex = new RegExp(pattern);
-  } catch {
-    throw new Error(`Invalid regular expression: ${pattern}`);
+  let regex: RegExp | undefined;
+  if (!semantic) {
+    try {
+      regex = new RegExp(pattern);
+    } catch {
+      throw new Error(`Invalid regular expression: ${pattern}`);
+    }
   }
   // Like list_files, tolerate the model passing several space-separated paths
   // in a single call; search each independently instead of treating the whole
@@ -500,9 +555,13 @@ function searchFiles(root: string, pattern: string, rel?: string): string {
   }
   const files: string[] = [...new Set(collected)];
 
-  const matches: string[] = [];
+  const matches: Array<{ text: string; score: number }> = [];
+  const words = semantic
+    ? pattern.toLowerCase().match(/[a-z0-9_]{2,}/g)?.filter((word, index, all) => all.indexOf(word) === index) ?? []
+    : [];
+  const candidateLimit = semantic ? MAX_SEARCH_MATCHES * 10 : MAX_SEARCH_MATCHES;
   for (const file of files) {
-    if (matches.length >= MAX_SEARCH_MATCHES) break;
+    if (matches.length >= candidateLimit) break;
     try {
       if (fs.statSync(file).size > MAX_SEARCH_FILE) continue;
     } catch {
@@ -517,47 +576,82 @@ function searchFiles(root: string, pattern: string, rel?: string): string {
     if (content.includes("\u0000")) continue; // skip binary
     const relPath = path.relative(root, file);
     content.split("\n").forEach((line, i) => {
-      if (matches.length >= MAX_SEARCH_MATCHES) return;
-      if (regex.test(line)) {
-        matches.push(`${relPath}:${i + 1}: ${line.trim().slice(0, 200)}`);
+      if (matches.length >= candidateLimit) return;
+      const lower = line.toLowerCase();
+      if (!semantic && regex?.test(line)) {
+        matches.push({ text: `${relPath}:${i + 1}: ${line.trim().slice(0, 200)}`, score: 0 });
+      } else if (semantic && words.length > 0) {
+        const score = words.reduce((total, word) => total + (lower.includes(word) ? 1 : 0), 0);
+        if (score >= Math.max(1, Math.ceil(words.length / 2))) {
+          matches.push({ text: `${relPath}:${i + 1}: ${line.trim().slice(0, 200)}`, score });
+        }
       }
     });
   }
   if (matches.length === 0) {
     return missing.length > 0 ? `(no matches; not found: ${missing.join(", ")})` : "(no matches)";
   }
+  // Semantic mode is intentionally dependency-free: rank lines containing the
+  // most query words. It is a useful retrieval fallback, not a claim of true
+  // embedding-based understanding.
+  if (semantic) matches.sort((a, b) => b.score - a.score);
   // Surface skipped paths so the model can correct course instead of
   // assuming every target was searched.
   const note = missing.length > 0 ? `\n(not found: ${missing.join(", ")})` : "";
-  return matches.join("\n") + note;
+  return matches.slice(0, MAX_SEARCH_MATCHES).map((match) => match.text).join("\n") + note;
 }
 
-function writeFile(root: string, rel: string, content: string): string {
+async function writeFile(root: string, rel: string, content: string, approve?: CommandApprover): Promise<string> {
+  if (Buffer.byteLength(content, "utf8") > MAX_READ_BYTES) {
+    throw new Error(`File too large (${Buffer.byteLength(content, "utf8")} bytes). Keep write_file content under ${MAX_READ_BYTES} bytes or use run_command instead.`);
+  }
   const abs = safeResolve(root, rel);
-  fs.mkdirSync(path.dirname(abs), { recursive: true });
-  // Snapshot the old text so a drastic shrink can be flagged: the classic
+  // Snapshot the old text so a drastic shrink can be blocked: the classic
   // failure mode is the model "rewriting" a file for a small edit and dropping
-  // every line it didn't reproduce. This is non-blocking (full rewrites are
-  // legitimate) but surfaces the mistake so the model can self-correct.
+  // every line it didn't reproduce. Explicit approval still permits deliberate
+  // full rewrites.
   let before = "";
+  let existingSize = 0;
+  try { existingSize = fs.statSync(abs).size; } catch { /* new file */ }
+  if (existingSize > MAX_READ_BYTES) {
+    throw new Error(`File too large to rewrite safely (over ${MAX_READ_BYTES} bytes): ${rel}`);
+  }
   try {
     before = fs.readFileSync(abs, "utf8");
   } catch {
     before = "";
   }
-  fs.writeFileSync(abs, content, "utf8");
   let note = "";
   if (before && !before.includes("\u0000")) {
-    const beforeLines = before.split("\n").length;
-    const afterLines = content.split("\n").length;
-    if (beforeLines > 10 && afterLines < Math.ceil(beforeLines / 2)) {
-      note = `\nWARNING: ${rel} shrank from ${beforeLines} to ${afterLines} lines. If this was meant to be a small edit, use str_replace instead and restore the rest of the file.`;
+    const beforeLineList = before.split("\n");
+    const afterLineList = content.split("\n");
+    const beforeLines = beforeLineList.length;
+    const afterLines = afterLineList.length;
+    const changedLines = Math.max(beforeLines, afterLines) - beforeLineList.reduce(
+      (same, line, index) => same + (line === afterLineList[index] ? 1 : 0),
+      0,
+    );
+    const drasticRewrite = beforeLines > 10 && (
+      afterLines < Math.ceil(beforeLines / 2) ||
+      (beforeLines > 20 && changedLines / Math.max(beforeLines, afterLines) > 0.75)
+    );
+    if (drasticRewrite) {
+      const approvalText = `write_file ${rel}: replace ${beforeLines} lines with ${afterLines} lines (${changedLines} changed)`;
+      if (!approve) {
+        throw new Error(`Refusing to overwrite ${rel}: the replacement changes too much of the existing file (${beforeLines} to ${afterLines} lines, ${changedLines} changed). Use str_replace for a small edit, or explicitly approve this full rewrite.`);
+      }
+      if (await approve(approvalText) !== "approve") {
+        return `Write denied: ${rel} was not changed because the replacement is a drastic rewrite.`;
+      }
+      note = `\nApproved full rewrite: ${rel} changed ${changedLines} of ${Math.max(beforeLines, afterLines)} lines.`;
     }
   }
+  fs.mkdirSync(path.dirname(abs), { recursive: true });
+  fs.writeFileSync(abs, content, "utf8");
   return `Wrote ${Buffer.byteLength(content, "utf8")} bytes to ${rel}.${note}`;
 }
 
-function strReplace(root: string, rel: string, oldStr: string, newStr: string, replaceAll: unknown): string {
+async function strReplace(root: string, rel: string, oldStr: string, newStr: string, replaceAll: unknown, approve?: CommandApprover): Promise<string> {
   if (!oldStr) {
     throw new Error("str_replace: old_string must not be empty.");
   }
@@ -585,6 +679,15 @@ function strReplace(root: string, rel: string, oldStr: string, newStr: string, r
     throw new Error(`str_replace: old_string appears ${occurrences} times in ${rel}. Include more surrounding context to make it unique, or set replace_all to true.`);
   }
   const replaced = all ? raw.split(oldStr).join(newStr) : raw.replace(oldStr, newStr);
+  if (Buffer.byteLength(replaced, "utf8") > MAX_READ_BYTES) {
+    throw new Error(`Replacement would create a file larger than ${MAX_READ_BYTES} bytes.`);
+  }
+  if (all && occurrences > 10) {
+    if (!approve) throw new Error(`Refusing to replace ${occurrences} occurrences in ${rel} without explicit approval.`);
+    if (await approve(`str_replace ${rel}: replace ${occurrences} occurrences`) !== "approve") {
+      return `Edit denied: ${rel} was not changed.`;
+    }
+  }
   fs.writeFileSync(abs, replaced, "utf8");
   const count = all ? occurrences : 1;
   return `Replaced ${count} occurrence${count === 1 ? "" : "s"} in ${rel}.`;
@@ -696,9 +799,14 @@ export async function runTool(
     case "read_file":
       return readFile(root, String(args.path ?? ""), asNumber(args.start_line), asNumber(args.end_line));
     case "search":
-      return searchFiles(root, String(args.pattern ?? ""), typeof args.path === "string" ? args.path : undefined);
+      return searchFiles(
+        root,
+        String(args.pattern ?? ""),
+        typeof args.path === "string" ? args.path : undefined,
+        args.semantic === true,
+      );
     case "write_file":
-      return writeFile(root, String(args.path ?? ""), String(args.content ?? ""));
+      return writeFile(root, String(args.path ?? ""), String(args.content ?? ""), approve);
     case "str_replace":
       return strReplace(
         root,
@@ -706,6 +814,7 @@ export async function runTool(
         String(args.old_string ?? ""),
         String(args.new_string ?? ""),
         args.replace_all,
+        approve,
       );
     case "run_command":
       return runCommand(root, String(args.command ?? ""), approve, sandbox, signal);

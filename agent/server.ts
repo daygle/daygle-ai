@@ -11,11 +11,15 @@ import {
   cloneRepo,
   commitAll,
   createBranch,
+  createCheckpoint,
+  deleteCheckpoint,
+  restoreCheckpoint,
   detectDefaultBranch,
   ghAuthenticated,
   openPullRequest,
   pushBranch,
   workingDiff,
+  type WorkingTreeCheckpoint,
 } from "./git";
 import {
   createInstallationToken,
@@ -24,7 +28,7 @@ import {
   parseRepo,
 } from "./github";
 import { detectSandbox, type SandboxRunner } from "./sandbox";
-import { reviewApprover, runTool, type CommandApprover } from "./tools";
+import { reviewApproverForRoot, runTool, type CommandApprover } from "./tools";
 import { HistoryStore, type StoredJob } from "./history";
 import { runQaGate, type QaResult } from "./qa";
 import { checkModelUpdate } from "./updates";
@@ -47,6 +51,126 @@ const TOKEN_PATH = path.join(os.homedir(), ".daygle", "github-token");
 let sandbox: SandboxRunner | null = null;
 
 const chatSessions = new Map<string, ChatSession>();
+interface ChatCheckpointRecord {
+  sessionId: string;
+  id: string;
+  createdAt: number;
+  checkpoint: WorkingTreeCheckpoint;
+}
+const chatCheckpoints = new Map<string, ChatCheckpointRecord[]>();
+const CHECKPOINT_ROOT = path.join(os.homedir(), ".daygle", "checkpoints");
+const MAX_CHECKPOINTS_PER_CHAT = 12;
+const CHECKPOINT_TTL_MS = 24 * 60 * 60 * 1000;
+const MAX_STORED_JOB_EVENTS = 2_000;
+const MAX_CHAT_HISTORY_MESSAGES = 1_000;
+const AUDIT_LOG_PATH = path.join(os.homedir(), ".daygle", "audit.jsonl");
+const AUDIT_ROTATE_BYTES = 5 * 1024 * 1024;
+
+function redactAuditText(value: string): string {
+  const token = loadGithubToken();
+  return (token ? value.replaceAll(token, "[credential redacted]") : value)
+    .replace(/(authorization|token|password|secret|api[_-]?key)\s*[:=]\s*[^\s,;]+/gi, "$1=[redacted]");
+}
+
+function checkpointManifestPath(sessionId: string, id: string): string {
+  return path.join(CHECKPOINT_ROOT, sessionId, id, "manifest.json");
+}
+
+function loadChatCheckpoints(sessionId: string): ChatCheckpointRecord[] {
+  const existing = chatCheckpoints.get(sessionId);
+  if (existing) return existing;
+  const records: ChatCheckpointRecord[] = [];
+  try {
+    for (const id of fs.readdirSync(path.join(CHECKPOINT_ROOT, sessionId))) {
+      try {
+        const raw = JSON.parse(fs.readFileSync(checkpointManifestPath(sessionId, id), "utf8")) as ChatCheckpointRecord;
+        if (raw.sessionId === sessionId && raw.id === id && raw.checkpoint?.directory && path.resolve(raw.checkpoint.directory).startsWith(path.resolve(CHECKPOINT_ROOT) + path.sep)) {
+          records.push(raw);
+        }
+      } catch {
+        // skip incomplete checkpoint directories
+      }
+    }
+  } catch {
+    // no persisted checkpoints yet
+  }
+  records.sort((a, b) => a.createdAt - b.createdAt);
+  chatCheckpoints.set(sessionId, records);
+  return records;
+}
+
+function deleteChatCheckpoint(record: ChatCheckpointRecord): void {
+  deleteCheckpoint(record.checkpoint);
+  try { fs.rmSync(path.join(CHECKPOINT_ROOT, record.sessionId, record.id), { recursive: true, force: true }); } catch { /* best effort */ }
+}
+
+function pruneChatCheckpoints(records: ChatCheckpointRecord[]): void {
+  const now = Date.now();
+  while (records.length > MAX_CHECKPOINTS_PER_CHAT || (records[0] && now - records[0].createdAt > CHECKPOINT_TTL_MS)) {
+    const old = records.shift();
+    if (old) deleteChatCheckpoint(old);
+  }
+}
+
+function saveCheckpointManifest(record: ChatCheckpointRecord): void {
+  const manifest = checkpointManifestPath(record.sessionId, record.id);
+  fs.mkdirSync(path.dirname(manifest), { recursive: true, mode: 0o700 });
+  fs.writeFileSync(manifest, JSON.stringify(record), { encoding: "utf8", mode: 0o600 });
+}
+
+function cleanupCheckpointStore(): void {
+  try {
+    for (const sessionId of fs.readdirSync(CHECKPOINT_ROOT)) {
+      const records = loadChatCheckpoints(sessionId);
+      pruneChatCheckpoints(records);
+      if (records.length === 0) fs.rmSync(path.join(CHECKPOINT_ROOT, sessionId), { recursive: true, force: true });
+    }
+  } catch {
+    // checkpoint cleanup is best effort
+  }
+}
+
+cleanupCheckpointStore();
+
+/** Append structured, redacted tool activity for post-mortem debugging. */
+function audit(scope: string, event: unknown): void {
+  try {
+    const value = event as { type?: string; name?: string; args?: Record<string, unknown>; result?: string; diff?: string };
+    const safeArgs = value.args
+      ? Object.fromEntries(Object.entries(value.args).map(([key, item]) => [key, key === "content" ? `[${String(item).length} chars]` : String(item).slice(0, 500)]))
+      : undefined;
+    fs.mkdirSync(path.dirname(AUDIT_LOG_PATH), { recursive: true, mode: 0o700 });
+    if (fs.existsSync(AUDIT_LOG_PATH) && fs.statSync(AUDIT_LOG_PATH).size > AUDIT_ROTATE_BYTES) {
+      const rotated = `${AUDIT_LOG_PATH}.1`;
+      fs.rmSync(rotated, { force: true });
+      fs.renameSync(AUDIT_LOG_PATH, rotated);
+    }
+    const record = {
+      timestamp: new Date().toISOString(),
+      scope,
+      type: value.type,
+      name: value.name,
+      args: safeArgs ? Object.fromEntries(Object.entries(safeArgs).map(([key, item]) => [key, redactAuditText(String(item))])) : undefined,
+      result: value.result ? redactAuditText(value.result.slice(0, 2_000)) : undefined,
+      diff: value.diff ? redactAuditText(value.diff.slice(0, 2_000)) : undefined,
+    };
+    fs.appendFileSync(AUDIT_LOG_PATH, `${JSON.stringify(record)}\n`, { encoding: "utf8", mode: 0o600 });
+  } catch {
+    // Audit logging must never interrupt an agent run.
+  }
+}
+
+function readAuditLog(scope?: string, limit = 200): unknown[] {
+  try {
+    const lines = fs.readFileSync(AUDIT_LOG_PATH, "utf8").split(/\r?\n/).filter(Boolean);
+    return lines
+      .slice(-Math.max(1, Math.min(500, limit)))
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+      .filter((entry) => !scope || entry.scope === scope);
+  } catch {
+    return [];
+  }
+}
 
 // Cancel handles for in-flight chat generations, keyed by session id, so a
 // /cancel request (or a disconnect) can stop a run even when the streaming
@@ -111,6 +235,9 @@ const chatSweeper = setInterval(() => {
     if (session.busy) continue; // never evict a session mid-generation
     if (now - session.lastActivity > CHAT_SESSION_TTL_MS) {
       chatSessions.delete(id);
+      const checkpoints = chatCheckpoints.get(id) ?? loadChatCheckpoints(id);
+      for (const checkpoint of checkpoints) deleteChatCheckpoint(checkpoint);
+      chatCheckpoints.delete(id);
       if (session.root) {
         try {
           fs.rmSync(session.root, { recursive: true, force: true });
@@ -132,13 +259,20 @@ const historyStore = new HistoryStore(path.join(os.homedir(), ".daygle", "histor
 const chatHistoryStore = new ChatHistoryStore(path.join(os.homedir(), ".daygle", "chat-history"));
 
 function persistChat(session: ChatSession): void {
+  const messages = session.messages.length > MAX_CHAT_HISTORY_MESSAGES
+    ? [
+        ...session.messages.filter((message) => message.role === "system").slice(0, 1),
+        { role: "system" as const, content: "Older transcript turns were dropped from durable storage to enforce the chat history quota." },
+        ...session.messages.slice(-(MAX_CHAT_HISTORY_MESSAGES - 2)),
+      ]
+    : session.messages;
   chatHistoryStore.save({
     id: session.id,
     repoUrl: session.repoUrl,
     model: session.model,
     ollamaUrl: session.ollamaUrl,
     title: deriveTitle(session.messages),
-    messages: session.messages,
+    messages,
     createdAt: session.createdAt,
     lastActivity: session.lastActivity,
     options: session.options,
@@ -235,13 +369,22 @@ function errMessage(err: unknown): string {
 }
 
 function publish(job: Job, event: AgentEvent): void {
+  if (event.type === "tool_start" || event.type === "tool_result" || event.type === "diff") {
+    audit(`job:${job.id}`, event);
+  }
   if (event.type === "model_delta" || event.type === "diff") {
     // Streaming deltas and diff snapshots are live-only; the full `model` event and
     // the tool results are what get persisted.
     for (const listener of job.listeners) listener(event);
     return;
   }
-  job.events.push(event);
+  const storedEvent = event.type === "tool_result"
+    ? { ...event, result: event.result.slice(0, 4_000) }
+    : event.type === "model"
+      ? { ...event, content: event.content.slice(0, 12_000) }
+      : event;
+  job.events.push(storedEvent);
+  if (job.events.length > MAX_STORED_JOB_EVENTS) job.events.splice(0, job.events.length - MAX_STORED_JOB_EVENTS);
   for (const listener of job.listeners) listener(event);
   persist(job);
 }
@@ -401,7 +544,7 @@ async function executeJob(job: Job): Promise<void> {
     if (changed.length > 0) {
       // ---- Optional test-generation pass: write and run tests for the change
       // before the QA gate, so the new tests are verified by the normal rounds. ----
-      if (job.config?.generateTests) {
+      if (job.config?.generateTests !== false) {
         emit({ type: "status", message: "Generating tests for the change…" });
         const { diff } = await workingDiff(workDir).catch(() => ({ stat: "", diff: "" }));
         if (diff.trim()) {
@@ -470,13 +613,15 @@ async function executeJob(job: Job): Promise<void> {
       // ---- Optional AI review gate: a second model reviews the diff before commit. ----
       let reviewText: string | undefined;
       let reviewFixRounds = 0;
-      const reviewModel = job.config?.reviewModel?.trim();
+      // Every autonomous task gets a second-pass review by default. Users can
+      // still disable it explicitly with an empty review model in config.
+      const reviewModel = job.config?.reviewModel === "" ? "" : (job.config?.reviewModel?.trim() || job.model);
       if (reviewModel) {
         const maxRounds = Math.max(0, Math.min(5, job.config?.maxReviewRounds ?? 2));
         for (let round = 0; round <= maxRounds; round++) {
           const { diff } = await workingDiff(workDir).catch(() => ({ stat: "", diff: "" }));
           if (!diff.trim()) break;
-          const agentic = Boolean(job.config?.agenticReview);
+          const agentic = job.config?.agenticReview !== false;
           emit({ type: "status", message: `${agentic ? "Agentic review" : "AI review"} by ${reviewModel}…` });
           const review = agentic
             ? await runAgenticReview({
@@ -486,7 +631,7 @@ async function executeJob(job: Job): Promise<void> {
                 task: job.task,
                 diff,
                 emit,
-                approve: reviewApprover,
+                approve: reviewApproverForRoot(workDir),
                 sandbox: sandbox ?? undefined,
                 signal,
                 config: job.config,
@@ -607,6 +752,12 @@ const server = http.createServer((req, res) => {
       return;
     }
 
+    if (req.method === "GET" && url.pathname === "/api/audit") {
+      const limit = Number(url.searchParams.get("limit") ?? "200");
+      sendJson(res, 200, { entries: readAuditLog(url.searchParams.get("scope") || undefined, Number.isFinite(limit) ? limit : 200) });
+      return;
+    }
+
     if (req.method === "GET" && url.pathname === "/api/health") {
       const gh = await ghAuthenticated();
       const app = githubAppAvailable();
@@ -691,6 +842,49 @@ const server = http.createServer((req, res) => {
       return;
     }
 
+    // Restore the checkout to the snapshot taken immediately before the latest
+    // chat task. This is deliberately scoped to the live clone and never
+    // touches the user's source checkout.
+    const chatRevertMatch = url.pathname.match(/^\/api\/chat\/sessions\/([^/]+)\/revert(?:\/([^/]+))?$/);
+    if (chatRevertMatch && req.method === "POST") {
+      const sessionId = chatRevertMatch[1];
+      const requestedId = chatRevertMatch[2];
+      const session = chatSessions.get(sessionId);
+      const records = loadChatCheckpoints(sessionId);
+      const index = requestedId ? records.findIndex((record) => record.id === requestedId) : records.length - 1;
+      const selected = index >= 0 ? records[index] : undefined;
+      if (!session || !session.root) {
+        sendJson(res, 404, { error: "Chat workspace not found." });
+        return;
+      }
+      if (session.busy) {
+        sendJson(res, 409, { error: "Stop the current response before reverting." });
+        return;
+      }
+      if (!selected) {
+        sendJson(res, 409, { error: "No task checkpoint is available yet." });
+        return;
+      }
+      try {
+        await restoreCheckpoint(session.root, selected.checkpoint);
+        for (const record of records.splice(index)) deleteChatCheckpoint(record);
+        chatCheckpoints.set(sessionId, records);
+        audit(`chat:${sessionId}`, { type: "revert", diff: `working tree restored to checkpoint ${selected.id}` });
+        sendJson(res, 200, { ok: true, checkpointId: selected.id });
+      } catch (err) {
+        sendJson(res, 400, { error: `Failed to revert workspace: ${errMessage(err)}` });
+      }
+      return;
+    }
+
+    const chatCheckpointListMatch = url.pathname.match(/^\/api\/chat\/sessions\/([^/]+)\/checkpoints$/);
+    if (chatCheckpointListMatch && req.method === "GET") {
+      const records = loadChatCheckpoints(chatCheckpointListMatch[1]);
+      pruneChatCheckpoints(records);
+      sendJson(res, 200, { checkpoints: records.map(({ id, createdAt }) => ({ id, createdAt })) });
+      return;
+    }
+
     const chatWorkspaceMatch = url.pathname.match(/^\/api\/chat\/sessions\/([^/]+)\/workspace$/);
     if (chatWorkspaceMatch && req.method === "GET") {
       const sessionId = chatWorkspaceMatch[1];
@@ -708,7 +902,7 @@ const server = http.createServer((req, res) => {
         return;
       }
       if (!session.root) {
-        sendJson(res, 200, { files: [], changedFiles: [], stat: "", diff: "" });
+        sendJson(res, 200, { files: [], changedFiles: [], stat: "", diff: "", checkpoints: [] });
         return;
       }
       try {
@@ -718,7 +912,15 @@ const server = http.createServer((req, res) => {
         const files = filesResult === "(empty)"
           ? []
           : filesResult.split(/\r?\n/).filter(Boolean);
-        sendJson(res, 200, { files, changedFiles: changed, stat, diff });
+        const checkpoints = loadChatCheckpoints(sessionId);
+        pruneChatCheckpoints(checkpoints);
+        sendJson(res, 200, {
+          files,
+          changedFiles: changed,
+          stat,
+          diff,
+          checkpoints: checkpoints.map(({ id, createdAt }) => ({ id, createdAt })),
+        });
       } catch (err) {
         sendJson(res, 400, { error: errMessage(err) });
       }
@@ -767,6 +969,7 @@ const server = http.createServer((req, res) => {
       const controller = new AbortController();
       req.on("close", () => controller.abort());
       const emit = (event: ChatEvent) => {
+        audit(`chat:${sessionId}`, event);
         try {
           res.write(`data: ${JSON.stringify(event)}\n\n`);
         } catch {
@@ -811,7 +1014,7 @@ const server = http.createServer((req, res) => {
                   task: deriveTitle(session.messages) || "the requested changes",
                   diff,
                   emit: forward,
-                  approve: reviewApprover,
+                  approve: reviewApproverForRoot(session.root),
                   sandbox: sandbox ?? undefined,
                   signal: controller.signal,
                   config: reviewConfig,
@@ -871,6 +1074,9 @@ const server = http.createServer((req, res) => {
       const live = chatSessions.get(id);
       if (live) {
         chatSessions.delete(id);
+        const checkpoints = chatCheckpoints.get(id) ?? loadChatCheckpoints(id);
+        for (const checkpoint of checkpoints) deleteChatCheckpoint(checkpoint);
+        chatCheckpoints.delete(id);
         if (live.root) {
           try {
             fs.rmSync(live.root, { recursive: true, force: true });
@@ -974,6 +1180,10 @@ const server = http.createServer((req, res) => {
           return;
         }
       }
+      if (session.busy) {
+        sendJson(res, 409, { error: "This chat is already working. Queue the message in the client and try again when it finishes." });
+        return;
+      }
       let body: { message?: string; image?: { data?: string; mimeType?: string } };
       try {
         body = JSON.parse(await readBody(req, 12_000_000)) as typeof body;
@@ -997,6 +1207,23 @@ const server = http.createServer((req, res) => {
         }
         image = { data: body.image.data, mimeType: body.image.mimeType };
       }
+      if (session.root) {
+        const checkpointId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+        const checkpointDir = path.join(CHECKPOINT_ROOT, sessionId, checkpointId);
+        try {
+          const checkpoint = await createCheckpoint(session.root, checkpointDir);
+          const records = loadChatCheckpoints(sessionId);
+          const record: ChatCheckpointRecord = { sessionId, id: checkpointId, createdAt: Date.now(), checkpoint };
+          records.push(record);
+          records.sort((a, b) => a.createdAt - b.createdAt);
+          saveCheckpointManifest(record);
+          pruneChatCheckpoints(records);
+        } catch (err) {
+          fs.rmSync(checkpointDir, { recursive: true, force: true });
+          sendJson(res, 500, { error: `Could not create a safety checkpoint: ${errMessage(err)}` });
+          return;
+        }
+      }
       session.lastActivity = Date.now();
       // Stream the response as SSE
       res.writeHead(200, {
@@ -1007,6 +1234,7 @@ const server = http.createServer((req, res) => {
       });
       const controller = new AbortController();
       const emit = (event: ChatEvent) => {
+        audit(`chat:${sessionId}`, event);
         try {
           res.write(`data: ${JSON.stringify(event)}\n\n`);
         } catch {

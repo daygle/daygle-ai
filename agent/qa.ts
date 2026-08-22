@@ -1,8 +1,8 @@
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { isSandboxNetworkEnabled, type SandboxRunner } from "./sandbox";
-import { REVIEW_RUNNERS } from "./tools";
+import type { SandboxRunner } from "./sandbox";
+import { isReviewSafeCommand } from "./tools";
 
 const INSTALL_RUNNERS = new Set(["npm", "pnpm", "yarn", "bun"]);
 
@@ -72,7 +72,7 @@ function splitCommandLine(input: string): string[] {
 
 function spawnCapture(
   command: string,
-  opts: { cwd: string; timeoutMs: number; signal?: AbortSignal },
+  opts: { cwd: string; timeoutMs: number; signal?: AbortSignal; allowInstall?: boolean },
 ): Promise<{ code: number | null; stdout: string; stderr: string; timedOut: boolean }> {
   return new Promise((resolve) => {
     const argv = splitCommandLine(command);
@@ -80,11 +80,13 @@ function spawnCapture(
       resolve({ code: 1, stdout: "", stderr: "Empty command.", timedOut: false });
       return;
     }
-    // Only known verification / install runners may be spawned. argv[0] is
-    // argv-split from a user-supplied or package.json-derived command, so
-    // this prevents arbitrary binary execution even though shell injection
-    // is already avoided by splitting into argv.
-    if (!REVIEW_RUNNERS.has(argv[0]) && !INSTALL_RUNNERS.has(argv[0])) {
+    // Package scripts are accepted only when their body passes the same
+    // reviewer policy used by the agentic reviewer. Installs are the sole
+    // exception and are explicitly requested by the QA dependency bootstrap.
+    const safe = opts.allowInstall
+      ? INSTALL_RUNNERS.has(argv[0]) && argv[1] === "install" && argv.slice(2).every((token) => token === "--ignore-scripts")
+      : isReviewSafeCommand(command, opts.cwd);
+    if (!safe) {
       resolve({
         code: 1,
         stdout: "",
@@ -212,6 +214,9 @@ export async function runQaGate(opts: {
   // the host otherwise. The sandbox handles its own cwd (the repo is mounted
   // at /work), so only host execution needs an explicit cwd.
   const run = async (command: string, timeoutMs: number) => {
+    if (!isReviewSafeCommand(command, root)) {
+      return { code: 1, stdout: "", stderr: `QA command rejected by verification policy: ${command}`, timedOut: false };
+    }
     if (sandbox) {
       const result = await sandbox.runCapture(root, command, { signal, timeoutMs });
       return { code: result.code, stdout: result.stdout, stderr: result.stderr, timedOut: result.timedOut };
@@ -221,17 +226,17 @@ export async function runQaGate(opts: {
 
   if (fs.existsSync(path.join(root, "package.json")) && !fs.existsSync(path.join(root, "node_modules"))) {
     const pm = detectPackageManager(root);
-    // Installs need network, which the sandbox has off by default - so they
-    // run on the host unless the sandbox was explicitly given network access.
-    const inSandbox = Boolean(sandbox) && isSandboxNetworkEnabled();
-    opts.onStatus?.(`QA: installing dependencies (${pm} install${inSandbox ? ", sandboxed" : ""})…`);
-    const install = await run(`${pm} install`, INSTALL_TIMEOUT_MS);
+    // Dependency bootstrap is intentionally host-side and script-disabled;
+    // verification itself still uses the sandbox when available.
+    const installCommand = `${pm} install --ignore-scripts`;
+    opts.onStatus?.(`QA: installing dependencies (${installCommand})…`);
+    const install = await spawnCapture(installCommand, { cwd: root, timeoutMs: INSTALL_TIMEOUT_MS, signal, allowInstall: true });
     if (install.timedOut) {
-      return { ran: true, command: `${pm} install`, output: "QA: dependency install timed out.", passed: false };
+      return { ran: true, command: installCommand, output: "QA: dependency install timed out.", passed: false };
     }
     if (install.code !== 0) {
       const err = truncate(`${install.stdout}\n${install.stderr}`.trim(), MAX_OUTPUT);
-      return { ran: true, command: `${pm} install`, output: `QA: dependency install failed.\n${err}`, passed: false };
+      return { ran: true, command: installCommand, output: `QA: dependency install failed.\n${err}`, passed: false };
     }
   }
 

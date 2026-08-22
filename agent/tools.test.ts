@@ -13,9 +13,23 @@ describe("space-separated tool paths", () => {
   writeFileSync(join(root, "b", "two.txt"), "beta needle\n");
 
   test("search accepts several space-separated paths in one call", async () => {
-    const result = await runTool(root, "search", { pattern: "needle", path: "a one.txt b/two.txt" });
+    const result = await runTool(root, "search", { pattern: "needle", path: "a/one.txt b/two.txt" });
     expect(result).toContain("one.txt");
     expect(result).toContain("two.txt");
+  });
+
+  test("search accepts absolute and relative paths without joining them", async () => {
+    const result = await runTool(root, "search", {
+      pattern: "needle",
+      path: `${join(root, "a", "one.txt")} b/two.txt`,
+    });
+    expect(result).toContain("one.txt");
+    expect(result).toContain("two.txt");
+  });
+
+  test("semantic search finds lines by related words without regex syntax", async () => {
+    const result = await runTool(root, "search", { pattern: "alpha needle", semantic: true, path: "a" });
+    expect(result).toContain("one.txt");
   });
 
   test("list_files accepts several space-separated paths in one call", async () => {
@@ -40,6 +54,7 @@ describe("tool hardening", () => {
   const root = mkdtempSync(join(tmpdir(), "daygle-tools-hardening-"));
   mkdirSync(join(root, "src"), { recursive: true });
   writeFileSync(join(root, "src", "code.txt"), "hello world\n");
+  writeFileSync(join(root, "package.json"), JSON.stringify({ scripts: { test: "bun test", deploy: "rm -rf /" } }));
   writeFileSync(join(root, "blob.bin"), "text\u0000binary");
   // A symlink inside the repo that points outside it.
   symlinkSync(tmpdir(), join(root, "escape"));
@@ -75,6 +90,8 @@ describe("tool hardening", () => {
     expect(isReviewSafeCommand("bun --eval 'console.log(1)'")).toBe(false);
     expect(isReviewSafeCommand("node --version")).toBe(true);
     expect(isReviewSafeCommand("npm test")).toBe(true);
+    expect(isReviewSafeCommand("npm test", root)).toBe(true);
+    expect(isReviewSafeCommand("npm run deploy", root)).toBe(false);
   });
 });
 
@@ -147,11 +164,20 @@ describe("write_file truncation warning", () => {
   const root = mkdtempSync(join(tmpdir(), "daygle-tools-writefile-"));
   const file = join(root, "big.txt");
 
-  test("warns when an existing file is rewritten with far fewer lines", async () => {
+  test("blocks an unapproved rewrite that would remove most of a file", async () => {
     writeFileSync(file, Array.from({ length: 20 }, (_, i) => `line ${i}`).join("\n"));
-    const result = await runTool(root, "write_file", { path: "big.txt", content: "one line\n" });
-    expect(result).toContain("WARNING");
-    expect(result).toContain("shrank");
+    await expect(runTool(root, "write_file", { path: "big.txt", content: "one line\n" })).rejects.toThrow(/Refusing to overwrite/);
+  });
+
+  test("allows an explicitly approved full rewrite", async () => {
+    writeFileSync(file, Array.from({ length: 20 }, (_, i) => `line ${i}`).join("\n"));
+    const result = await runTool(
+      root,
+      "write_file",
+      { path: "big.txt", content: "one line\n" },
+      async () => "approve",
+    );
+    expect(result).toContain("Approved full rewrite");
   });
 
   test("does not warn for similar-sized rewrites or new files", async () => {
@@ -209,7 +235,7 @@ describe("isReviewSafeCommand", () => {
   test("rejects shell plumbing and anything outside the allowlist", () => {
     expect(isReviewSafeCommand("npm test | grep foo")).toBe(false);
     expect(isReviewSafeCommand("rm -rf node_modules")).toBe(false);
-    expect(isReviewSafeCommand("npm run deploy")).toBe(true); // npm is allowlisted; policy still applies
+    expect(isReviewSafeCommand("npm run deploy")).toBe(false);
   });
 
   test("rejects read-only programs that can write files", () => {

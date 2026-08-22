@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { Bot, Check, ChevronDown, ChevronRight, ChevronUp, CircleAlert, Copy, Eye, ExternalLink, FileEdit, Files, Folder, GitBranch, GitCompare, GripVertical, ImagePlus, ListTodo, Loader2, MessageSquarePlus, PanelRightClose, PanelRightOpen, RefreshCw, Rocket, Search, Send, ShieldCheck, Square, Terminal, Trash2, User, X } from "lucide-react";
+import { Bot, Check, ClipboardList, ChevronDown, ChevronRight, ChevronUp, CircleAlert, Copy, Eye, ExternalLink, FileEdit, Files, Folder, GitBranch, GitCompare, GripVertical, ImagePlus, ListTodo, Loader2, MessageSquarePlus, PanelRightClose, PanelRightOpen, RefreshCw, RotateCcw, Rocket, Search, Send, ShieldCheck, Square, Terminal, Trash2, User, X } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
@@ -10,15 +10,18 @@ import {
   createChatSession,
   deleteChatSession,
   getChatSession,
+  getAuditLog,
   getChatWorkspace,
   listChatSessions,
   openAgentEvents,
   resolveApproval,
+  rollbackChat,
   sendChatMessage,
   updateChatModel,
   verifyChat,
   startAgentJob,
   type AgentEvent,
+  type AuditEntry,
   type ChatEvent,
   type ChatImage,
   type ChatSummary,
@@ -418,7 +421,7 @@ function ReviewCard({ verdict, text }: { verdict: "approved" | "changes_requeste
   );
 }
 
-type WorkspaceTab = "queue" | "files" | "changes" | "preview" | "terminal";
+type WorkspaceTab = "queue" | "files" | "changes" | "preview" | "terminal" | "audit";
 
 // ── File tree helpers ───────────────────────────────────────────────────────
 
@@ -551,6 +554,25 @@ interface QueuedMessage {
   imageName?: string;
 }
 
+function AuditView({ entries }: { entries: AuditEntry[] }) {
+  const [filter, setFilter] = useState("");
+  const visible = entries.filter((entry) => !filter.trim() || JSON.stringify(entry).toLowerCase().includes(filter.trim().toLowerCase()));
+  if (entries.length === 0) return <div className="py-8 text-center text-xs text-muted-foreground">No audit entries yet.</div>;
+  return (
+    <div className="space-y-2">
+      <Input value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="Filter tool, file, session…" className="font-mono text-[11px]" />
+      {visible.slice().reverse().map((entry, index) => (
+        <details key={`${entry.timestamp ?? "entry"}-${index}`} className="rounded-lg border border-border bg-background p-2 text-[11px]">
+          <summary className="cursor-pointer font-mono text-muted-foreground">
+            {entry.timestamp ? new Date(entry.timestamp).toLocaleTimeString() : ""} {entry.scope ?? ""} {entry.name ?? entry.type ?? "event"}
+          </summary>
+          <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-words font-mono text-[10px] text-muted-foreground">{JSON.stringify(entry, null, 2)}</pre>
+        </details>
+      ))}
+    </div>
+  );
+}
+
 function WorkspacePanel({
   tab,
   onTabChange,
@@ -563,7 +585,9 @@ function WorkspacePanel({
   messages,
   onRefresh,
   refreshing,
+  auditEntries,
 }: {
+  auditEntries: AuditEntry[];
   tab: WorkspaceTab;
   onTabChange: (tab: WorkspaceTab) => void;
   hasRepo: boolean;
@@ -585,6 +609,7 @@ function WorkspacePanel({
     { id: "changes", label: "Changes", icon: GitCompare, count: workspace.changedFiles.length || undefined },
     { id: "preview", label: "Preview", icon: Eye },
     { id: "terminal", label: "Terminal", icon: Terminal },
+    { id: "audit", label: "Audit", icon: ClipboardList },
   ];
   const tabs = hasRepo ? allTabs : allTabs.filter((item) => !repoOnly.has(item.id));
   // Fall back to Queue if the selected tab isn't available (e.g. repo tabs on a
@@ -744,6 +769,8 @@ function WorkspacePanel({
           </div>
         )}
 
+        {activeTab === "audit" && <AuditView entries={auditEntries} />}
+
         {activeTab === "terminal" && (
           terminalEntries.length === 0 ? (
             <div className="py-8 text-center text-xs text-muted-foreground">Command output will appear here.</div>
@@ -788,7 +815,9 @@ export function AgentPage() {
   const [connected, setConnected] = useState(false);
   const [history, setHistory] = useState<ChatSummary[]>([]);
   const [queuedMessages, setQueuedMessages] = useState<QueuedMessage[]>([]);
-  const [workspace, setWorkspace] = useState<ChatWorkspace>({ files: [], changedFiles: [], stat: "", diff: "" });
+  const [workspace, setWorkspace] = useState<ChatWorkspace>({ files: [], changedFiles: [], stat: "", diff: "", checkpoints: [] });
+  const [selectedCheckpoint, setSelectedCheckpoint] = useState<string>("");
+  const [auditEntries, setAuditEntries] = useState<AuditEntry[]>([]);
   const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>("queue");
   // On small screens the chat list and workspace become overlay drawers (closed
   // by default) so the conversation gets the full width; on desktop they stay
@@ -873,18 +902,31 @@ export function AgentPage() {
 
   const refreshWorkspace = useCallback(async () => {
     if (!sessionId) {
-      setWorkspace({ files: [], changedFiles: [], stat: "", diff: "" });
+      setWorkspace({ files: [], changedFiles: [], stat: "", diff: "", checkpoints: [] });
+      setAuditEntries([]);
       return;
     }
     setWorkspaceRefreshing(true);
     try {
-      setWorkspace(await getChatWorkspace(agentUrl, sessionId));
+      const [nextWorkspace, nextAudit] = await Promise.all([
+        getChatWorkspace(agentUrl, sessionId),
+        getAuditLog(agentUrl),
+      ]);
+      setWorkspace(nextWorkspace);
+      setAuditEntries(nextAudit);
     } catch {
       // A chat-only session has no workspace; keep the empty state.
     } finally {
       setWorkspaceRefreshing(false);
     }
   }, [agentUrl, sessionId]);
+
+  useEffect(() => {
+    const latest = workspace.checkpoints[workspace.checkpoints.length - 1]?.id ?? "";
+    if (!selectedCheckpoint || !workspace.checkpoints.some((checkpoint) => checkpoint.id === selectedCheckpoint)) {
+      setSelectedCheckpoint(latest);
+    }
+  }, [selectedCheckpoint, workspace.checkpoints]);
 
   useEffect(() => {
     if (!sessionId) return;
@@ -1100,7 +1142,7 @@ export function AgentPage() {
     setInput("");
     removeImageAttachment();
     setQueuedMessages([]);
-    setWorkspace({ files: [], changedFiles: [], stat: "", diff: "" });
+    setWorkspace({ files: [], changedFiles: [], stat: "", diff: "", checkpoints: [] });
     setStreaming(false);
     rememberSession(null);
     refreshHistory();
@@ -1397,6 +1439,18 @@ export function AgentPage() {
       cancel();
       finish();
     };
+  }
+
+  async function handleRollback() {
+    if (!sessionId || !sessionRepo || streaming || verifying || !selectedCheckpoint) return;
+    if (!window.confirm("Revert the workspace to the selected checkpoint? This discards later edits.")) return;
+    try {
+      await rollbackChat(agentUrl, sessionId, selectedCheckpoint);
+      setMessages((prev) => [...prev, { id: uid(), role: "assistant", content: "Reverted the workspace to the checkpoint from before the latest task." }]);
+      await refreshWorkspace();
+    } catch (err) {
+      setMessages((prev) => [...prev, { id: uid(), role: "assistant", content: `Could not revert the workspace: ${err instanceof Error ? err.message : String(err)}` }]);
+    }
   }
 
   const handleApproval = useCallback(
@@ -1822,6 +1876,33 @@ export function AgentPage() {
           </span>
         )}
         <div className="ml-auto flex shrink-0 items-center gap-2">
+          {sessionRepo && workspace.checkpoints.length > 0 && (
+            <>
+              <select
+                value={selectedCheckpoint}
+                onChange={(event) => setSelectedCheckpoint(event.target.value)}
+                disabled={streaming || verifying}
+                className="hidden max-w-32 rounded-md border border-border bg-background px-2 py-1.5 text-[11px] text-muted-foreground sm:block"
+                title="Select a checkpoint"
+                aria-label="Select a checkpoint"
+              >
+                {[...workspace.checkpoints].reverse().map((checkpoint, index) => (
+                  <option key={checkpoint.id} value={checkpoint.id}>
+                    {index === 0 ? "Latest checkpoint" : `Checkpoint ${workspace.checkpoints.length - index}`} ({new Date(checkpoint.createdAt).toLocaleTimeString()})
+                  </option>
+                ))}
+              </select>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleRollback}
+                disabled={streaming || verifying}
+                title="Revert the workspace to the selected checkpoint"
+              >
+                <RotateCcw className="mr-1 h-3.5 w-3.5" /> <span className="hidden sm:inline">Revert</span>
+              </Button>
+            </>
+          )}
           {sessionRepo && (
             <Button
               variant="outline"
@@ -2085,6 +2166,7 @@ export function AgentPage() {
           messages={messages}
           onRefresh={() => void refreshWorkspace()}
           refreshing={workspaceRefreshing}
+          auditEntries={auditEntries}
           />
           {!isMobile && (
             <button
@@ -2162,8 +2244,8 @@ function TaskRunnerModal({
   const [baseBranch, setBaseBranch] = useState("");
   const [reviewModel, setReviewModel] = useState("");
   const [qaCommand, setQaCommand] = useState("");
-  const [agenticReview, setAgenticReview] = useState(false);
-  const [generateTests, setGenerateTests] = useState(false);
+  const [agenticReview, setAgenticReview] = useState(true);
+  const [generateTests, setGenerateTests] = useState(true);
   const [advanced, setAdvanced] = useState(false);
   const [running, setRunning] = useState(false);
   const [lines, setLines] = useState<JobLine[]>([]);
@@ -2209,8 +2291,8 @@ function TaskRunnerModal({
         config: {
           reviewModel: reviewModel.trim() || undefined,
           qaCommand: qaCommand.trim() || undefined,
-          agenticReview: agenticReview || undefined,
-          generateTests: generateTests || undefined,
+          agenticReview,
+          generateTests,
         },
       });
       jobIdRef.current = id;
@@ -2312,7 +2394,7 @@ function TaskRunnerModal({
                       <ShieldCheck className="h-3.5 w-3.5 text-accent" /> Agentic Review
                     </span>
                     <span className="mt-0.5 block text-[11px] text-muted-foreground">
-                      The reviewer reads the surrounding code and runs the project’s tests before deciding - slower, but catches issues a diff-only review misses. Only used when a review model is set.
+                      The reviewer reads the surrounding code and runs the project’s tests before deciding - slower, but catches issues a diff-only review misses. Enabled by default.
                     </span>
                   </span>
                 </label>
@@ -2328,7 +2410,7 @@ function TaskRunnerModal({
                       <ListTodo className="h-3.5 w-3.5 text-accent" /> Generate Tests
                     </span>
                     <span className="mt-0.5 block text-[11px] text-muted-foreground">
-                      After the change, write and run tests covering it (using the project’s existing test framework) before QA and review. Skipped if the repo has no test setup.
+                      After the change, write and run tests covering it (using the project’s existing test framework) before QA and review. Enabled by default; skipped if the repo has no test setup.
                     </span>
                   </span>
                 </label>

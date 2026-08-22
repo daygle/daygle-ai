@@ -245,7 +245,7 @@ These do nothing - they are just text. To use a tool you MUST invoke it through 
 Available tools:
 - list_files(path) - list files/directories under a path
 - read_file(path, start_line?, end_line?) - read a file with numbered lines
-- search(pattern, path?) - regex-search files for patterns
+- search(pattern, path?, semantic?) - regex-search files; use semantic=true for lightweight word-based retrieval when exact names are unknown
 - write_file(path, content) - create or overwrite a file with its COMPLETE contents
 - str_replace(path, old_string, new_string, replace_all?) - replace exact text in place
 - run_command(command) - run a shell command (tests, typecheck, etc.)
@@ -262,6 +262,48 @@ A good turn reads like: one short sentence about what you're doing ("Let me look
 Be concise. Read and understand before editing. Make the smallest change that solves the problem.`;
 
 export const CHAT_ONLY_SYSTEM_PROMPT = `You are daygle, a helpful, concise assistant. Answer questions, explain concepts, and help with coding by writing and discussing code inline. You are not connected to a repository, so you cannot read or modify files - if the user needs you to work inside a codebase, suggest they connect a repository.`;
+
+const MAX_CHAT_CONTEXT_CHARS = 64_000;
+const MIN_NUM_CTX = 4096;
+const MAX_NUM_CTX = 131072;
+
+/**
+ * Keep long chats usable without throwing away the durable transcript. The
+ * request gets a compact local summary of older turns plus complete recent
+ * turns; the full history remains available for the UI and persistence.
+ */
+function compactMessages(messages: ChatMessage[], maxChars: number): ChatMessage[] {
+  const size = (message: ChatMessage) => message.content.length + JSON.stringify(message.tool_calls ?? []).length +
+    (message.images?.reduce((sum, image) => sum + Math.min(image.length, 2_000_000), 0) ?? 0);
+  const total = messages.reduce((sum, message) => sum + size(message), 0);
+  if (total <= maxChars) return messages;
+
+  const system = messages.find((message) => message.role === "system");
+  const rest = messages.filter((message) => message !== system);
+  const recent: ChatMessage[] = [];
+  let recentChars = 0;
+  for (let i = rest.length - 1; i >= 0; i--) {
+    const message = rest[i];
+    const messageSize = size(message);
+    if (recentChars + messageSize > Math.floor(maxChars * 0.72) && recent.length > 0) break;
+    recent.unshift(message);
+    recentChars += messageSize;
+  }
+  while (recent[0]?.role === "tool") recent.shift();
+
+  const omitted = rest.slice(0, rest.length - recent.length);
+  const summary = omitted
+    .map((message) => `${message.role}${message.tool_name ? `:${message.tool_name}` : ""}: ${message.content.replace(/\s+/g, " ").slice(0, 500)}`)
+    .join("\n");
+  const compacted: ChatMessage[] = [];
+  if (system) compacted.push(system);
+  compacted.push({
+    role: "system",
+    content: `Earlier conversation context was compacted to keep the model within its context budget.\n${summary}`,
+  });
+  compacted.push(...recent);
+  return compacted;
+}
 
 export async function* streamChat(
   session: ChatSession,
@@ -284,11 +326,15 @@ export async function* streamChat(
   });
 
   const MAX_STEPS = 20;
+  const MAX_TOOL_CALLS = 200;
+  const MAX_RUNTIME_MS = 30 * 60 * 1000;
+  const startedAt = Date.now();
+  let toolCallsUsed = 0;
   // User-tunable generation options, falling back to sensible defaults.
   const opts = session.options ?? {};
   const genOptions: Record<string, number> = {
     temperature: opts.temperature ?? 0.3,
-    num_ctx: opts.num_ctx ?? 16384,
+    num_ctx: Math.max(MIN_NUM_CTX, Math.min(MAX_NUM_CTX, Math.floor(opts.num_ctx ?? 16384))),
   };
   if (typeof opts.top_p === "number") genOptions.top_p = opts.top_p;
   if (typeof opts.top_k === "number") genOptions.top_k = opts.top_k;
@@ -300,6 +346,10 @@ export async function* streamChat(
 
   for (let step = 0; step < MAX_STEPS; step++) {
     if (signal?.aborted) return;
+    if (Date.now() - startedAt > MAX_RUNTIME_MS) {
+      yield { type: "error", message: "Chat runtime limit reached (30 minutes)." };
+      return;
+    }
 
     yield { type: "status", message: `Thinking… (Step ${step + 1})` };
 
@@ -308,7 +358,7 @@ export async function* streamChat(
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         model: session.model,
-        messages: session.messages.map((message) => {
+        messages: compactMessages(session.messages, Math.max(32_000, Math.min(MAX_CHAT_CONTEXT_CHARS, genOptions.num_ctx * 3))).map((message) => {
           const { imageMimeTypes, ...ollamaMessage } = message;
           void imageMimeTypes;
           return ollamaMessage;
@@ -438,6 +488,11 @@ export async function* streamChat(
 
     // Execute each tool call
     for (const call of toolCalls) {
+      toolCallsUsed += 1;
+      if (toolCallsUsed > MAX_TOOL_CALLS) {
+        yield { type: "error", message: "Chat tool-call limit reached (200 calls)." };
+        return;
+      }
       const name = call.function.name;
       const args = call.function.arguments ?? {};
       yield { type: "tool_start", name, args };

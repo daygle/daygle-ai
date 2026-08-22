@@ -31,7 +31,7 @@ export interface AgentConfig {
   /** When true, the reviewer reads code and runs checks before deciding. */
   agenticReview?: boolean;
   maxReviewSteps?: number;
-  /** When true, a test-generation pass writes and runs tests for the change. */
+  /** Defaults to true; set false to skip the test-generation pass. */
   generateTests?: boolean;
   maxTestGenSteps?: number;
 }
@@ -149,6 +149,23 @@ export async function checkModelUpdates(
   return data.results ?? [];
 }
 
+export interface AuditEntry {
+  timestamp?: string;
+  scope?: string;
+  type?: string;
+  name?: string;
+  args?: Record<string, unknown>;
+  result?: string;
+  diff?: string;
+}
+
+export async function getAuditLog(serverUrl: string, limit = 200): Promise<AuditEntry[]> {
+  const res = await fetch(`${strip(serverUrl)}/api/audit?limit=${Math.min(500, Math.max(1, limit))}`);
+  if (!res.ok) throw new Error(`Failed to load audit log (${res.status})`);
+  const data = (await res.json()) as { entries: AuditEntry[] };
+  return data.entries ?? [];
+}
+
 export async function listAgentHistory(serverUrl: string): Promise<AgentRunSummary[]> {
   const res = await fetch(`${strip(serverUrl)}/api/jobs`);
   if (!res.ok) throw new Error(`Failed to list history (${res.status})`);
@@ -226,11 +243,17 @@ export interface StoredChat {
   busy?: boolean;
 }
 
+export interface ChatCheckpoint {
+  id: string;
+  createdAt: number;
+}
+
 export interface ChatWorkspace {
   files: string[];
   changedFiles: string[];
   stat: string;
   diff: string;
+  checkpoints: ChatCheckpoint[];
 }
 
 /** Lists past chat conversations (persisted transcripts), newest first. */
@@ -418,6 +441,16 @@ export async function resolveApproval(
     body: JSON.stringify({ decision }),
   });
   if (!res.ok) throw new Error(`Failed to resolve approval (${res.status})`);
+}
+
+/** Reverts the live chat checkout to the checkpoint captured before its latest task. */
+export async function rollbackChat(serverUrl: string, sessionId: string, checkpointId?: string): Promise<void> {
+  const suffix = checkpointId ? `/${encodeURIComponent(checkpointId)}` : "";
+  const res = await fetch(`${strip(serverUrl)}/api/chat/sessions/${sessionId}/revert${suffix}`, { method: "POST" });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`Failed to revert workspace (${res.status}) ${text}`);
+  }
 }
 
 /**

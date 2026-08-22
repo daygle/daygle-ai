@@ -46,7 +46,7 @@ export interface AgentConfig {
   agenticReview?: boolean;
   /** Max tool-using steps for the agentic reviewer before it must decide. */
   maxReviewSteps?: number;
-  /** When true, a test-generation pass writes and runs tests for the change. */
+  /** Defaults to true; set false to skip the test-generation pass. */
   generateTests?: boolean;
   /** Max tool-using steps for the test-generation pass. */
   maxTestGenSteps?: number;
@@ -55,6 +55,50 @@ export interface AgentConfig {
 const DEFAULT_MAX_STEPS = 40;
 const DEFAULT_TEMPERATURE = 0.2;
 const DEFAULT_NUM_CTX = 16384;
+const MIN_NUM_CTX = 4096;
+const MAX_NUM_CTX = 131072;
+const MAX_MODEL_CONTEXT_CHARS = 60_000;
+const MAX_AGENT_RUNTIME_MS = 30 * 60 * 1000;
+const MAX_TOOL_CALLS_PER_LOOP = 500;
+
+function boundedNumCtx(value: number): number {
+  return Math.max(MIN_NUM_CTX, Math.min(MAX_NUM_CTX, Math.floor(Number.isFinite(value) ? value : DEFAULT_NUM_CTX)));
+}
+
+/** Keep both the beginning (file headers/hunks) and end (latest failures) of a large diff. */
+function limitModelContext(text: string): string {
+  if (text.length <= MAX_MODEL_CONTEXT_CHARS) return text;
+  const head = Math.floor(MAX_MODEL_CONTEXT_CHARS * 0.72);
+  const tail = MAX_MODEL_CONTEXT_CHARS - head;
+  return `${text.slice(0, head)}\n… (middle omitted; diff limited to ${MAX_MODEL_CONTEXT_CHARS} characters) …\n${text.slice(-tail)}`;
+}
+
+function compactAgentMessages(messages: AgentMessage[], maxChars: number): AgentMessage[] {
+  const size = (message: AgentMessage) => message.content.length + JSON.stringify(message.tool_calls ?? []).length;
+  const total = messages.reduce((sum, message) => sum + size(message), 0);
+  if (total <= maxChars) return messages;
+  const system = messages.find((message) => message.role === "system");
+  const rest = messages.filter((message) => message !== system);
+  const recent: AgentMessage[] = [];
+  let recentSize = 0;
+  for (let i = rest.length - 1; i >= 0; i--) {
+    const message = rest[i];
+    const messageSize = size(message);
+    if (recentSize + messageSize > Math.floor(maxChars * 0.72) && recent.length > 0) break;
+    recent.unshift(message);
+    recentSize += messageSize;
+  }
+  while (recent[0]?.role === "tool") recent.shift();
+  const omitted = rest.slice(0, rest.length - recent.length);
+  const summary = omitted
+    .map((message) => `${message.role}${message.tool_name ? `:${message.tool_name}` : ""}: ${message.content.replace(/\s+/g, " ").slice(0, 600)}`)
+    .join("\n");
+  return [
+    ...(system ? [system] : []),
+    { role: "system", content: `Earlier task context was compacted to fit the model budget.\n${summary}` },
+    ...recent,
+  ];
+}
 
 const DEFAULT_SYSTEM_PROMPT = `You are daygle, a careful software engineering agent working inside a git repository checkout.
 Your job is to complete the user's task by inspecting the code and, when appropriate, editing it.
@@ -68,7 +112,7 @@ Work in small, verifiable steps. Read and understand before editing.
 Available tools:
 - list_files(path) - list files/directories under a path (recursive, capped)
 - read_file(path, start_line?, end_line?) - read a file with numbered lines (up to 1500)
-- search(pattern, path?) - regex-search files, returns matches with line numbers
+- search(pattern, path?, semantic?) - search files by regex or use semantic=true for lightweight word-based retrieval; space-separated paths are accepted
 - write_file(path, content) - create or overwrite a file with its COMPLETE contents
 - str_replace(path, old_string, new_string, replace_all?) - replace exact text in place
 - run_command(command) - run a shell command in the repo (tests, typecheck, git status, etc.)
@@ -207,6 +251,12 @@ async function chatOnce(
   return { content, toolCalls: parseToolCalls(rawToolCalls) };
 }
 
+function isLikelyTestPath(value: string): boolean {
+  const normalized = value.replaceAll("\\", "/").toLowerCase();
+  return normalized === "test" || normalized.startsWith("test/") || normalized === "tests" || normalized.startsWith("tests/") || normalized.startsWith("fixtures/") || normalized.includes("/__fixtures__/") || normalized.includes("/test/") || normalized.includes("/tests/") || normalized.includes("/__tests__/") ||
+    /(^|[./_-])(test|spec)([./_-]|$)/.test(normalized) || normalized.endsWith("_test.py") || normalized.endsWith("_test.go");
+}
+
 export async function runAgentLoop(opts: {
   root: string;
   task: string;
@@ -217,10 +267,12 @@ export async function runAgentLoop(opts: {
   sandbox?: SandboxRunner;
   signal?: AbortSignal;
   config?: AgentConfig;
+  /** Optional write guard used by restricted passes such as test generation. */
+  writePathPolicy?: (path: string) => boolean;
 }): Promise<string> {
   const { root, task, model, ollamaUrl, emit, approve, sandbox, signal } = opts;
   const temperature = opts.config?.temperature ?? DEFAULT_TEMPERATURE;
-  const numCtx = opts.config?.numCtx ?? DEFAULT_NUM_CTX;
+  const numCtx = boundedNumCtx(opts.config?.numCtx ?? DEFAULT_NUM_CTX);
   const maxSteps = Math.max(1, Math.min(200, opts.config?.maxSteps ?? DEFAULT_MAX_STEPS));
   const systemPrompt = opts.config?.systemPrompt?.trim() || DEFAULT_SYSTEM_PROMPT;
 
@@ -232,16 +284,25 @@ export async function runAgentLoop(opts: {
     { role: "system", content: systemPrompt },
     { role: "user", content: task },
   ];
+  const startedAt = Date.now();
+  let toolCallsUsed = 0;
 
   for (let step = 0; step < maxSteps; step++) {
     throwIfCancelled();
+    if (Date.now() - startedAt > MAX_AGENT_RUNTIME_MS) throw new Error("Agent runtime limit reached (30 minutes).");
     emit({ type: "status", message: `Thinking… (Step ${step + 1}/${maxSteps})` });
-    const { content, toolCalls } = await chatOnce(ollamaUrl, model, messages, TOOL_DEFINITIONS, {
-      temperature,
-      numCtx,
-      signal,
-      onDelta: (delta) => emit({ type: "model_delta", content: delta }),
-    });
+    const { content, toolCalls } = await chatOnce(
+      ollamaUrl,
+      model,
+      compactAgentMessages(messages, Math.max(32_000, Math.min(96_000, numCtx * 3))),
+      TOOL_DEFINITIONS,
+      {
+        temperature,
+        numCtx,
+        signal,
+        onDelta: (delta) => emit({ type: "model_delta", content: delta }),
+      },
+    );
     throwIfCancelled();
 
     if (content) emit({ type: "model", content });
@@ -253,13 +314,22 @@ export async function runAgentLoop(opts: {
     messages.push({ role: "assistant", content, tool_calls: toolCalls });
 
     for (const call of toolCalls) {
+      toolCallsUsed += 1;
+      if (toolCallsUsed > MAX_TOOL_CALLS_PER_LOOP) throw new Error("Agent tool-call limit reached (500 calls).");
       const name = call.function.name;
       const args = call.function.arguments ?? {};
       emit({ type: "tool_start", name, args });
 
       let result: string;
       try {
-        result = await runTool(root, name, args, approve, sandbox, signal);
+        if (opts.writePathPolicy && (name === "write_file" || name === "str_replace")) {
+          const target = typeof args.path === "string" ? args.path : "";
+          result = opts.writePathPolicy(target)
+            ? await runTool(root, name, args, approve, sandbox, signal)
+            : `Denied: this restricted pass may only edit test files; refused ${target || "an unspecified path"}.`;
+        } else {
+          result = await runTool(root, name, args, approve, sandbox, signal);
+        }
         throwIfCancelled();
       } catch (err) {
         if (err instanceof CancelledError) throw err;
@@ -311,7 +381,7 @@ export async function runTestGeneration(opts: {
   config?: AgentConfig;
 }): Promise<string> {
   const { root, task, diff, model, ollamaUrl, emit, approve, sandbox, signal } = opts;
-  const taskText = `A change was just made to the repository to accomplish this task:\n${task}\n\nHere is the diff of that change:\n\n${diff.slice(0, 60_000)}\n\nWrite automated tests that cover this change, following the project's existing test framework and conventions, and make them pass.`;
+  const taskText = `A change was just made to the repository to accomplish this task:\n${task}\n\nHere is the diff of that change:\n\n${limitModelContext(diff)}\n\nWrite automated tests that cover this change, following the project's existing test framework and conventions, and make them pass.`;
   return runAgentLoop({
     root,
     task: taskText,
@@ -326,6 +396,7 @@ export async function runTestGeneration(opts: {
       systemPrompt: TEST_GEN_SYSTEM_PROMPT,
       maxSteps: opts.config?.maxTestGenSteps ?? DEFAULT_MAX_TEST_GEN_STEPS,
     },
+    writePathPolicy: isLikelyTestPath,
   });
 }
 
@@ -374,9 +445,9 @@ export async function runReview(opts: {
 }): Promise<ReviewResult> {
   const { ollamaUrl, model, task, diff, emit, signal } = opts;
   const temperature = opts.config?.temperature ?? DEFAULT_TEMPERATURE;
-  const numCtx = opts.config?.numCtx ?? DEFAULT_NUM_CTX;
+  const numCtx = boundedNumCtx(opts.config?.numCtx ?? DEFAULT_NUM_CTX);
 
-  const user = `Task being implemented:\n${task}\n\nDiff to review:\n\n${diff.slice(0, 60_000)}`;
+  const user = `Task being implemented:\n${task}\n\nDiff to review:\n\n${limitModelContext(diff)}`;
   const { content } = await chatOnce(
     ollamaUrl,
     model,
@@ -431,10 +502,11 @@ export async function runAgenticReview(opts: {
   sandbox?: SandboxRunner;
   signal?: AbortSignal;
   config?: AgentConfig;
+  writePathPolicy?: (path: string) => boolean;
 }): Promise<ReviewResult> {
   const { root, ollamaUrl, model, task, diff, emit, approve, sandbox, signal } = opts;
   const temperature = opts.config?.temperature ?? DEFAULT_TEMPERATURE;
-  const numCtx = opts.config?.numCtx ?? DEFAULT_NUM_CTX;
+  const numCtx = boundedNumCtx(opts.config?.numCtx ?? DEFAULT_NUM_CTX);
   const maxSteps = Math.max(1, Math.min(40, opts.config?.maxReviewSteps ?? DEFAULT_MAX_REVIEW_STEPS));
 
   const throwIfCancelled = () => {
@@ -445,7 +517,7 @@ export async function runAgenticReview(opts: {
     { role: "system", content: AGENTIC_REVIEW_SYSTEM_PROMPT },
     {
       role: "user",
-      content: `Task being implemented:\n${task}\n\nDiff under review:\n\n${diff.slice(0, 60_000)}\n\nInvestigate as needed, then give your verdict.`,
+      content: `Task being implemented:\n${task}\n\nDiff under review:\n\n${limitModelContext(diff)}\n\nInvestigate as needed, then give your verdict.`,
     },
   ];
 
@@ -453,11 +525,17 @@ export async function runAgenticReview(opts: {
   for (let step = 0; step < maxSteps; step++) {
     throwIfCancelled();
     emit({ type: "status", message: `Reviewing… (step ${step + 1}/${maxSteps})` });
-    const { content, toolCalls } = await chatOnce(ollamaUrl, model, messages, REVIEW_TOOL_DEFINITIONS, {
-      temperature,
-      numCtx,
-      signal,
-    });
+    const { content, toolCalls } = await chatOnce(
+      ollamaUrl,
+      model,
+      compactAgentMessages(messages, Math.max(32_000, Math.min(96_000, numCtx * 3))),
+      REVIEW_TOOL_DEFINITIONS,
+      {
+        temperature,
+        numCtx,
+        signal,
+      },
+    );
     throwIfCancelled();
     if (content) lastContent = content;
 
@@ -483,7 +561,14 @@ export async function runAgenticReview(opts: {
       emit({ type: "tool_start", name, args });
       let result: string;
       try {
-        result = await runTool(root, name, args, approve, sandbox, signal);
+        if (opts.writePathPolicy && (name === "write_file" || name === "str_replace")) {
+          const target = typeof args.path === "string" ? args.path : "";
+          result = opts.writePathPolicy(target)
+            ? await runTool(root, name, args, approve, sandbox, signal)
+            : `Denied: this restricted pass may only edit test files; refused ${target || "an unspecified path"}.`;
+        } else {
+          result = await runTool(root, name, args, approve, sandbox, signal);
+        }
         throwIfCancelled();
       } catch (err) {
         if (err instanceof CancelledError) throw err;
