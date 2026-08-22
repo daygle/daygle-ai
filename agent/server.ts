@@ -32,7 +32,7 @@ import { reviewApproverForRoot, runTool, type CommandApprover } from "./tools";
 import { HistoryStore, type StoredJob } from "./history";
 import { runQaGate, type QaResult } from "./qa";
 import { checkModelUpdate } from "./updates";
-import { checkForAppUpdate, performAppUpdate } from "./app-update";
+import { checkForAppUpdate, getUpdateProgress, performAppUpdate } from "./app-update";
 import { getAllowedUiOrigins, isAllowedUiOrigin, isLoopbackUrl, LOOPBACK_HOST } from "./security";
 
 const PORT = Number(process.env.PORT ?? 8787);
@@ -1628,12 +1628,17 @@ const server = http.createServer((req, res) => {
     }
 
     if (req.method === "GET" && url.pathname === "/api/app-update/status") {
-      // For now, just check if we're at the latest version
       const info = await checkForAppUpdate();
+      const progress = getUpdateProgress();
       sendJson(res, 200, {
         currentVersion: info.currentVersion,
         updateAvailable: info.updateAvailable,
         latestVersion: info.latestVersion,
+        progress: progress ? {
+          status: progress.status,
+          message: progress.message,
+          elapsed: Date.now() - progress.startedAt,
+        } : null,
       });
       return;
     }
