@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Download, Check, Loader2, ExternalLink, RefreshCw } from "lucide-react";
+import { Download, Check, Loader2, ExternalLink, RefreshCw, GitPullRequest, Package, Hammer, RotateCcw } from "lucide-react";
 import { checkAppUpdate, applyAppUpdate, type AppUpdateInfo } from "../lib/agent";
 
 interface AppUpdateProgress {
@@ -193,32 +193,9 @@ export function AppUpdate({ serverUrl }: AppUpdateProps) {
             </div>
           )}
 
-          {/* Progress indicator */}
+          {/* Step-by-step progress log */}
           {updating && progress && (
-            <div className="mt-3 p-3 bg-muted/50 rounded-md">
-              <div className="flex items-center gap-2 text-sm mb-2">
-                <Loader2 className="h-4 w-4 animate-spin text-accent" />
-                <span className="font-medium text-foreground">
-                  {progress.status === "restarting" ? "Restarting..." : "Updating..."}
-                </span>
-              </div>
-              <div className="text-xs text-muted-foreground">
-                {progress.message}
-              </div>
-              <div className="mt-2 h-1.5 bg-background rounded-full overflow-hidden">
-                <div
-                  className="h-full bg-accent transition-all duration-500"
-                  style={{
-                    width: progress.status === "pulling" ? "25%" :
-                           progress.status === "installing" ? "50%" :
-                           progress.status === "building" ? "75%" : "100%"
-                  }}
-                />
-              </div>
-              <div className="mt-1 text-[10px] text-muted-foreground">
-                {Math.round(progress.elapsed / 1000)}s elapsed
-              </div>
-            </div>
+            <UpdateProgressLog progress={progress} />
           )}
 
           {updateMessage && (
@@ -227,6 +204,70 @@ export function AppUpdate({ serverUrl }: AppUpdateProps) {
               {updateMessage}
             </div>
           )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Step-by-step progress log shown during an update. */
+function UpdateProgressLog({ progress }: { progress: AppUpdateProgress }) {
+  const steps = [
+    { key: "pulling", label: "Pulling latest changes", icon: GitPullRequest },
+    { key: "installing", label: "Installing dependencies", icon: Package },
+    { key: "building", label: "Building application", icon: Hammer },
+    { key: "restarting", label: "Restarting server", icon: RotateCcw },
+  ] as const;
+
+  const statusOrder = ["started", "pulling", "installing", "building", "restarting", "complete"];
+  const currentIdx = statusOrder.indexOf(progress.status);
+
+  return (
+    <div className="mt-3 rounded-lg border border-border bg-background/50 p-3">
+      <div className="flex items-center gap-2 mb-2">
+        <Loader2 className="h-3.5 w-3.5 animate-spin text-accent" />
+        <span className="text-xs font-medium text-foreground">Updating...</span>
+        <span className="text-[10px] text-muted-foreground ml-auto">
+          {Math.round(progress.elapsed / 1000)}s
+        </span>
+      </div>
+      <div className="space-y-1.5">
+        {steps.map((step) => {
+          const stepStatus = statusOrder.indexOf(step.key);
+          const isDone = currentIdx > stepStatus;
+          const isActive = progress.status === step.key;
+          const isPending = currentIdx < stepStatus;
+
+          return (
+            <div
+              key={step.key}
+              className={`flex items-center gap-2 text-xs transition-colors ${
+                isPending ? "text-muted-foreground/50" : "text-foreground"
+              }`}
+            >
+              {isDone ? (
+                <Check className="h-3.5 w-3.5 shrink-0 text-green-500" />
+              ) : isActive ? (
+                <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-accent" />
+              ) : (
+                <step.icon className="h-3.5 w-3.5 shrink-0 text-muted-foreground/40" />
+              )}
+              <span className={isDone ? "text-muted-foreground line-through" : ""}>
+                {step.label}
+              </span>
+              {isActive && (
+                <span className="text-[10px] text-accent ml-auto">in progress...</span>
+              )}
+              {isDone && (
+                <span className="text-[10px] text-green-500 ml-auto">done</span>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      {progress.status === "failed" && (
+        <div className="mt-2 rounded-md bg-destructive/10 px-2 py-1.5 text-xs text-destructive">
+          {progress.message}
         </div>
       )}
     </div>
