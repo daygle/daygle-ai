@@ -151,6 +151,37 @@ export async function checkModelUpdates(
   return data.results ?? [];
 }
 
+// App update types and functions
+export interface AppUpdateInfo {
+  currentVersion: string;
+  latestVersion: string;
+  updateAvailable: boolean;
+  releaseNotes?: string;
+  releaseUrl?: string;
+  publishedAt?: string;
+}
+
+/** Check for application updates from GitHub releases. */
+export async function checkAppUpdate(serverUrl: string): Promise<AppUpdateInfo> {
+  const res = await fetch(`${strip(serverUrl)}/api/app-update`);
+  if (!res.ok) throw new Error(`Failed to check app updates (${res.status})`);
+  return (await res.json()) as AppUpdateInfo;
+}
+
+/** Start the application update process. */
+export async function applyAppUpdate(serverUrl: string): Promise<{ updateId: string; status: string; message: string }> {
+  const res = await fetch(`${strip(serverUrl)}/api/app-update/apply`, { method: "POST" });
+  if (!res.ok) throw new Error(`Failed to start update (${res.status})`);
+  return (await res.json()) as { updateId: string; status: string; message: string };
+}
+
+/** Get the current update status. */
+export async function getUpdateStatus(serverUrl: string): Promise<{ currentVersion: string; updateAvailable: boolean; latestVersion: string }> {
+  const res = await fetch(`${strip(serverUrl)}/api/app-update/status`);
+  if (!res.ok) throw new Error(`Failed to get update status (${res.status})`);
+  return (await res.json()) as { currentVersion: string; updateAvailable: boolean; latestVersion: string };
+}
+
 export interface AuditEntry {
   timestamp?: string;
   scope?: string;

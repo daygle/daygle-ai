@@ -8,6 +8,7 @@ import { DEFAULT_GEN_OPTIONS, loadGenOptions, loadModelPreference, saveGenOption
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Spinner } from "../components/ui/spinner";
+import { AppUpdate } from "../components/AppUpdate";
 
 const SANDBOX_LABELS: Record<string, string> = {
   bubblewrap: "Bubblewrap",
@@ -424,6 +425,13 @@ Use the local Ollama server and give the agent a GitHub token.
             </pre>
           )}
         </div>
+      </section>
+
+      <section>
+        <div className="mb-3 flex items-center gap-2">
+          <h2 className="text-sm font-semibold">Updates</h2>
+        </div>
+        <AppUpdate serverUrl={agentUrl} />
       </section>
     </div>
   );
