@@ -363,6 +363,20 @@ async function rehydrateChat(id: string): Promise<ChatSession | null> {
     options: stored.options,
   };
   chatSessions.set(id, session);
+  // Restore the latest checkpoint so pending changes survive server restarts.
+  if (dir) {
+    try {
+      const records = loadChatCheckpoints(id);
+      pruneChatCheckpoints(records);
+      if (records.length > 0) {
+        const latest = records[records.length - 1];
+        await restoreCheckpoint(dir, latest.checkpoint);
+        audit(`chat:${id}`, { type: "restore", diff: `restored checkpoint ${latest.id} on rehydration` });
+      }
+    } catch {
+      // checkpoint restore is best-effort; a fresh clone is still usable
+    }
+  }
   return session;
 }
 
