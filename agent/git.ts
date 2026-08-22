@@ -106,6 +106,11 @@ export interface WorkingTreeCheckpoint {
   stagedPatchPath?: string;
   unstagedPatchPath?: string;
   ignoredSnapshotDirectory?: string;
+  /** Exact worktree bytes for changed tracked files, preserving platform line endings. */
+  trackedSnapshotDirectory?: string;
+  trackedFiles?: string[];
+  trackedDeletedFiles?: string[];
+  trackedSnapshotComplete?: boolean;
 }
 
 function truncate(text: string, max: number): string {
@@ -150,6 +155,17 @@ async function ignoredFiles(dir: string): Promise<string[]> {
     .map((entry) => entry.replaceAll("\\", "/"));
 }
 
+async function changedTrackedFiles(dir: string): Promise<string[]> {
+  const [staged, unstaged] = await Promise.all([
+    runRaw("git", ["diff", "--cached", "--name-only", "-z"], dir),
+    runRaw("git", ["diff", "--name-only", "-z"], dir),
+  ]);
+  return [...new Set([staged, unstaged]
+    .flatMap((output) => output.split("\\0"))
+    .filter(Boolean)
+    .map((entry) => entry.replaceAll("\\", "/")))];
+}
+
 /**
  * Capture the exact working tree before a task starts. Staged and unstaged
  * patches are stored separately, and ignored files are snapshotted by file
@@ -178,6 +194,35 @@ export async function createCheckpoint(dir: string, directory: string): Promise<
     fs.cpSync(source, destination, { recursive: true, verbatimSymlinks: true });
   }
 
+  const tracked = await changedTrackedFiles(dir);
+  const trackedSnapshotDirectory = path.join(directory, "tracked");
+  let trackedBytes = 0;
+  let trackedSnapshotComplete = true;
+  const trackedFiles: string[] = [];
+  const trackedDeletedFiles: string[] = [];
+  for (const relative of tracked) {
+    const source = checkpointRelativePath(dir, relative);
+    let stat: fs.Stats;
+    try { stat = fs.lstatSync(source); } catch {
+      // Preserve deletions separately when restoring from exact worktree bytes.
+      trackedDeletedFiles.push(relative);
+      continue;
+    }
+    if (!stat.isFile() && !stat.isSymbolicLink()) {
+      trackedSnapshotComplete = false;
+      continue;
+    }
+    if (trackedBytes + stat.size > CHECKPOINT_IGNORED_COPY_LIMIT) {
+      trackedSnapshotComplete = false;
+      continue;
+    }
+    const destination = checkpointRelativePath(trackedSnapshotDirectory, relative);
+    fs.mkdirSync(path.dirname(destination), { recursive: true });
+    fs.cpSync(source, destination, { verbatimSymlinks: true, force: true });
+    trackedBytes += stat.size;
+    trackedFiles.push(relative);
+  }
+
   const ignored = await ignoredFiles(dir);
   const ignoredSnapshotDirectory = path.join(directory, "ignored");
   let ignoredBytes = 0;
@@ -195,7 +240,18 @@ export async function createCheckpoint(dir: string, directory: string): Promise<
     ignoredBytes += stat.size;
   }
   fs.writeFileSync(path.join(directory, "ignored.json"), JSON.stringify(ignored), "utf8");
-  return { head, directory, ignored, stagedPatchPath, unstagedPatchPath, ignoredSnapshotDirectory };
+  return {
+    head,
+    directory,
+    ignored,
+    stagedPatchPath,
+    unstagedPatchPath,
+    ignoredSnapshotDirectory,
+    trackedSnapshotDirectory,
+    trackedFiles,
+    trackedDeletedFiles,
+    trackedSnapshotComplete,
+  };
 }
 
 /** Restore a checkout to a previously captured working-tree checkpoint. */
@@ -223,8 +279,13 @@ export async function restoreCheckpoint(dir: string, checkpoint: WorkingTreeChec
 
   const stagedPatch = checkpoint.stagedPatchPath ?? path.join(checkpoint.directory, "staged.patch");
   const unstagedPatch = checkpoint.unstagedPatchPath ?? path.join(checkpoint.directory, "unstaged.patch");
+  const exactWorktree = checkpoint.trackedSnapshotComplete === true;
   if (fs.existsSync(stagedPatch) && fs.statSync(stagedPatch).size > 0) {
-    await run("git", ["apply", "--binary", "--index", stagedPatch], dir);
+    // Apply the index independently. When no exact worktree snapshot exists,
+    // also apply the staged patch to the checkout so the unstaged patch has
+    // the correct staged content as its base.
+    await run("git", ["apply", "--binary", "--cached", stagedPatch], dir);
+    if (!exactWorktree) await run("git", ["apply", "--binary", stagedPatch], dir);
   } else {
     // Compatibility with checkpoints written by the previous format.
     const legacyPatch = path.join(checkpoint.directory, "working.patch");
@@ -232,7 +293,21 @@ export async function restoreCheckpoint(dir: string, checkpoint: WorkingTreeChec
       await run("git", ["apply", "--binary", legacyPatch], dir);
     }
   }
-  if (fs.existsSync(unstagedPatch) && fs.statSync(unstagedPatch).size > 0) {
+  const trackedSnapshotDirectory = checkpoint.trackedSnapshotDirectory ?? path.join(checkpoint.directory, "tracked");
+  const trackedFiles = checkpoint.trackedFiles ?? [];
+  const trackedDeletedFiles = checkpoint.trackedDeletedFiles ?? [];
+  if (exactWorktree) {
+    for (const relative of trackedDeletedFiles) {
+      fs.rmSync(checkpointRelativePath(dir, relative), { recursive: true, force: true });
+    }
+    for (const relative of trackedFiles) {
+      const source = checkpointRelativePath(trackedSnapshotDirectory, relative);
+      if (!fs.existsSync(source)) continue;
+      const destination = checkpointRelativePath(dir, relative);
+      fs.mkdirSync(path.dirname(destination), { recursive: true });
+      fs.cpSync(source, destination, { verbatimSymlinks: true, force: true });
+    }
+  } else if (fs.existsSync(unstagedPatch) && fs.statSync(unstagedPatch).size > 0) {
     await run("git", ["apply", "--binary", unstagedPatch], dir);
   }
   const untrackedDir = path.join(checkpoint.directory, "untracked");
