@@ -268,7 +268,7 @@ export async function createCheckpoint(dir: string, directory: string): Promise<
     ignoredBytes += stat.size;
   }
   // Capture staged index state for patch-free restore.
-  const rawStaged = await runRaw("git", ["diff", "cached", "--raw"], dir);
+  const rawStaged = await runRaw("git", ["diff", "--cached", "--raw", "--no-abbrev"], dir);
   const indexModifications: IndexEntry[] = [];
   const indexDeletions: string[] = [];
   // Format per line: :old_mode new_mode old_hash new_hash status_score\tpath
