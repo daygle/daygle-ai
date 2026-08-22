@@ -1182,12 +1182,19 @@ const server = http.createServer((req, res) => {
     }
 
     // ---- Model listing (supports cloud providers) ----
-    if (req.method === "GET" && url.pathname === "/api/models") {
-      const kind = url.searchParams.get("kind") ?? "ollama";
-      const baseUrl = url.searchParams.get("baseUrl") ?? DEFAULT_OLLAMA_URL;
-      const apiKey = url.searchParams.get("apiKey") ?? "";
+    if (req.method === "POST" && url.pathname === "/api/models") {
+      let body: { kind?: string; baseUrl?: string; apiKey?: string };
       try {
-        const provider = createProvider({ kind: kind as any, baseUrl, apiKey });
+        body = JSON.parse(await readBody(req)) as typeof body;
+      } catch {
+        sendJson(res, 400, { models: [], error: "Invalid JSON body." });
+        return;
+      }
+      const kind = body.kind ?? "ollama";
+      const baseUrl = body.baseUrl ?? DEFAULT_OLLAMA_URL;
+      const apiKey = body.apiKey ?? "";
+      try {
+        const provider = createProvider({ kind: kind as ProviderConfig["kind"], baseUrl, apiKey });
         const models = await provider.listModels();
         sendJson(res, 200, { models });
       } catch (err) {

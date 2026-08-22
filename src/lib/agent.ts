@@ -77,6 +77,25 @@ function strip(url: string): string {
   return url.trim().replace(/\/+$/, "");
 }
 
+function consumeSseBuffer(
+  buffer: string,
+  onEvent: (event: ChatEvent) => void,
+  flush = false,
+): string {
+  const lines = buffer.split(/\r?\n/);
+  const remainder = flush ? "" : (lines.pop() ?? "");
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("data:")) continue;
+    try {
+      onEvent(JSON.parse(trimmed.slice(5).trim()) as ChatEvent);
+    } catch {
+      // Ignore keep-alives and malformed events.
+    }
+  }
+  return remainder;
+}
+
 export async function agentHealth(
   serverUrl: string,
 ): Promise<{ ok: boolean; gh: boolean; app: boolean; token: boolean; sandbox: string | null }> {
@@ -231,7 +250,10 @@ export function openAgentEvents(
       // ignore malformed events
     }
   };
-  source.onerror = () => source.close();
+  source.onerror = () => {
+    source.close();
+    onEvent({ type: "error", message: "Agent event stream disconnected." });
+  };
   return () => source.close();
 }
 
@@ -387,9 +409,11 @@ export async function createChatSession(
 }
 
 export async function listProviderModels(serverUrl: string, kind: string, baseUrl: string, apiKey?: string): Promise<string[]> {
-  const params = new URLSearchParams({ kind, baseUrl });
-  if (apiKey) params.set("apiKey", apiKey);
-  const res = await fetch(`${strip(serverUrl)}/api/models?${params}`);
+  const res = await fetch(`${strip(serverUrl)}/api/models`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ kind, baseUrl, apiKey }),
+  });
   if (!res.ok) throw new Error(`Failed to list models (${res.status})`);
   const data = (await res.json()) as { models: string[] };
   return data.models ?? [];
@@ -416,26 +440,19 @@ export function sendChatMessage(
         return;
       }
       const reader = res.body?.getReader();
-      if (!reader) return;
+      if (!reader) {
+        onEvent({ type: "error", message: "Agent returned an empty response." });
+        return;
+      }
       const decoder = new TextDecoder();
       let buffer = "";
       for (;;) {
         const { done, value } = await reader.read();
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() ?? "";
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed.startsWith("data: ")) continue;
-          try {
-            const event = JSON.parse(trimmed.slice(6)) as ChatEvent;
-            onEvent(event);
-          } catch {
-            // skip
-          }
-        }
+        buffer = consumeSseBuffer(buffer, onEvent);
       }
+      consumeSseBuffer(buffer, onEvent, true);
     })
     .catch((err) => {
       if (err.name !== "AbortError") {
@@ -496,25 +513,19 @@ export function verifyChat(
         return;
       }
       const reader = res.body?.getReader();
-      if (!reader) return;
+      if (!reader) {
+        onEvent({ type: "error", message: "Agent returned an empty response." });
+        return;
+      }
       const decoder = new TextDecoder();
       let buffer = "";
       for (;;) {
         const { done, value } = await reader.read();
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() ?? "";
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed.startsWith("data: ")) continue;
-          try {
-            onEvent(JSON.parse(trimmed.slice(6)) as ChatEvent);
-          } catch {
-            // skip
-          }
-        }
+        buffer = consumeSseBuffer(buffer, onEvent);
       }
+      consumeSseBuffer(buffer, onEvent, true);
     })
     .catch((err) => {
       if (err.name !== "AbortError") {

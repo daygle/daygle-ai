@@ -124,6 +124,25 @@ function messageTitle(messages: ChatBubble[]): string {
   return userMessage.length > 48 ? `${userMessage.slice(0, 48)}…` : userMessage;
 }
 
+interface StoredCloudProvider {
+  kind: "ollama" | "openai";
+  baseUrl: string;
+  apiKey: string;
+}
+
+function loadCloudProvider(): StoredCloudProvider {
+  try {
+    const value = JSON.parse(localStorage.getItem("daygle.cloudProvider") ?? "{}") as Partial<StoredCloudProvider>;
+    return {
+      kind: value.kind === "openai" ? "openai" : "ollama",
+      baseUrl: typeof value.baseUrl === "string" ? value.baseUrl : "",
+      apiKey: typeof value.apiKey === "string" ? value.apiKey : "",
+    };
+  } catch {
+    return { kind: "ollama", baseUrl: "", apiKey: "" };
+  }
+}
+
 /**
  * Remove raw tool-call JSON that some models emit as plain text instead of
  * using the structured tool_calls format. The backend still executes these
@@ -132,19 +151,60 @@ function messageTitle(messages: ChatBubble[]): string {
  * a trailing *incomplete* object mid-stream (so partial JSON never flashes).
  */
 function stripToolJson(text: string): string {
-  return text
-    // drop code fences that models wrap tool calls in
-    .replace(/```(?:json|tool_code)?/gi, "")
-    // drop complete { "name": ..., "arguments": {...} } objects (non-greedy, multi-line)
-    .replace(/\{\s*"name"\s*:\s*"[^"]+"\s*,\s*"arguments"\s*:\s*\{[\s\S]*?\}\s*\}/g, "")
-    // drop example output objects like { "file": "...", "line": 12 }
+  const withoutFences = text.replace(/```(?:json|tool_code)?/gi, "");
+  let result = "";
+  let cursor = 0;
+  const toolPrefix = /\{\s*"name"\s*:/g;
+
+  for (;;) {
+    toolPrefix.lastIndex = cursor;
+    const match = toolPrefix.exec(withoutFences);
+    if (!match) {
+      result += withoutFences.slice(cursor);
+      break;
+    }
+
+    const start = match.index;
+    result += withoutFences.slice(cursor, start);
+    let depth = 0;
+    let quoted = false;
+    let escaped = false;
+    let end = -1;
+    for (let index = start; index < withoutFences.length; index++) {
+      const character = withoutFences[index];
+      if (quoted) {
+        if (escaped) escaped = false;
+        else if (character === "\\") escaped = true;
+        else if (character === '"') quoted = false;
+        continue;
+      }
+      if (character === '"') quoted = true;
+      else if (character === "{") depth++;
+      else if (character === "}" && --depth === 0) {
+        end = index + 1;
+        break;
+      }
+    }
+
+    // A partial tool object is hidden while it streams; a complete object is
+    // removed only when it parses as the tool-call shape we expect.
+    if (end < 0) break;
+    try {
+      const candidate = JSON.parse(withoutFences.slice(start, end)) as { name?: unknown; arguments?: unknown };
+      if (typeof candidate.name === "string" && candidate.arguments !== undefined) {
+        cursor = end;
+        continue;
+      }
+    } catch {
+      // Leave malformed assistant text visible rather than deleting user content.
+    }
+    cursor = start + 1;
+  }
+
+  return result
     .replace(/\{\s*"file"\s*:\s*"[^"]+"\s*,\s*"line"\s*:\s*\d+\s*\}/g, "")
-    // drop bash-style tool calls like: bash list_files("src") or list_files()
     .replace(/(?:bash\s+)?(?:list_files|read_file|search|write_file|str_replace|run_command)\s*\([^)]*\)/gi, "")
-    // drop bash cd patterns like: bash cd web vite
     .replace(/(?:bash\s+)?cd\s+\S+\s+.+/gi, "")
-    // drop a trailing, not-yet-closed tool-call object still streaming in
-    .replace(/\{\s*"name"\s*:[\s\S]*$/g, "")
     .trim();
 }
 
@@ -247,7 +307,7 @@ function ChangesView({ diff }: { diff: string }) {
  * payload must never be reinterpreted that way.
  */
 function imageMime(mime: string | undefined): string {
-  return mime && /^image\/[a-z0-9.+-]+$/i.test(mime) ? mime : "image/*";
+  return mime && /^image\/[a-z0-9.+-]+$/i.test(mime) ? mime : "image/png";
 }
 
 /** Lightweight markdown for assistant messages - headings, lists, code, links. */
@@ -507,8 +567,12 @@ function buildFileTree(files: string[]): FileNode[] {
       if (!node) {
         node = { name: part, path: fullPath, isDir: nodeIsDir, children: [] };
         parent.push(node);
+      } else if (nodeIsDir) {
+        // A flat listing can contain both `dir` and `dir/file`; preserve the
+        // directory shape when the directory marker arrives after a child.
+        node.isDir = true;
       }
-      if (nodeIsDir) parent = node.children;
+      if (node.isDir) parent = node.children;
     }
   }
   return root;
@@ -582,9 +646,20 @@ function collectDirPaths(nodes: FileNode[]): string[] {
 }
 
 function FileTree({ files }: { files: string[] }) {
-  const tree = useRef<FileNode[]>([]);
-  tree.current = buildFileTree(files);
-  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set(collectDirPaths(tree.current)));
+  const visibleFiles = useMemo(() => files.slice(0, 600), [files]);
+  const tree = useMemo(() => buildFileTree(visibleFiles), [visibleFiles]);
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set(collectDirPaths(tree)));
+
+  useEffect(() => {
+    const directoryPaths = new Set(collectDirPaths(tree));
+    setCollapsed((previous) => {
+      const next = new Set([...previous].filter((path) => directoryPaths.has(path)));
+      for (const path of directoryPaths) {
+        if (!previous.has(path)) next.add(path);
+      }
+      return next;
+    });
+  }, [tree]);
 
   const toggleDir = useCallback((path: string) => {
     setCollapsed((prev) => {
@@ -595,17 +670,17 @@ function FileTree({ files }: { files: string[] }) {
     });
   }, []);
 
-  if (tree.current.length === 0) {
+  if (tree.length === 0) {
     return <div className="py-8 text-center text-xs text-muted-foreground">No files to show yet - try refreshing.</div>;
   }
 
   return (
     <div>
-      {tree.current.map((node) => (
+      {tree.map((node) => (
         <FileTreeRow key={node.path} node={node} depth={0} collapsed={collapsed} onToggle={toggleDir} />
       ))}
-      {tree.current.length > 600 && (
-        <p className="px-2 pt-2 text-[11px] text-muted-foreground">Showing the first 600 files.</p>
+      {files.length > visibleFiles.length && (
+        <p className="px-2 pt-2 text-[11px] text-muted-foreground">Showing the first {visibleFiles.length} files.</p>
       )}
     </div>
   );
@@ -635,16 +710,18 @@ function AuditView({ entries }: { entries: AuditEntry[] }) {
     return [...types].sort();
   }, [entries]);
 
-  const visible = entries.filter((entry) => {
-    // Text filter
-    if (filter.trim() && !JSON.stringify(entry).toLowerCase().includes(filter.trim().toLowerCase())) return false;
-    // Type filter
-    if (typeFilter.length > 0) {
-      const entryType = entry.type ?? entry.name ?? "";
-      if (!typeFilter.includes(entryType)) return false;
-    }
-    return true;
-  });
+  const visible = entries
+    .map((entry, originalIndex) => ({ entry, originalIndex }))
+    .filter(({ entry }) => {
+      // Text filter
+      if (filter.trim() && !JSON.stringify(entry).toLowerCase().includes(filter.trim().toLowerCase())) return false;
+      // Type filter
+      if (typeFilter.length > 0) {
+        const entryType = entry.type ?? entry.name ?? "";
+        if (!typeFilter.includes(entryType)) return false;
+      }
+      return true;
+    });
 
   const toggleExpand = (index: number) => {
     setExpanded((prev) => {
@@ -678,15 +755,15 @@ function AuditView({ entries }: { entries: AuditEntry[] }) {
         </div>
       )}
       <div className="space-y-1">
-        {visible.slice().reverse().map((entry, index) => {
-          const isExpanded = expanded.has(index);
+        {visible.slice().reverse().map(({ entry, originalIndex }) => {
+          const isExpanded = expanded.has(originalIndex);
           const time = entry.timestamp ? new Date(entry.timestamp).toLocaleTimeString() : "";
           const label = entry.name ?? entry.type ?? "event";
           const scope = entry.scope ? entry.scope.replace(/^chat:/, "").slice(0, 12) : "";
           return (
             <button
-              key={`${entry.timestamp ?? "entry"}-${index}`}
-              onClick={() => toggleExpand(index)}
+              key={`${entry.timestamp ?? "entry"}-${originalIndex}`}
+              onClick={() => toggleExpand(originalIndex)}
               className="w-full rounded-lg border border-border bg-background p-2 text-left text-[11px] transition-colors hover:bg-muted/50"
             >
               <div className="flex items-center gap-2 font-mono">
@@ -813,9 +890,23 @@ function WorkspacePanel({
                     <span className="flex-1 text-left">{label}</span>
                     {count !== undefined && count > 0 && <span className="rounded-full bg-muted px-1.5 text-[10px]">{count}</span>}
                     {id === "files" && showRefresh && (
-                      <button onClick={(e) => { e.stopPropagation(); onRefresh(); }} className="ml-auto rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground" title="Refresh">
+                      <span
+                        role="button"
+                        tabIndex={0}
+                        onClick={(e) => { e.stopPropagation(); onRefresh(); }}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" || e.key === " ") {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            onRefresh();
+                          }
+                        }}
+                        className="ml-auto rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
+                        title="Refresh"
+                        aria-label="Refresh files"
+                      >
                         <RefreshCw className={`h-3 w-3 ${refreshing ? "animate-spin" : ""}`} />
-                      </button>
+                      </span>
                     )}
                   </>
                 )}
@@ -923,7 +1014,7 @@ function WorkspacePanel({
               {hasRepo ? "No files to show yet - try refreshing." : "Connect a repository to browse files."}
             </div>
           ) : (
-            <FileTree files={workspace.files.slice(0, 600)} />
+            <FileTree files={workspace.files} />
           )
         )}
 
@@ -979,15 +1070,10 @@ export function AgentPage() {
 
   const [repoUrl, setRepoUrl] = useState("");
   const [sessionRepo, setSessionRepo] = useState("");  const [savedRepos, setSavedRepos] = useState<SavedRepo[]>([]);
-  const [providerKind, setProviderKind] = useState<"ollama" | "openai">(() => {
-    try { return (JSON.parse(localStorage.getItem("daygle.cloudProvider") ?? "{}") as any).kind || "ollama"; } catch { return "ollama"; }
-  });
-  const [cloudBaseUrl, setCloudBaseUrl] = useState(() => {
-    try { return (JSON.parse(localStorage.getItem("daygle.cloudProvider") ?? "{}") as any).baseUrl || ""; } catch { return ""; }
-  });
-  const [cloudApiKey, setCloudApiKey] = useState(() => {
-    try { return (JSON.parse(localStorage.getItem("daygle.cloudProvider") ?? "{}") as any).apiKey || ""; } catch { return ""; }
-  });
+  const [cloudProvider] = useState<StoredCloudProvider>(loadCloudProvider);
+  const [providerKind, setProviderKind] = useState<"ollama" | "openai">(cloudProvider.kind);
+  const [cloudBaseUrl, setCloudBaseUrl] = useState(cloudProvider.baseUrl);
+  const [cloudApiKey, setCloudApiKey] = useState(cloudProvider.apiKey);
 
   const [models, setModels] = useState<string[]>([]);
   const [model, setModel] = useState("");
@@ -1000,6 +1086,7 @@ export function AgentPage() {
   const [streaming, setStreaming] = useState(false);
   const [statusText, setStatusText] = useState("");
   const [connected, setConnected] = useState(false);
+  const [connectionError, setConnectionError] = useState<string | null>(null);
   const [history, setHistory] = useState<ChatSummary[]>([]);
   const [queuedMessages, setQueuedMessages] = useState<QueuedMessage[]>([]);
   const [workspace, setWorkspace] = useState<ChatWorkspace>({ files: [], changedFiles: [], stat: "", diff: "", checkpoints: [] });
@@ -1028,8 +1115,12 @@ export function AgentPage() {
   const scrollRef = useRef<HTMLDivElement>(null);
   const stickToBottomRef = useRef(true);
   const abortRef = useRef<(() => void) | undefined>(undefined);
-  const toolResultsRef = useRef<Map<string, string>>(new Map());
   const busyPollRef = useRef<number | null>(null);
+  const busyPollInFlightRef = useRef(false);
+  const resumeRequestRef = useRef(0);
+  const workspaceRequestRef = useRef(0);
+  const streamGenerationRef = useRef(0);
+  const modelRequestRef = useRef(0);
 
   // Track viewport width so the side panels can switch between inline (desktop)
   // and overlay-drawer (mobile) layouts. Collapse drawers when crossing into
@@ -1089,24 +1180,28 @@ export function AgentPage() {
     document.body.style.userSelect = "none";
   }
 
-  const refreshWorkspace = useCallback(async () => {
-    if (!sessionId) {
+  const refreshWorkspace = useCallback(async (requestedSessionId?: string) => {
+    const targetSessionId = requestedSessionId ?? sessionId;
+    const requestId = ++workspaceRequestRef.current;
+    if (!targetSessionId) {
       setWorkspace({ files: [], changedFiles: [], stat: "", diff: "", checkpoints: [] });
       setAuditEntries([]);
+      setWorkspaceRefreshing(false);
       return;
     }
     setWorkspaceRefreshing(true);
     try {
       const [nextWorkspace, nextAudit] = await Promise.all([
-        getChatWorkspace(agentUrl, sessionId),
+        getChatWorkspace(agentUrl, targetSessionId),
         getAuditLog(agentUrl),
       ]);
+      if (requestId !== workspaceRequestRef.current) return;
       setWorkspace(nextWorkspace);
       setAuditEntries(nextAudit);
     } catch {
       // A chat-only session has no workspace; keep the empty state.
     } finally {
-      setWorkspaceRefreshing(false);
+      if (requestId === workspaceRequestRef.current) setWorkspaceRefreshing(false);
     }
   }, [agentUrl, sessionId]);
 
@@ -1155,32 +1250,28 @@ export function AgentPage() {
   const paramModel = searchParams.get("model");
 
   useEffect(() => {
+    const requestId = ++modelRequestRef.current;
+    setModels([]);
+    const applyModels = (names: string[]) => {
+      if (requestId !== modelRequestRef.current) return;
+      setModels(names);
+      setModel((current) => {
+        if (current && names.includes(current)) return current;
+        const preferredModel = loadModelPreference();
+        if (paramModel && names.includes(paramModel)) return paramModel;
+        if (preferredModel && names.includes(preferredModel)) return preferredModel;
+        return names.length > 0 ? names[0] : "";
+      });
+    };
+
     if (providerKind === "openai" && cloudBaseUrl.trim()) {
-      // List models from cloud provider
       listProviderModels(agentUrl, "openai", cloudBaseUrl.trim(), cloudApiKey || undefined)
-        .then((names) => {
-          setModels(names);
-          setModel((current) => {
-            if (current && names.includes(current)) return current;
-            return names.length > 0 ? names[0] : current;
-          });
-        })
-        .catch(() => setModels([]));
-    } else {
-      // List models from local Ollama
+        .then(applyModels)
+        .catch(() => requestId === modelRequestRef.current && setModels([]));
+    } else if (providerKind === "ollama") {
       listModels(ollamaUrl)
-        .then((m) => {
-          const names = m.map((model) => model.name);
-          setModels(names);
-          setModel((current) => {
-            if (current && names.includes(current)) return current;
-            const preferredModel = loadModelPreference();
-            if (paramModel && names.includes(paramModel)) return paramModel;
-            if (preferredModel && names.includes(preferredModel)) return preferredModel;
-            return names.length > 0 ? names[0] : current;
-          });
-        })
-        .catch(() => {});
+        .then((items) => applyModels(items.map((item) => item.name)))
+        .catch(() => requestId === modelRequestRef.current && setModels([]));
     }
   }, [ollamaUrl, paramModel, providerKind, cloudBaseUrl, cloudApiKey, agentUrl]);
 
@@ -1238,11 +1329,15 @@ export function AgentPage() {
   }
 
   async function handleConnect() {
-    if (!model) return;
+    if (!model || loading) return;
     const repo = repoUrl.trim();
     setLoading(true);
+    setConnectionError(null);
     try {
-      const providerConfig: ProviderConfig | undefined = providerKind === "openai" && cloudBaseUrl.trim()
+      if (providerKind === "openai" && !cloudBaseUrl.trim()) {
+        throw new Error("Enter an OpenAI-compatible provider URL before connecting.");
+      }
+      const providerConfig: ProviderConfig | undefined = providerKind === "openai"
         ? { kind: "openai", baseUrl: cloudBaseUrl.trim(), apiKey: cloudApiKey || undefined }
         : undefined;
       const session = await createChatSession(agentUrl, repo, model, LOCAL_OLLAMA_URL, loadGenOptions(), providerConfig);
@@ -1260,8 +1355,9 @@ export function AgentPage() {
         },
       ]);
     } catch (err) {
-      setMessages([{ id: uid(), role: "assistant", content: `Failed to connect: ${err instanceof Error ? err.message : String(err)}` }]);
-      setConnected(true);
+      setConnectionError(err instanceof Error ? err.message : String(err));
+      setConnected(false);
+      setSessionId(null);
     } finally {
       setLoading(false);
     }
@@ -1279,27 +1375,35 @@ export function AgentPage() {
   // so poll the transcript until the session is no longer busy.
   function startBusyPoll(id: string) {
     stopBusyPoll();
+    const requestId = resumeRequestRef.current;
     setStreaming(true);
     setStatusText("Working…");
     busyPollRef.current = window.setInterval(async () => {
+      if (busyPollInFlightRef.current) return;
+      busyPollInFlightRef.current = true;
       try {
         const chat = await getChatSession(agentUrl, id);
+        if (requestId !== resumeRequestRef.current) return;
         setMessages(bubblesFromMessages(chat.messages));
         if (!chat.busy) {
           stopBusyPoll();
           setStreaming(false);
           setStatusText("");
-          void refreshWorkspace();
+          void refreshWorkspace(id);
         }
       } catch {
+        if (requestId !== resumeRequestRef.current) return;
         stopBusyPoll();
         setStreaming(false);
         setStatusText("");
+      } finally {
+        busyPollInFlightRef.current = false;
       }
     }, 1500);
   }
 
   async function resumeChat(id: string, opts?: { silent?: boolean }) {
+    const requestId = ++resumeRequestRef.current;
     stopBusyPoll();
     setQueuedMessages([]);
     setAutoSendQueued(false);
@@ -1307,7 +1411,9 @@ export function AgentPage() {
     setLoading(true);
     try {
       const chat = await getChatSession(agentUrl, id);
+      if (requestId !== resumeRequestRef.current) return;
       setSessionId(chat.id);
+      setConnectionError(null);
       setSessionRepo(chat.repoUrl ?? "");
       rememberSession(chat.id);
       setRepoUrl(chat.repoUrl ?? "");
@@ -1317,6 +1423,7 @@ export function AgentPage() {
       // If a reply is still streaming server-side, resume showing progress.
       if (chat.busy) startBusyPoll(chat.id);
     } catch (err) {
+      if (requestId !== resumeRequestRef.current) return;
       if (!opts?.silent) {
         setMessages([{ id: uid(), role: "assistant", content: `Failed to open chat: ${err instanceof Error ? err.message : String(err)}` }]);
         setConnected(true);
@@ -1324,14 +1431,17 @@ export function AgentPage() {
         rememberSession(null); // stale id from a pruned chat
       }
     } finally {
-      setLoading(false);
+      if (requestId === resumeRequestRef.current) setLoading(false);
     }
   }
 
   function switchChat(id: string) {
     if (id === sessionId) return;
+    streamGenerationRef.current++;
     abortRef.current?.();
+    abortRef.current = undefined;
     verifyAbortRef.current?.();
+    verifyAbortRef.current = undefined;
     setStreaming(false);
     setStatusText("");
     if (isMobile) setChatsSidebarOpen(false);
@@ -1356,8 +1466,12 @@ export function AgentPage() {
   }
 
   function startNewChat() {
+    resumeRequestRef.current++;
+    streamGenerationRef.current++;
     abortRef.current?.();
+    abortRef.current = undefined;
     verifyAbortRef.current?.();
+    verifyAbortRef.current = undefined;
     stopBusyPoll();
     setConnected(false);
     setSessionId(null);
@@ -1367,7 +1481,12 @@ export function AgentPage() {
     removeImageAttachment();
     setQueuedMessages([]);
     setWorkspace({ files: [], changedFiles: [], stat: "", diff: "", checkpoints: [] });
+    workspaceRequestRef.current++;
+    setWorkspaceRefreshing(false);
     setStreaming(false);
+    setStatusText("");
+    setConnectionError(null);
+    setAuditEntries([]);
     rememberSession(null);
     refreshHistory();
   }
@@ -1427,12 +1546,13 @@ export function AgentPage() {
     setImageAttachmentName("");
   }
 
-  const handleSend = useCallback(() => {
-    if ((!input.trim() && !imageAttachment) || !sessionId) return;
+  const handleSend = useCallback((messageOverride?: string) => {
+    const override = messageOverride?.trim();
+    if ((!override && !input.trim() && !imageAttachment) || !sessionId) return;
 
-    const userMsg = input.trim() || "Please describe this image.";
-    const userImage = imageAttachment;
-    const userImageName = imageAttachmentName;
+    const userMsg = override || input.trim() || "Please describe this image.";
+    const userImage = override ? undefined : imageAttachment;
+    const userImageName = override ? "" : imageAttachmentName;
     setInput("");
     removeImageAttachment();
     if (streaming) {
@@ -1450,13 +1570,11 @@ export function AgentPage() {
     }]);
     setStreaming(true);
     setStatusText("Thinking…");
-    toolResultsRef.current.clear();
-
+    const streamGeneration = ++streamGenerationRef.current;
     let assistantId = uid();
     let assistantContent = "";
-    const pendingTools = new Map<string, { name: string; args: Record<string, unknown>; result?: string }>();
-
     const cancel = sendChatMessage(agentUrl, sessionId, userMsg, (event: ChatEvent) => {
+      if (streamGenerationRef.current !== streamGeneration) return;
       switch (event.type) {
         case "status":
           setStatusText(event.message);
@@ -1481,7 +1599,7 @@ export function AgentPage() {
         }
 
         case "model_done": {
-          const finalCleaned = stripToolJson(assistantContent) || event.content.trim();
+          const finalCleaned = stripToolJson(assistantContent) || stripToolJson(event.content);
           setMessages((prev) => {
             const last = prev[prev.length - 1];
             const hasBubble = last?.id === assistantId && last.role === "assistant";
@@ -1502,7 +1620,6 @@ export function AgentPage() {
 
         case "tool_start": {
           const toolId = `${assistantId}-tool-${event.name}-${Date.now()}`;
-          pendingTools.set(toolId, { name: event.name, args: event.args });
           setMessages((prev) => {
             // Freeze any still-streaming assistant bubble before the tool card,
             // and drop it if it only held tool-call JSON (now empty).
@@ -1606,12 +1723,13 @@ export function AgentPage() {
   }, [autoSendQueued, queuedMessages, sessionId, streaming]);
 
   useEffect(() => {
-    if (!autoSendQueued || streaming || !input.trim()) return;
+    if (!autoSendQueued || streaming || (!input.trim() && !imageAttachment)) return;
     setAutoSendQueued(false);
     handleSend();
-  }, [autoSendQueued, handleSend, input, streaming]);
+  }, [autoSendQueued, handleSend, imageAttachment, input, streaming]);
 
   function handleStop() {
+    streamGenerationRef.current++;
     // Abort our own stream if we own it, and ask the server to stop the run -
     // the latter also covers a generation we only reconnected to (busy-poll),
     // where we no longer hold the original stream handle.
@@ -1620,6 +1738,7 @@ export function AgentPage() {
     stopBusyPoll();
     setStreaming(false);
     setStatusText("");
+    abortRef.current = undefined;
     // Clear the blinking cursor on whatever bubble was mid-stream.
     setMessages((prev) => prev.map((m) => (m.streaming ? { ...m, streaming: false } : m)));
   }
@@ -1640,9 +1759,13 @@ export function AgentPage() {
       ...prev,
       { id: uid(), role: "assistant", content: "Running verification - QA checks and an AI review of the current changes…" },
     ]);
+    let finished = false;
     const finish = () => {
+      if (finished) return;
+      finished = true;
       setVerifying(false);
       setStatusText("");
+      verifyAbortRef.current = undefined;
       void refreshWorkspace();
     };
     const cancel = verifyChat(agentUrl, sessionId, (event: ChatEvent) => {
@@ -1682,6 +1805,7 @@ export function AgentPage() {
           break;
         case "error":
           setMessages((prev) => [...prev, { id: uid(), role: "assistant", content: `Verification error: ${event.message}` }]);
+          finish();
           break;
         case "verify_done":
           finish();
@@ -1718,114 +1842,15 @@ export function AgentPage() {
 
   const handleClarification = useCallback(
     (bubble: ChatBubble, selectedLabel: string) => {
-      if (!bubble.requestId) return;
-      // Update the bubble to show the selected option
-      setMessages((prev) => prev.map((m) => (m.id === bubble.id ? { ...m, selectedOption: selectedLabel } : m)));
-      // Send the user's choice as a new message
-      setInput(selectedLabel);
-      // Trigger send after a brief delay to ensure state updates
-      setTimeout(() => {
-        const userMsg = selectedLabel;
-        if (!sessionId) return;
-        setMessages((prev) => [...prev, { id: uid(), role: "user", content: userMsg }]);
-        setStreaming(true);
-        setStatusText("Thinking…");
-        toolResultsRef.current.clear();
-
-        let assistantId = uid();
-        let assistantContent = "";
-
-        const cancel = sendChatMessage(agentUrl, sessionId, userMsg, (event: ChatEvent) => {
-          switch (event.type) {
-            case "status":
-              setStatusText(event.message);
-              break;
-            case "model_delta": {
-              assistantContent += event.content;
-              const cleaned = stripToolJson(assistantContent);
-              setMessages((prev) => {
-                const last = prev[prev.length - 1];
-                const hasBubble = last?.id === assistantId && last.role === "assistant";
-                if (!cleaned) {
-                  return hasBubble ? [...prev.slice(0, -1), { ...last, content: cleaned, streaming: true }] : prev;
-                }
-                if (hasBubble) {
-                  return [...prev.slice(0, -1), { ...last, content: cleaned, streaming: true }];
-                }
-                return [...prev, { id: assistantId, role: "assistant", content: cleaned, streaming: true }];
-              });
-              break;
-            }
-            case "model_done": {
-              const finalCleaned = stripToolJson(assistantContent) || event.content.trim();
-              setMessages((prev) => {
-                const last = prev[prev.length - 1];
-                const hasBubble = last?.id === assistantId && last.role === "assistant";
-                if (hasBubble) {
-                  if (!finalCleaned) return prev.slice(0, -1);
-                  return [...prev.slice(0, -1), { ...last, content: finalCleaned, streaming: false }];
-                }
-                if (finalCleaned) {
-                  return [...prev, { id: assistantId, role: "assistant", content: finalCleaned, streaming: false }];
-                }
-                return prev;
-              });
-              setStreaming(false);
-              setStatusText("");
-              break;
-            }
-            case "tool_start": {
-              const toolId = `${assistantId}-tool-${event.name}-${Date.now()}`;
-              setMessages((prev) => {
-                const finalized = prev
-                  .map((m) => (m.role === "assistant" && m.streaming ? { ...m, streaming: false } : m))
-                  .filter((m) => !(m.role === "assistant" && !m.content));
-                return [...finalized, { id: toolId, role: "tool", content: "", toolName: event.name, toolArgs: event.args }];
-              });
-              setStatusText(toolStatus(event.name));
-              assistantId = uid();
-              assistantContent = "";
-              break;
-            }
-            case "tool_result":
-              setMessages((prev) => {
-                for (let i = prev.length - 1; i >= 0; i--) {
-                  if (prev[i].role === "tool" && prev[i].toolName === event.name && !prev[i].toolResult) {
-                    const updated = [...prev];
-                    updated[i] = { ...updated[i], toolResult: event.result, toolDiff: event.diff };
-                    return updated;
-                  }
-                }
-                return prev;
-              });
-              setStatusText("Thinking…");
-              break;
-            case "clarification_requested":
-              setMessages((prev) => [
-                ...prev,
-                {
-                  id: `clarification-${event.requestId}`,
-                  role: "clarification",
-                  content: "",
-                  requestId: event.requestId,
-                  question: event.question,
-                  options: event.options,
-                },
-              ]);
-              setStreaming(false);
-              setStatusText("");
-              break;
-            case "error":
-              setMessages((prev) => [...prev, { id: uid(), role: "assistant", content: `Error: ${event.message}` }]);
-              setStreaming(false);
-              setStatusText("");
-              break;
-          }
-        });
-        abortRef.current = cancel;
-      }, 100);
+      if (!bubble.requestId || bubble.selectedOption || !sessionId) return;
+      setMessages((prev) => prev.map((message) => (
+        message.id === bubble.id ? { ...message, selectedOption: selectedLabel } : message
+      )));
+      // Route the answer through the same stream lifecycle as normal messages.
+      // This avoids the old duplicated implementation drifting out of sync.
+      handleSend(selectedLabel);
     },
-    [agentUrl, sessionId],
+    [handleSend, sessionId],
   );
 
   const activeChatTitle = history.find((chat) => chat.id === sessionId)?.title ?? messageTitle(messages);
@@ -1986,6 +2011,9 @@ export function AgentPage() {
                   {loading ? "Starting…" : repoUrl.trim() ? "Connect" : "Start chat"}
                 </Button>
               </div>
+              {connectionError && (
+                <p className="text-[11px] text-destructive" role="alert">{connectionError}</p>
+              )}
               {noModels && (
                 <p className="text-[11px] text-amber-400/90">
                   No models detected. Pull one on the{" "}
@@ -2479,7 +2507,7 @@ export function AgentPage() {
                 placeholder={streaming ? "Type a message to queue…" : "Ask about the code, request changes…"}
                 className="flex-1"
               />
-              <Button size="icon" onClick={handleSend} disabled={!input.trim() && !imageAttachment} title={streaming ? "Queue message" : "Send message"}>
+              <Button size="icon" onClick={() => handleSend()} disabled={!input.trim() && !imageAttachment} title={streaming ? "Queue message" : "Send message"}>
                 <Send className="h-4 w-4" />
               </Button>
               {streaming && (
