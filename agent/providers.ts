@@ -7,6 +7,7 @@
  */
 
 import type { ToolDefinition } from "./tools";
+import { isLoopbackUrl, isSafeExternalUrl } from "./security";
 
 // ── Shared types ────────────────────────────────────────────────────────────
 
@@ -81,8 +82,10 @@ export interface ProviderConfig {
 export function createProvider(config: ProviderConfig): ChatProvider {
   switch (config.kind) {
     case "ollama":
+      if (!isLoopbackUrl(config.baseUrl)) throw new Error("Ollama baseUrl must be a loopback address.");
       return new OllamaProvider(config.baseUrl);
     case "openai":
+      if (!isSafeExternalUrl(config.baseUrl)) throw new Error("Cloud provider URL must be a public HTTPS address.");
       return new OpenAICompatibleProvider(config.baseUrl, config.apiKey ?? "");
     default:
       throw new Error(`Unknown provider kind: ${config.kind}`);

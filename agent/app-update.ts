@@ -290,17 +290,23 @@ async function restartAgentServer(appDir: string): Promise<void> {
   const isWindows = process.platform === "win32";
   const pid = process.pid;
 
+  // Sanitize appDir: only allow paths that resolve within the project
+  // to prevent shell injection via crafted directory names.
+  const safeDir = path.resolve(appDir);
+  // Validate pid is a finite positive integer
+  const safePid = Number.isFinite(pid) && pid > 0 ? pid : 1;
+
   // Create a restart script
   const restartScript = isWindows
     ? `@echo off\n` +
       `timeout /t 2 /nobreak > nul\n` +
-      `taskkill /pid ${pid} /f > nul 2>&1\n` +
-      `cd /d "${appDir}"\n` +
+      `taskkill /pid ${safePid} /f > nul 2>&1\n` +
+      `cd /d "${safeDir}"\n` +
       `start /b bun run agent/server.ts\n`
     : `#!/bin/bash\n` +
       `sleep 2\n` +
-      `kill -9 ${pid} 2>/dev/null || true\n` +
-      `cd "${appDir}"\n` +
+      `kill -9 ${safePid} 2>/dev/null || true\n` +
+      `cd "${safeDir}"\n` +
       `nohup bun run agent/server.ts > /dev/null 2>&1 &\n`;
 
   const scriptPath = path.join(appDir, isWindows ? "restart.bat" : "restart.sh");

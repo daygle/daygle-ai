@@ -553,9 +553,13 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
 function errMessage(err: unknown): string {
   const raw = err instanceof Error ? err.message : String(err);
   const token = loadGithubToken();
-  const text = token ? raw.replaceAll(token, "[credential redacted]") : raw;
-  const firstLine = text.split(/\r?\n/, 1)[0].trim();
-  return firstLine.length > 500 ? `${firstLine.slice(0, 500)}…` : firstLine;
+  let text = token ? raw.replaceAll(token, "[credential redacted]") : raw;
+  // Strip stack traces: keep only the first line, drop any "at ..." frames
+  text = text.split(/\r?\n/, 1)[0].trim();
+  // Remove internal file paths that leak source layout
+  text = text.replace(/\s+at\s+.*/g, "");
+  text = text.replace(/\([^)]*\)/g, "()");
+  return text.length > 500 ? `${text.slice(0, 500)}…` : text;
 }
 
 function publish(job: Job, event: AgentEvent): void {

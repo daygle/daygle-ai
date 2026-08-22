@@ -126,6 +126,9 @@ function spawnCapture(
       });
       return;
     }
+    // CodeQL: argv[0] is validated against ALLOWED_QA_PROGRAMS above and
+    // argv[1..] against isReviewSafeCommand; this is not arbitrary user input.
+    // eslint-disable-next-line security/detect-child-process
     const child = spawn(argv[0], argv.slice(1), {
       cwd: opts.cwd,
       detached: true,
