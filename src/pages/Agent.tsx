@@ -357,13 +357,27 @@ function ToolCall({ name, args, result, diff }: { name: string; args: Record<str
 
 function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
+  async function handleCopy() {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      // Clipboard API may be blocked (non-secure context, permissions, etc.).
+      // Fall back to the legacy execCommand approach.
+      const textarea = document.createElement("textarea");
+      textarea.value = text;
+      textarea.style.position = "fixed";
+      textarea.style.opacity = "0";
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand("copy");
+      document.body.removeChild(textarea);
+    }
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  }
   return (
     <button
-      onClick={() => {
-        navigator.clipboard.writeText(text);
-        setCopied(true);
-        setTimeout(() => setCopied(false), 1500);
-      }}
+      onClick={handleCopy}
       className="ml-2 rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
       title="Copy"
     >
