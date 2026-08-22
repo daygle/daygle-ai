@@ -702,36 +702,35 @@ function WorkspacePanel({
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
 
   return (
-    <aside className="flex h-full w-full min-w-0 flex-col border-l border-border bg-card">
-      <div className="scrollbar-thin flex overflow-x-auto border-b border-border px-1.5 py-1.5 gap-1">
-        {tabs.map(({ id, label, icon: Icon, count }) => (
-          <button
-            key={id}
-            onClick={() => onTabChange(activeTab === id ? "" as WorkspaceTab : id)}
-            className={`flex shrink-0 items-center gap-1 rounded-md px-2 py-1.5 text-[11px] font-medium transition-colors ${
-              activeTab === id ? "bg-accent/15 text-accent" : "text-muted-foreground hover:bg-muted/60 hover:text-foreground"
-            }`}
-          >
-            <Icon className="h-3.5 w-3.5" />
-            <span>{label}</span>
-            {count !== undefined && count > 0 && <span className="rounded-full bg-muted px-1.5 text-[10px]">{count}</span>}
-          </button>
-        ))}
-      </div>
-
-      {activeTab && (
-        <>
-          <div className="flex items-center justify-between border-b border-border px-3 py-1.5">
-            <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{tabs.find((item) => item.id === activeTab)?.label}</span>
-            {showRefresh && (
-              <button onClick={onRefresh} className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground" title="Refresh from the workspace">
-                <RefreshCw className={`h-3.5 w-3.5 ${refreshing ? "animate-spin" : ""}`} />
+    <aside className="flex h-full w-full min-w-0 flex-col border-l border-border bg-card overflow-y-auto">
+      <div className="flex flex-col">
+        {tabs.map(({ id, label, icon: Icon, count }) => {
+          const isOpen = activeTab === id;
+          return (
+            <div key={id} className="border-b border-border">
+              <button
+                onClick={() => onTabChange(isOpen ? "" as WorkspaceTab : id)}
+                className={`flex w-full items-center gap-2 px-3 py-2.5 text-[11px] font-medium transition-colors ${
+                  isOpen ? "bg-accent/10 text-accent" : "text-muted-foreground hover:bg-muted/50 hover:text-foreground"
+                }`}
+              >
+                {isOpen ? (
+                  <ChevronDown className="h-3 w-3 shrink-0" />
+                ) : (
+                  <ChevronRight className="h-3 w-3 shrink-0" />
+                )}
+                <Icon className="h-3.5 w-3.5 shrink-0" />
+                <span className="flex-1 text-left">{label}</span>
+                {count !== undefined && count > 0 && <span className="rounded-full bg-muted px-1.5 text-[10px]">{count}</span>}
+                {id === "files" && showRefresh && (
+                  <button onClick={(e) => { e.stopPropagation(); onRefresh(); }} className="rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground" title="Refresh">
+                    <RefreshCw className={`h-3 w-3 ${refreshing ? "animate-spin" : ""}`} />
+                  </button>
+                )}
               </button>
-            )}
-          </div>
-
-          <div className="scrollbar-thin min-h-0 flex-1 overflow-y-auto p-3">
-            {activeTab === "queue" && (
+              {isOpen && (
+                <div className="scrollbar-thin max-h-[60vh] overflow-y-auto bg-background/50 p-3">
+                  {id === "queue" && (
           queue.length === 0 ? (
             <div className="flex h-full min-h-40 flex-col items-center justify-center text-center text-xs text-muted-foreground">
               <ListTodo className="mb-2 h-7 w-7 opacity-40" />
@@ -870,9 +869,12 @@ function WorkspacePanel({
           )
         )}
 
-          </div>
-        </>
-      )}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
     </aside>
   );
 }
