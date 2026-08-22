@@ -243,37 +243,20 @@ export async function performAppUpdate(
     updateProgress = { status: "installing", message: "Installing dependencies...", startedAt: updateProgress?.startedAt ?? Date.now() };
     emit({ type: "update_progress", message: "Installing dependencies..." });
 
-    // Detect package manager and install
-    const hasBunLock = fs.existsSync(path.join(appDir, "bun.lockb"));
+    // Detect package manager (check lock files first, then try bun, then npm)
+    const hasBunLock = fs.existsSync(path.join(appDir, "bun.lockb")) || fs.existsSync(path.join(appDir, "bun.lock"));
     const hasPnpmLock = fs.existsSync(path.join(appDir, "pnpm-lock.yaml"));
     const hasYarnLock = fs.existsSync(path.join(appDir, "yarn.lock"));
+    const pm = hasBunLock ? "bun" : hasPnpmLock ? "pnpm" : hasYarnLock ? "yarn" : whichBun() ? "bun" : "npm";
 
-    if (hasBunLock) {
-      execSync("bun install", { cwd: appDir, stdio: "pipe" });
-    } else if (hasPnpmLock) {
-      execSync("pnpm install", { cwd: appDir, stdio: "pipe" });
-    } else if (hasYarnLock) {
-      execSync("yarn install", { cwd: appDir, stdio: "pipe" });
-    } else {
-      // Try bun first since the project uses it; fall back to npm only if bun is unavailable.
-      const hasBun = whichBun();
-      execSync(hasBun ? "bun install" : "npm install", { cwd: appDir, stdio: "pipe" });
-    }
+    const installCmd = pm === "bun" ? "bun install" : pm === "pnpm" ? "pnpm install" : pm === "yarn" ? "yarn install" : "npm install";
+    execSync(installCmd, { cwd: appDir, stdio: "pipe" });
 
     updateProgress = { status: "building", message: "Building application...", startedAt: updateProgress?.startedAt ?? Date.now() };
     emit({ type: "update_progress", message: "Building application..." });
 
-    // Build the project (use the same package manager)
-    if (hasBunLock) {
-      execSync("bun run build", { cwd: appDir, stdio: "pipe" });
-    } else if (hasPnpmLock) {
-      execSync("pnpm run build", { cwd: appDir, stdio: "pipe" });
-    } else if (hasYarnLock) {
-      execSync("yarn run build", { cwd: appDir, stdio: "pipe" });
-    } else {
-      const hasBun = whichBun();
-      execSync(hasBun ? "bun run build" : "npm run build", { cwd: appDir, stdio: "pipe" });
-    }
+    const buildCmd = pm === "bun" ? "bun run build" : pm === "pnpm" ? "pnpm run build" : pm === "yarn" ? "yarn run build" : "npm run build";
+    execSync(buildCmd, { cwd: appDir, stdio: "pipe" });
 
     updateProgress = { status: "restarting", message: "Restarting agent server...", startedAt: updateProgress?.startedAt ?? Date.now() };
     emit({ type: "update_progress", message: "Restarting agent server..." });
