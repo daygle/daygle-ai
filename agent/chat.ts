@@ -44,6 +44,8 @@ export interface ChatSession {
   busy?: boolean;
   /** Fallback model used when the primary model fails. */
   fallbackModel?: string;
+  /** AI-generated title for the chat session. */
+  title?: string;
 }
 
 export type ChatEvent =

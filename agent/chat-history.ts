@@ -89,3 +89,50 @@ export function deriveTitle(messages: ChatMessage[]): string {
   if (!text) return "New chat";
   return text.length > 60 ? `${text.slice(0, 60)}…` : text;
 }
+
+/**
+ * Generates a short, descriptive title using the AI model.
+ * Falls back to deriveTitle() if the model is unavailable or the request fails.
+ */
+export async function generateTitle(
+  messages: ChatMessage[],
+  ollamaUrl: string,
+  model: string,
+): Promise<string> {
+  if (messages.length === 0) return "New chat";
+
+  try {
+    const conversation = messages
+      .slice(0, 5) // Use first 5 messages for context
+      .map((m) => `${m.role}: ${typeof m.content === 'string' ? m.content : '[image]'}`)
+      .join("\n");
+
+    const prompt = `Generate a very short title (max 8 words) for this conversation. Only output the title, nothing else. Be specific and descriptive.
+
+${conversation}`;
+
+    const response = await fetch(`${ollamaUrl}/api/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model,
+        messages: [{ role: "user", content: prompt }],
+        stream: false,
+        options: { temperature: 0.3, num_predict: 20 },
+      }),
+      signal: AbortSignal.timeout(5000), // 5 second timeout
+    });
+
+    if (response.ok) {
+      const data: any = await response.json();
+      const title = data.message?.content?.trim();
+      if (title && title.length > 3 && title.length < 80) {
+        return title;
+      }
+    }
+  } catch {
+    // Fall back to deriveTitle
+  }
+
+  return deriveTitle(messages);
+}

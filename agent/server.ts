@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { CancelledError, runAgentLoop, runAgenticReview, runReview, runTestGeneration, type AgentConfig, type AgentEvent } from "./agent";
 import { ChatSession, streamChat, type ChatEvent, type GenOptions } from "./chat";
-import { ChatHistoryStore, deriveTitle } from "./chat-history";
+import { ChatHistoryStore, deriveTitle, generateTitle } from "./chat-history";
 import {
   changedFiles,
   cloneRepo,
@@ -410,12 +410,30 @@ function persistChat(session: ChatSession): void {
         ...session.messages.slice(-(MAX_CHAT_HISTORY_MESSAGES - 2)),
       ]
     : session.messages;
+  // Generate AI title if not already set (throttled to first few messages, fire-and-forget)
+  if (!session.title && session.messages.length <= 5) {
+    generateTitle(session.messages, session.ollamaUrl, session.model).then((title) => {
+      session.title = title;
+      // Re-persist with the updated title
+      chatHistoryStore.save({
+        id: session.id,
+        repoUrl: session.repoUrl,
+        model: session.model,
+        ollamaUrl: session.ollamaUrl,
+        title,
+        messages,
+        createdAt: session.createdAt,
+        lastActivity: session.lastActivity,
+        options: session.options,
+      });
+    }).catch(() => {}); // Ignore errors
+  }
   chatHistoryStore.save({
     id: session.id,
     repoUrl: session.repoUrl,
     model: session.model,
     ollamaUrl: session.ollamaUrl,
-    title: deriveTitle(session.messages),
+    title: session.title || deriveTitle(session.messages),
     messages,
     createdAt: session.createdAt,
     lastActivity: session.lastActivity,
@@ -451,6 +469,7 @@ async function rehydrateChat(id: string): Promise<ChatSession | null> {
     createdAt: stored.createdAt,
     lastActivity: Date.now(),
     options: stored.options,
+    title: stored.title,
   };
   chatSessions.set(id, session);
   // Restore the latest checkpoint so pending changes survive server restarts.
@@ -1239,7 +1258,7 @@ const server = http.createServer((req, res) => {
             repoUrl: live.repoUrl,
             model: live.model,
             ollamaUrl: live.ollamaUrl,
-            title: deriveTitle(live.messages),
+            title: live.title || deriveTitle(live.messages),
             messages: live.messages,
             createdAt: live.createdAt,
             lastActivity: live.lastActivity,
