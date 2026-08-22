@@ -189,7 +189,7 @@ async function changedTrackedFiles(dir: string): Promise<string[]> {
     runRaw("git", ["diff", "--name-only", "-z"], dir),
   ]);
   return [...new Set([staged, unstaged]
-    .flatMap((output) => output.split("\\0"))
+    .flatMap((output) => output.split("\0"))
     .filter(Boolean)
     .map((entry) => entry.replaceAll("\\", "/")))];
 }
