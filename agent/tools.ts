@@ -763,7 +763,7 @@ async function searchFiles(root: string, pattern: string, rel?: string, semantic
     content.split("\n").forEach((line, i) => {
       if (matches.length >= candidateLimit) return;
       const lower = line.toLowerCase();
-      if (!semantic && regex?.test(line)) {
+      if (!semantic && (regex?.test(line) || line.includes(pattern))) {
         matches.push({ text: `${relPath}:${i + 1}: ${line.trim().slice(0, 200)}`, score: 0 });
       } else if (semantic && words.length > 0) {
         const score = words.reduce((total, word) => total + (lower.includes(word) ? 1 : 0), 0);
