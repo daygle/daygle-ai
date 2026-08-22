@@ -1097,6 +1097,90 @@ const server = http.createServer((req, res) => {
       return;
     }
 
+    // ---- Hugging Face model search ----
+    if (req.method === "GET" && url.pathname === "/api/hf/models") {
+      const search = url.searchParams.get("q")?.trim() ?? "";
+      const limit = Math.min(parseInt(url.searchParams.get("limit") ?? "20", 10) || 20, 50);
+      const sort = url.searchParams.get("sort") ?? "downloads";
+      const direction = url.searchParams.get("direction") ?? "-1";
+      if (!search) {
+        sendJson(res, 400, { error: "q (search query) is required." });
+        return;
+      }
+      try {
+        const hfUrl = new URL("https://huggingface.co/api/models");
+        hfUrl.searchParams.set("search", search);
+        hfUrl.searchParams.set("filter", "gguf");
+        hfUrl.searchParams.set("sort", sort);
+        hfUrl.searchParams.set("direction", direction);
+        hfUrl.searchParams.set("limit", String(limit));
+        const ghToken = loadGithubToken();
+        const headers: Record<string, string> = { Accept: "application/json" };
+        if (ghToken) headers["Authorization"] = `Bearer ${ghToken}`;
+        const resp = await fetch(hfUrl.toString(), { headers, signal: AbortSignal.timeout(10_000) });
+        if (!resp.ok) {
+          sendJson(res, resp.status, { error: `Hugging Face API returned ${resp.status}.` });
+          return;
+        }
+        const raw = await resp.json() as any[];
+        const models = raw.map((m) => ({
+          id: m.id,
+          author: m.id.split("/")[0],
+          downloads: m.downloads ?? 0,
+          likes: m.likes ?? 0,
+          tags: m.tags ?? [],
+          pipelineTag: m.pipeline_tag ?? null,
+          lastModified: m.lastModified ?? null,
+        }));
+        sendJson(res, 200, { models });
+      } catch (err) {
+        sendJson(res, 500, { error: errMessage(err) });
+      }
+      return;
+    }
+
+    // ---- Hugging Face model file listing (for quantization options) ----
+    const hfModelMatch = url.pathname.match(/^\/api\/hf\/models\/([^/]+\/[^/]+)\/siblings$/);
+    if (hfModelMatch && req.method === "GET") {
+      const modelId = decodeURIComponent(hfModelMatch[1]);
+      try {
+        const ghToken = loadGithubToken();
+        const headers: Record<string, string> = { Accept: "application/json" };
+        if (ghToken) headers["Authorization"] = `Bearer ${ghToken}`;
+        const resp = await fetch(`https://huggingface.co/api/models/${encodeURIComponent(modelId)}`, {
+          headers,
+          signal: AbortSignal.timeout(10_000),
+        });
+        if (!resp.ok) {
+          sendJson(res, resp.status, { error: `Hugging Face API returned ${resp.status}.` });
+          return;
+        }
+        const data = await resp.json() as any;
+        const siblings: any[] = data.siblings ?? [];
+        const ggufFiles = siblings
+          .filter((s) => s.rfilename?.endsWith(".gguf"))
+          .map((s) => {
+            const name = s.rfilename;
+            // Extract quantization from filename like model-Q4_K_M.gguf
+            const quantMatch = name.match(/Q[\d]+_[KMAPS]+/i);
+            return {
+              filename: name,
+              quantization: quantMatch ? quantMatch[0].toUpperCase() : null,
+              size: s.size ?? null,
+            };
+          });
+        sendJson(res, 200, {
+          modelId,
+          description: data.description ?? null,
+          tags: data.tags ?? [],
+          files: ggufFiles,
+        });
+      } catch (err) {
+        sendJson(res, 500, { error: errMessage(err) });
+      }
+      return;
+    }
+
     // ---- Model listing (supports cloud providers) ----
     if (req.method === "GET" && url.pathname === "/api/models") {
       const kind = url.searchParams.get("kind") ?? "ollama";

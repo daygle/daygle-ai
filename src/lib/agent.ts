@@ -574,3 +574,48 @@ export async function updateChatModel(
   });
   if (!res.ok) throw new Error(`Failed to update model (${res.status})`);
 }
+
+// ---- Hugging Face model search ----
+
+export interface HfModel {
+  id: string;
+  author: string;
+  downloads: number;
+  likes: number;
+  tags: string[];
+  pipelineTag: string | null;
+  lastModified: string | null;
+}
+
+export interface HfModelFile {
+  filename: string;
+  quantization: string | null;
+  size: number | null;
+}
+
+export async function searchHfModels(
+  serverUrl: string,
+  query: string,
+  opts?: { sort?: string; direction?: string; limit?: number },
+): Promise<HfModel[]> {
+  const params = new URLSearchParams({ q: query });
+  if (opts?.sort) params.set("sort", opts.sort);
+  if (opts?.direction) params.set("direction", opts.direction);
+  if (opts?.limit) params.set("limit", String(opts.limit));
+  const res = await fetch(`${strip(serverUrl)}/api/hf/models?${params}`);
+  if (!res.ok) throw new Error(`HF search failed (${res.status})`);
+  const data = (await res.json()) as { models: HfModel[]; error?: string };
+  if (data.error) throw new Error(data.error);
+  return data.models;
+}
+
+export async function getHfModelFiles(
+  serverUrl: string,
+  modelId: string,
+): Promise<{ modelId: string; description: string | null; tags: string[]; files: HfModelFile[] }> {
+  const res = await fetch(`${strip(serverUrl)}/api/hf/models/${encodeURIComponent(modelId)}/siblings`);
+  if (!res.ok) throw new Error(`HF file listing failed (${res.status})`);
+  const data = (await res.json()) as { modelId: string; description: string | null; tags: string[]; files: HfModelFile[]; error?: string };
+  if (data.error) throw new Error(data.error);
+  return data;
+}

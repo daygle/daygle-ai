@@ -1,15 +1,28 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { checkModelUpdates, DEFAULT_AGENT_URL, type ModelUpdateInfo } from "../lib/agent";
+import {
+  checkModelUpdates,
+  DEFAULT_AGENT_URL,
+  searchHfModels,
+  getHfModelFiles,
+  type HfModel,
+  type HfModelFile,
+  type ModelUpdateInfo,
+} from "../lib/agent";
 import {
   Box,
   CircleAlert,
   Download,
+  ExternalLink,
   HardDrive,
+  Heart,
   Info,
   MessageSquare,
   RefreshCw,
+  Search,
+  Star,
   Trash2,
+  TrendingDown,
   X,
 } from "lucide-react";
 import { useOllama } from "../context/OllamaProvider";
@@ -54,6 +67,18 @@ export function ModelsPage() {
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
 
+  // Hugging Face search state
+  const [hfQuery, setHfQuery] = useState("");
+  const [hfResults, setHfResults] = useState<HfModel[]>([]);
+  const [hfSearching, setHfSearching] = useState(false);
+  const [hfError, setHfError] = useState<string | null>(null);
+  const [hfSort, setHfSort] = useState<"downloads" | "likes">("downloads");
+  const [hfSelectedModel, setHfSelectedModel] = useState<string | null>(null);
+  const [hfFiles, setHfFiles] = useState<HfModelFile[]>([]);
+  const [hfFilesLoading, setHfFilesLoading] = useState(false);
+  const [hfPullingFile, setHfPullingFile] = useState<string | null>(null);
+  const hfSearchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   // Model update checks go through the local agent server only.
   const [agentUrl] = useState(DEFAULT_AGENT_URL);
   const [updates, setUpdates] = useState<Record<string, ModelUpdateInfo> | null>(null);
@@ -82,6 +107,78 @@ export function ModelsPage() {
     // The manager owns the stream and survives navigation; it refreshes the
     // model list on completion even if this page has unmounted.
     void startPull(baseUrl, target, refreshModels);
+  }
+
+  const doHfSearch = useCallback(
+    async (query: string, sort: string) => {
+      if (!query.trim()) {
+        setHfResults([]);
+        setHfError(null);
+        return;
+      }
+      setHfSearching(true);
+      setHfError(null);
+      try {
+        const results = await searchHfModels(agentUrl, query, {
+          sort,
+          direction: "-1",
+          limit: 24,
+        });
+        setHfResults(results);
+      } catch (err) {
+        setHfError(err instanceof Error ? err.message : "Search failed.");
+        setHfResults([]);
+      } finally {
+        setHfSearching(false);
+      }
+    },
+    [agentUrl],
+  );
+
+  function handleHfSearch(query: string) {
+    setHfQuery(query);
+    if (hfSearchTimer.current) clearTimeout(hfSearchTimer.current);
+    hfSearchTimer.current = setTimeout(() => {
+      void doHfSearch(query, hfSort);
+    }, 400);
+  }
+
+  function handleHfSortChange(sort: "downloads" | "likes") {
+    setHfSort(sort);
+    if (hfQuery.trim()) void doHfSearch(hfQuery, sort);
+  }
+
+  async function handleHfSelectModel(modelId: string) {
+    if (hfSelectedModel === modelId) {
+      setHfSelectedModel(null);
+      setHfFiles([]);
+      return;
+    }
+    setHfSelectedModel(modelId);
+    setHfFilesLoading(true);
+    try {
+      const data = await getHfModelFiles(agentUrl, modelId);
+      setHfFiles(data.files);
+    } catch {
+      setHfFiles([]);
+    } finally {
+      setHfFilesLoading(false);
+    }
+  }
+
+  async function handleHfPull(modelId: string, file: HfModelFile) {
+    const pullName = file.quantization
+      ? `hf.co/${modelId}:${file.quantization}`
+      : `hf.co/${modelId}`;
+    setHfPullingFile(file.filename);
+    setPullError(null);
+    setProgress(null);
+    try {
+      await startPull(baseUrl, pullName, refreshModels);
+      setHfPullingFile(null);
+    } catch {
+      setHfPullingFile(null);
+    }
   }
 
   async function openDetails(model: OllamaModel) {
@@ -221,6 +318,148 @@ export function ModelsPage() {
           <p className="mt-4 text-xs text-accent">✓ Model pulled successfully.</p>
         )}
         {pullError && <p className="mt-4 text-xs text-destructive">{pullError}</p>}
+      </section>
+
+      {/* Hugging Face browser */}
+      <section className="rounded-2xl border border-border bg-card p-5">
+        <div className="flex items-center gap-2.5">
+          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-amber-500/15 text-amber-400">
+            <Star className="h-4 w-4" />
+          </div>
+          <div>
+            <h2 className="text-sm font-semibold">Hugging Face</h2>
+            <p className="text-xs text-muted-foreground">Browse GGUF models and pull them into Ollama</p>
+          </div>
+        </div>
+
+        <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+          <div className="relative flex-1">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={hfQuery}
+              onChange={(e) => handleHfSearch(e.target.value)}
+              placeholder="Search models (e.g. llama, qwen, deepseek)"
+              className="pl-9 font-mono"
+            />
+          </div>
+          <div className="flex items-center gap-1 rounded-lg border border-border bg-background p-1">
+            <button
+              onClick={() => handleHfSortChange("downloads")}
+              className={cn(
+                "flex items-center gap-1 rounded-md px-2.5 py-1.5 text-xs transition-colors",
+                hfSort === "downloads"
+                  ? "bg-accent text-accent-foreground"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              <TrendingDown className="h-3 w-3" />
+              Downloads
+            </button>
+            <button
+              onClick={() => handleHfSortChange("likes")}
+              className={cn(
+                "flex items-center gap-1 rounded-md px-2.5 py-1.5 text-xs transition-colors",
+                hfSort === "likes"
+                  ? "bg-accent text-accent-foreground"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              <Heart className="h-3 w-3" />
+              Likes
+            </button>
+          </div>
+        </div>
+
+        {hfSearching && (
+          <div className="mt-4 flex items-center gap-2 text-sm text-muted-foreground">
+            <Spinner /> Searching Hugging Face…
+          </div>
+        )}
+        {hfError && <p className="mt-4 text-xs text-destructive">{hfError}</p>}
+
+        {!hfSearching && hfResults.length > 0 && (
+          <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            {hfResults.map((model) => (
+              <div
+                key={model.id}
+                className={cn(
+                  "flex flex-col gap-2 rounded-xl border bg-background p-3 transition-colors",
+                  hfSelectedModel === model.id ? "border-accent" : "border-border hover:border-accent/40",
+                )}
+              >
+                <button
+                  onClick={() => void handleHfSelectModel(model.id)}
+                  className="text-left"
+                >
+                  <h3 className="truncate font-mono text-xs font-semibold hover:text-accent transition-colors">
+                    {model.id}
+                  </h3>
+                </button>
+                <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
+                  <span className="flex items-center gap-0.5">
+                    <TrendingDown className="h-3 w-3" /> {model.downloads.toLocaleString()}
+                  </span>
+                  <span className="flex items-center gap-0.5">
+                    <Heart className="h-3 w-3" /> {model.likes.toLocaleString()}
+                  </span>
+                  {model.pipelineTag && <Badge className="text-[10px]">{model.pipelineTag}</Badge>}
+                </div>
+
+                {hfSelectedModel === model.id && (
+                  <div className="mt-1 space-y-2 border-t border-border pt-2">
+                    {hfFilesLoading ? (
+                      <div className="flex items-center gap-2 py-2 text-xs text-muted-foreground">
+                        <Spinner /> Loading files…
+                      </div>
+                    ) : hfFiles.length === 0 ? (
+                      <p className="text-xs text-muted-foreground">No GGUF files found for this model.</p>
+                    ) : (
+                      <div className="space-y-1">
+                        <p className="text-[10px] font-medium text-muted-foreground">Quantization variants:</p>
+                        <div className="flex flex-wrap gap-1">
+                          {hfFiles.map((file) => (
+                            <button
+                              key={file.filename}
+                              onClick={() => void handleHfPull(model.id, file)}
+                              disabled={!!pulling || hfPullingFile === file.filename}
+                              className={cn(
+                                "inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 font-mono text-[10px] transition-colors",
+                                hfPullingFile === file.filename
+                                  ? "border-accent bg-accent/10 text-accent"
+                                  : "hover:border-accent/50 hover:text-foreground text-muted-foreground",
+                                "disabled:opacity-50",
+                              )}
+                            >
+                              {hfPullingFile === file.filename ? (
+                                <Spinner />
+                              ) : (
+                                <Download className="h-2.5 w-2.5" />
+                              )}
+                              {file.quantization ?? file.filename.split("/").pop()}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                <a
+                  href={`https://huggingface.co/${model.id}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center gap-1 text-[10px] text-muted-foreground hover:text-accent transition-colors"
+                >
+                  <ExternalLink className="h-2.5 w-2.5" /> View on Hugging Face
+                </a>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {!hfSearching && hfResults.length === 0 && hfQuery.trim() && !hfError && (
+          <p className="mt-4 text-xs text-muted-foreground">No GGUF models found for "{hfQuery}".</p>
+        )}
       </section>
 
       {/* Model list */}
