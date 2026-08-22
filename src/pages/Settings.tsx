@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { CheckCircle2, CircleAlert, Cpu, Gauge, Key, PlugZap, RotateCcw, Server, ShieldCheck, SlidersHorizontal } from "lucide-react";
+import { CheckCircle2, CircleAlert, Cpu, Download, Gauge, Key, PlugZap, RotateCcw, Server, ShieldCheck, SlidersHorizontal } from "lucide-react";
 import { useOllama } from "../context/OllamaProvider";
 import { describeError, getVersion } from "../lib/ollama";
 import { DEFAULT_AGENT_URL, agentHealth, checkSandbox, saveGithubToken } from "../lib/agent";
@@ -430,7 +430,10 @@ Use the local Ollama server and give the agent a GitHub token.
       </section>
 
       <section>
-        <div className="mb-3 flex items-center gap-2">
+        <div className="mb-3 flex items-center gap-2.5">
+          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-accent/15 text-accent">
+            <Download className="h-4 w-4" />
+          </div>
           <h2 className="text-sm font-semibold">Updates</h2>
         </div>
         <AppUpdate serverUrl={agentUrl} />

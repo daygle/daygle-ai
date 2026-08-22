@@ -5,6 +5,16 @@ import { execSync, spawn } from "node:child_process";
 const REPO_OWNER = "daygle";
 const REPO_NAME = "daygle-ai";
 
+/** Returns true if bun is available on PATH. */
+function whichBun(): boolean {
+  try {
+    execSync(process.platform === "win32" ? "where bun" : "which bun", { stdio: "pipe" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export interface AppUpdateInfo {
   currentVersion: string;
   latestVersion: string;
@@ -245,7 +255,9 @@ export async function performAppUpdate(
     } else if (hasYarnLock) {
       execSync("yarn install", { cwd: appDir, stdio: "pipe" });
     } else {
-      execSync("npm install", { cwd: appDir, stdio: "pipe" });
+      // Try bun first since the project uses it; fall back to npm only if bun is unavailable.
+      const hasBun = whichBun();
+      execSync(hasBun ? "bun install" : "npm install", { cwd: appDir, stdio: "pipe" });
     }
 
     updateProgress = { status: "building", message: "Building application...", startedAt: updateProgress?.startedAt ?? Date.now() };
@@ -254,8 +266,13 @@ export async function performAppUpdate(
     // Build the project (use the same package manager)
     if (hasBunLock) {
       execSync("bun run build", { cwd: appDir, stdio: "pipe" });
+    } else if (hasPnpmLock) {
+      execSync("pnpm run build", { cwd: appDir, stdio: "pipe" });
+    } else if (hasYarnLock) {
+      execSync("yarn run build", { cwd: appDir, stdio: "pipe" });
     } else {
-      execSync("npm run build", { cwd: appDir, stdio: "pipe" });
+      const hasBun = whichBun();
+      execSync(hasBun ? "bun run build" : "npm run build", { cwd: appDir, stdio: "pipe" });
     }
 
     updateProgress = { status: "restarting", message: "Restarting agent server...", startedAt: updateProgress?.startedAt ?? Date.now() };
