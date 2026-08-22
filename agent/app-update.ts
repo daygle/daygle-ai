@@ -27,15 +27,23 @@ export interface AppUpdateInfo {
 }
 
 /**
- * Get the current version from package.json.
+ * Get the current version. Prefers the latest git tag (source of truth for
+ * releases), falls back to package.json, then to "0.0.0".
  */
 export function getCurrentVersion(): string {
   try {
-    const pkgPath = path.join(process.cwd(), "package.json");
-    const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
-    return pkg.version || "0.0.0";
+    // Use the latest git tag as the real version
+    const tag = execSync("git describe --tags --abbrev=0", { stdio: "pipe" }).toString().trim();
+    return tag.replace(/^v/i, "");
   } catch {
-    return "0.0.0";
+    // Fall back to package.json
+    try {
+      const pkgPath = path.join(process.cwd(), "package.json");
+      const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
+      return pkg.version || "0.0.0";
+    } catch {
+      return "0.0.0";
+    }
   }
 }
 
