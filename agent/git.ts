@@ -77,7 +77,8 @@ export async function cloneRepo(url: string, dir: string, token?: string): Promi
   if (!isSafeGitRemote(target)) {
     throw new Error(`Refusing to clone an unsafe repository URL.`);
   }
-  await runWithToken("git", ["clone", "--depth", "1", "--", target, dir], token);
+  const depth = process.env.DAYGLE_CLONE_DEPTH ?? "50";
+  await runWithToken("git", ["clone", "--depth", depth, "--", target, dir], token);
 }
 
 export async function detectDefaultBranch(url: string, token?: string): Promise<string> {

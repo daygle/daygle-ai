@@ -47,8 +47,40 @@ function localOllamaUrl(value?: string): string | null {
 }
 
 const TOKEN_PATH = path.join(os.homedir(), ".daygle", "github-token");
+const PREFS_DIR = path.join(os.homedir(), ".daygle", "prefs");
 
 let sandbox: SandboxRunner | null = null;
+
+/**
+ * Load project-level preferences that persist across sessions for the same
+ * repo URL. These are injected into the system prompt so the model can
+ * leverage knowledge from previous sessions.
+ */
+function loadProjectPrefs(repoUrl: string): string[] {
+  if (!repoUrl) return [];
+  const key = repoUrl.replace(/[^a-z0-9]/gi, "_").slice(0, 80);
+  const prefsPath = path.join(PREFS_DIR, `${key}.json`);
+  try {
+    const data = JSON.parse(fs.readFileSync(prefsPath, "utf8")) as { prefs?: string[] };
+    return Array.isArray(data.prefs) ? data.prefs.slice(0, 20) : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Save a project preference (deduplicating). */
+function saveProjectPref(repoUrl: string, pref: string): void {
+  if (!repoUrl || !pref.trim()) return;
+  const key = repoUrl.replace(/[^a-z0-9]/gi, "_").slice(0, 80);
+  const prefsPath = path.join(PREFS_DIR, `${key}.json`);
+  try {
+    fs.mkdirSync(PREFS_DIR, { recursive: true, mode: 0o700 });
+    const existing = loadProjectPrefs(repoUrl);
+    if (existing.includes(pref.trim())) return;
+    existing.push(pref.trim());
+    fs.writeFileSync(prefsPath, JSON.stringify({ prefs: existing.slice(-20) }, null, 2), { encoding: "utf8", mode: 0o600 });
+  } catch { /* best effort */ }
+}
 
 const chatSessions = new Map<string, ChatSession>();
 interface ChatCheckpointRecord {
@@ -1222,13 +1254,19 @@ const server = http.createServer((req, res) => {
           return;
         }
       }
+      // Inject project-level preferences from previous sessions so the model
+      // can leverage cross-session knowledge (e.g. "this project uses bun").
+      const projectPrefs = loadProjectPrefs(repoUrl);
+      const prefSystem = projectPrefs.length > 0
+        ? [{ role: "system" as const, content: `Project context from previous sessions:\n${projectPrefs.map((p) => "- " + p).join("\n")}` }]
+        : [];
       const session: ChatSession = {
         id,
         repoUrl,
         root: dir,
         model: body.model.trim(),
         ollamaUrl,
-        messages: [],
+        messages: prefSystem,
         createdAt: Date.now(),
         lastActivity: Date.now(),
         options: body.options,
@@ -1398,6 +1436,22 @@ const server = http.createServer((req, res) => {
       // Persist the transcript so the conversation survives restarts / TTL eviction.
       session.lastActivity = Date.now();
       persistChat(session);
+      // Save project-level preferences learned during this session.
+      if (session.repoUrl) {
+        for (const msg of session.messages) {
+          if (msg.role === "tool" && msg.tool_name === "run_command") {
+            const cmd = msg.content;
+            if (/^bun\s+(test|run)/.test(cmd)) saveProjectPref(session.repoUrl, "Uses bun as the package manager");
+            else if (/^npm\s+(test|run)/.test(cmd)) saveProjectPref(session.repoUrl, "Uses npm as the package manager");
+            else if (/^pnpm\s+(test|run)/.test(cmd)) saveProjectPref(session.repoUrl, "Uses pnpm as the package manager");
+            else if (/^yarn\s+(test|run)/.test(cmd)) saveProjectPref(session.repoUrl, "Uses yarn as the package manager");
+            else if (/tsc/.test(cmd)) saveProjectPref(session.repoUrl, "Uses TypeScript (tsc) for type checking");
+            else if (/vitest/.test(cmd)) saveProjectPref(session.repoUrl, "Uses vitest for testing");
+            else if (/jest/.test(cmd)) saveProjectPref(session.repoUrl, "Uses jest for testing");
+            else if (/eslint/.test(cmd)) saveProjectPref(session.repoUrl, "Uses eslint for linting");
+          }
+        }
+      }
       res.end();
       return;
     }

@@ -570,19 +570,86 @@ interface QueuedMessage {
 
 function AuditView({ entries }: { entries: AuditEntry[] }) {
   const [filter, setFilter] = useState("");
-  const visible = entries.filter((entry) => !filter.trim() || JSON.stringify(entry).toLowerCase().includes(filter.trim().toLowerCase()));
+  const [typeFilter, setTypeFilter] = useState<string[]>([]);
+  const [expanded, setExpanded] = useState<Set<number>>(new Set());
+
+  // Collect unique event types for the type filter
+  const eventTypes = useMemo(() => {
+    const types = new Set<string>();
+    for (const entry of entries) {
+      if (entry.type) types.add(entry.type);
+      if (entry.name) types.add(entry.name);
+    }
+    return [...types].sort();
+  }, [entries]);
+
+  const visible = entries.filter((entry) => {
+    // Text filter
+    if (filter.trim() && !JSON.stringify(entry).toLowerCase().includes(filter.trim().toLowerCase())) return false;
+    // Type filter
+    if (typeFilter.length > 0) {
+      const entryType = entry.type ?? entry.name ?? "";
+      if (!typeFilter.includes(entryType)) return false;
+    }
+    return true;
+  });
+
+  const toggleExpand = (index: number) => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(index)) next.delete(index); else next.add(index);
+      return next;
+    });
+  };
+
+  const toggleType = (type: string) => {
+    setTypeFilter((prev) => prev.includes(type) ? prev.filter((t) => t !== type) : [...prev, type]);
+  };
+
   if (entries.length === 0) return <div className="py-8 text-center text-xs text-muted-foreground">No audit entries yet.</div>;
   return (
     <div className="space-y-2">
-      <Input value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="Filter tool, file, session…" className="font-mono text-[11px]" />
-      {visible.slice().reverse().map((entry, index) => (
-        <details key={`${entry.timestamp ?? "entry"}-${index}`} className="rounded-lg border border-border bg-background p-2 text-[11px]">
-          <summary className="cursor-pointer font-mono text-muted-foreground">
-            {entry.timestamp ? new Date(entry.timestamp).toLocaleTimeString() : ""} {entry.scope ?? ""} {entry.name ?? entry.type ?? "event"}
-          </summary>
-          <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-words font-mono text-[10px] text-muted-foreground">{JSON.stringify(entry, null, 2)}</pre>
-        </details>
-      ))}
+      <Input value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="Search audit entries…" className="font-mono text-[11px]" />
+      {eventTypes.length > 0 && (
+        <div className="flex flex-wrap gap-1">
+          {eventTypes.slice(0, 12).map((type) => (
+            <button
+              key={type}
+              onClick={() => toggleType(type)}
+              className={`rounded-full px-2 py-0.5 text-[10px] font-medium transition-colors ${
+                typeFilter.includes(type) ? "bg-accent/20 text-accent" : "bg-muted text-muted-foreground hover:bg-muted/80"
+              }`}
+            >
+              {type}
+            </button>
+          ))}
+        </div>
+      )}
+      <div className="space-y-1">
+        {visible.slice().reverse().map((entry, index) => {
+          const isExpanded = expanded.has(index);
+          const time = entry.timestamp ? new Date(entry.timestamp).toLocaleTimeString() : "";
+          const label = entry.name ?? entry.type ?? "event";
+          const scope = entry.scope ? entry.scope.replace(/^chat:/, "").slice(0, 12) : "";
+          return (
+            <button
+              key={`${entry.timestamp ?? "entry"}-${index}`}
+              onClick={() => toggleExpand(index)}
+              className="w-full rounded-lg border border-border bg-background p-2 text-left text-[11px] transition-colors hover:bg-muted/50"
+            >
+              <div className="flex items-center gap-2 font-mono">
+                <span className="shrink-0 text-muted-foreground/60">{time}</span>
+                <span className="shrink-0 rounded bg-muted px-1 text-[10px] text-muted-foreground">{label}</span>
+                {scope && <span className="truncate text-muted-foreground/50">{scope}</span>}
+                {entry.result && <span className="ml-auto truncate text-muted-foreground/40">{entry.result.slice(0, 60)}</span>}
+              </div>
+              {isExpanded && (
+                <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-words font-mono text-[10px] text-muted-foreground">{JSON.stringify(entry, null, 2)}</pre>
+              )}
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
 }

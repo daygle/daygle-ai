@@ -275,9 +275,18 @@ const MAX_NUM_CTX = 131072;
  * request gets a compact local summary of older turns plus complete recent
  * turns; the full history remains available for the UI and persistence.
  */
+/** Token-aware size estimate for chat messages. */
+function estimateChatTokens(message: ChatMessage): number {
+  const textLen = message.content.length;
+  const jsonLen = JSON.stringify(message.tool_calls ?? []).length;
+  const imageTokens = message.images?.length ? message.images.length * 800 : 0; // ~800 tokens per image
+  const isCode = message.content.includes("```") || message.content.includes(";");
+  const charsPerToken = isCode ? 3.2 : 4.2;
+  return Math.ceil(textLen / charsPerToken) + Math.ceil(jsonLen / 3) + imageTokens;
+}
+
 function compactMessages(messages: ChatMessage[], maxChars: number): ChatMessage[] {
-  const size = (message: ChatMessage) => message.content.length + JSON.stringify(message.tool_calls ?? []).length +
-    (message.images?.reduce((sum, image) => sum + Math.min(image.length, 2_000_000), 0) ?? 0);
+  const size = (message: ChatMessage) => estimateChatTokens(message);
   const total = messages.reduce((sum, message) => sum + size(message), 0);
   if (total <= maxChars) return messages;
 

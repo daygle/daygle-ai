@@ -75,8 +75,24 @@ function limitModelContext(text: string): string {
   return `${text.slice(0, head)}\n… (middle omitted; diff limited to ${MAX_MODEL_CONTEXT_CHARS} characters) …\n${text.slice(-tail)}`;
 }
 
+/**
+ * Token-aware size estimate. Different content has different densities:
+ * code ~3.5 chars/token, natural language ~4.5 chars/token, JSON ~3 chars/token.
+ * Tool-call JSON is dense with punctuation so it costs more tokens per character.
+ */
+function estimateTokens(message: AgentMessage): number {
+  const textLen = message.content.length;
+  const jsonLen = JSON.stringify(message.tool_calls ?? []).length;
+  // Code-heavy content (has backticks or semicolons) is denser.
+  const isCode = message.content.includes("```") || message.content.includes(";");
+  const charsPerToken = isCode ? 3.2 : 4.2;
+  const textTokens = Math.ceil(textLen / charsPerToken);
+  const jsonTokens = Math.ceil(jsonLen / 3); // JSON is very dense
+  return textTokens + jsonTokens;
+}
+
 function compactAgentMessages(messages: AgentMessage[], maxChars: number): AgentMessage[] {
-  const size = (message: AgentMessage) => message.content.length + JSON.stringify(message.tool_calls ?? []).length;
+  const size = (message: AgentMessage) => estimateTokens(message);
   const total = messages.reduce((sum, message) => sum + size(message), 0);
   if (total <= maxChars) return messages;
   const system = messages.find((message) => message.role === "system");
@@ -357,10 +373,11 @@ You MUST use the provided tools - read files, search, write test files, and run 
 CRITICAL: Never write tool calls or shell commands as plain text. To use a tool you MUST invoke it through the tool interface.
 
 How to work:
-1. Study the change and the code it touches, and look for an existing test setup - a test runner, config, and where tests live (e.g. *.test.ts, *_test.py, tests/). Match the project's existing testing framework and conventions exactly. Do NOT introduce a new test framework or dependencies.
-2. Write focused tests that cover the new or changed behavior, including the important edge cases - not trivial or redundant assertions.
-3. Run the tests with the project's test command and iterate until they pass. If the change itself is buggy, prefer fixing the test to assert correct behavior; only touch non-test code if a test reveals a real defect.
-4. If the repository has no test framework set up and adding one would be intrusive, do NOT scaffold one - stop and explain that in your summary instead.
+1. First, search for existing tests related to the changed code. Use search with patterns like the function/class names, and check common test directories (tests/, test/, __tests__/, *.test.ts, *_test.py, etc.). Understand the existing test conventions before writing new ones.
+2. Study the change and the code it touches, and look for an existing test setup - a test runner, config, and where tests live. Match the project's existing testing framework and conventions exactly. Do NOT introduce a new test framework or dependencies.
+3. Write focused tests that cover the new or changed behavior, including the important edge cases - not trivial or redundant assertions. Place new tests in the same directory/style as existing tests.
+4. After creating each test file, run the project's test command to verify it passes. If tests fail, debug and fix them. If the change itself is buggy, prefer fixing the test to assert correct behavior; only touch non-test code if a test reveals a real defect.
+5. If the repository has no test framework set up and adding one would be intrusive, do NOT scaffold one - stop and explain that in your summary instead.
 
 Rules:
 - Only add or edit test files (and minimal fixtures) unless a test uncovers a real bug in the change.
