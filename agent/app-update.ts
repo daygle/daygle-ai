@@ -1,9 +1,41 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { execSync, spawn } from "node:child_process";
 
 const REPO_OWNER = "daygle";
 const REPO_NAME = "daygle-ai";
+const VERSION_STATE = path.join(os.homedir(), ".daygle", "current-version");
+
+/**
+ * Get the installed version. Prefers the state file written by the updater
+ * after a successful update, then git tags, then package.json.
+ */
+export function getCurrentVersion(): string {
+  try {
+    return fs.readFileSync(VERSION_STATE, "utf8").trim();
+  } catch { /* not yet installed by updater */ }
+
+  try {
+    const tag = execSync("git describe --tags --abbrev=0", { stdio: "pipe" }).toString().trim();
+    return tag.replace(/^v/i, "");
+  } catch { /* no git repo or no tags */ }
+
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(process.cwd(), "package.json"), "utf8"));
+    return pkg.version || "0.0.0";
+  } catch {
+    return "0.0.0";
+  }
+}
+
+/** Write the installed version after a successful update. */
+function writeCurrentVersion(version: string): void {
+  try {
+    fs.mkdirSync(path.dirname(VERSION_STATE), { recursive: true, mode: 0o700 });
+    fs.writeFileSync(VERSION_STATE, version, { encoding: "utf8", mode: 0o600 });
+  } catch { /* best effort */ }
+}
 
 /** Returns true if bun is available on PATH. */
 function whichBun(): boolean {
@@ -24,27 +56,6 @@ export interface AppUpdateInfo {
   publishedAt?: string;
   /** Non-null when the update check itself failed (e.g. rate-limited). */
   error?: string;
-}
-
-/**
- * Get the current version. Prefers the latest git tag (source of truth for
- * releases), falls back to package.json, then to "0.0.0".
- */
-export function getCurrentVersion(): string {
-  try {
-    // Use the latest git tag as the real version
-    const tag = execSync("git describe --tags --abbrev=0", { stdio: "pipe" }).toString().trim();
-    return tag.replace(/^v/i, "");
-  } catch {
-    // Fall back to package.json
-    try {
-      const pkgPath = path.join(process.cwd(), "package.json");
-      const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
-      return pkg.version || "0.0.0";
-    } catch {
-      return "0.0.0";
-    }
-  }
 }
 
 /**
@@ -241,9 +252,9 @@ export async function performAppUpdate(
       }
     }
 
-    // Pull latest changes
+    // Pull latest changes including tags
     try {
-      execSync(`git pull origin ${defaultBranch}`, { cwd: appDir, stdio: "pipe" });
+      execSync(`git pull origin ${defaultBranch} --tags`, { cwd: appDir, stdio: "pipe" });
     } catch (err) {
       throw new Error(`git pull failed: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -265,6 +276,12 @@ export async function performAppUpdate(
 
     const buildCmd = pm === "bun" ? "bun run build" : pm === "pnpm" ? "pnpm run build" : pm === "yarn" ? "yarn run build" : "npm run build";
     execSync(buildCmd, { cwd: appDir, stdio: "pipe" });
+
+    // Record the newly installed version after a successful build
+    try {
+      const tag = execSync("git describe --tags --abbrev=0", { cwd: appDir, stdio: "pipe" }).toString().trim();
+      writeCurrentVersion(tag.replace(/^v/i, ""));
+    } catch { /* best effort */ }
 
     updateProgress = { status: "restarting", message: "Restarting agent server...", startedAt: updateProgress?.startedAt ?? Date.now() };
     emit({ type: "update_progress", message: "Restarting agent server..." });
