@@ -19,6 +19,8 @@ export interface StoredJob {
   summary?: string;
   createdAt: number;
   finishedAt?: number;
+  /** Retained isolated checkpoint metadata for recovery after restart. */
+  checkpointId?: string;
 }
 
 export class HistoryStore {

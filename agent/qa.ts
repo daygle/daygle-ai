@@ -181,20 +181,23 @@ function detectCommands(root: string): string[] {
 /**
  * Runs the QA gate for a repo: installs dependencies if missing, then runs the
  * detected (or configured) verification commands. Verification commands run
- * inside the sandbox when one is available (the same sandbox used for
- * run_command); dependency installs stay on the host unless the sandbox has
- * network enabled, because installs need network access which is off by
- * default.
+ * inside the sandbox. Host fallback is deliberately disabled by default:
+ * verification and dependency installation must not execute repository code on
+ * the host. Set DAYGLE_ALLOW_HOST_QA=1 only for an explicitly trusted local
+ * checkout.
  */
 export async function runQaGate(opts: {
   root: string;
   command?: string;
   signal?: AbortSignal;
   onStatus?: (message: string) => void;
-  /** When set, verification commands run inside this sandbox (like run_command). */
+  /** Verification runs here; host fallback is disabled unless explicitly opted in. */
   sandbox?: SandboxRunner;
+  /** Explicit escape hatch for trusted local development, never enabled by default. */
+  allowHostFallback?: boolean;
 }): Promise<QaResult> {
   const { root, signal, sandbox } = opts;
+  const allowHostFallback = opts.allowHostFallback === true || process.env.DAYGLE_ALLOW_HOST_QA === "1";
   const commands = opts.command?.trim() ? [opts.command.trim()] : detectCommands(root);
 
   if (commands.length === 0) {
@@ -207,18 +210,24 @@ export async function runQaGate(opts: {
     };
   }
 
+  if (!sandbox && !allowHostFallback) {
+    throw new Error(
+      "QA refused to run: a command sandbox is unavailable. Start Docker/Podman/bubblewrap, or explicitly set DAYGLE_ALLOW_HOST_QA=1 for a trusted checkout.",
+    );
+  }
+
   const outputParts: string[] = [];
   let passed = true;
 
-  // Run a command through the sandbox when one is available, falling back to
-  // the host otherwise. The sandbox handles its own cwd (the repo is mounted
-  // at /work), so only host execution needs an explicit cwd.
+  // The sandbox handles its own cwd (the repo is mounted at /work). Host
+  // execution is reachable only through the explicit trusted-development
+  // escape hatch above.
   const run = async (command: string, timeoutMs: number) => {
     if (!isReviewSafeCommand(command, root)) {
       return { code: 1, stdout: "", stderr: `QA command rejected by verification policy: ${command}`, timedOut: false };
     }
     if (sandbox) {
-      const result = await sandbox.runCapture(root, command, { signal, timeoutMs });
+      const result = await sandbox.runCapture(root, command, { signal, timeoutMs, readOnly: true });
       return { code: result.code, stdout: result.stdout, stderr: result.stderr, timedOut: result.timedOut };
     }
     return spawnCapture(command, { cwd: root, timeoutMs, signal });
@@ -226,11 +235,14 @@ export async function runQaGate(opts: {
 
   if (fs.existsSync(path.join(root, "package.json")) && !fs.existsSync(path.join(root, "node_modules"))) {
     const pm = detectPackageManager(root);
-    // Dependency bootstrap is intentionally host-side and script-disabled;
-    // verification itself still uses the sandbox when available.
+    // Dependency bootstrap is also repository-controlled execution. Keep it in
+    // the sandbox and never run it on the host; --ignore-scripts prevents the
+    // package manager from invoking arbitrary lifecycle hooks.
     const installCommand = `${pm} install --ignore-scripts`;
-    opts.onStatus?.(`QA: installing dependencies (${installCommand})…`);
-    const install = await spawnCapture(installCommand, { cwd: root, timeoutMs: INSTALL_TIMEOUT_MS, signal, allowInstall: true });
+    opts.onStatus?.(`QA: installing dependencies (${installCommand})${sandbox ? " (sandboxed)" : ""}…`);
+    const install = sandbox
+      ? await sandbox.runCapture(root, installCommand, { signal, timeoutMs: INSTALL_TIMEOUT_MS })
+      : await spawnCapture(installCommand, { cwd: root, timeoutMs: INSTALL_TIMEOUT_MS, signal, allowInstall: true });
     if (install.timedOut) {
       return { ran: true, command: installCommand, output: "QA: dependency install timed out.", passed: false };
     }

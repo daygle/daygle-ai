@@ -59,8 +59,11 @@ interface ChatCheckpointRecord {
 }
 const chatCheckpoints = new Map<string, ChatCheckpointRecord[]>();
 const CHECKPOINT_ROOT = path.join(os.homedir(), ".daygle", "checkpoints");
+const JOB_CHECKPOINT_ROOT = path.join(os.homedir(), ".daygle", "job-checkpoints");
+const JOB_WORKSPACE_ROOT = path.join(os.homedir(), ".daygle", "job-workspaces");
 const MAX_CHECKPOINTS_PER_CHAT = 12;
 const CHECKPOINT_TTL_MS = 24 * 60 * 60 * 1000;
+const JOB_CHECKPOINT_TTL_MS = 24 * 60 * 60 * 1000;
 const MAX_STORED_JOB_EVENTS = 2_000;
 const MAX_CHAT_HISTORY_MESSAGES = 1_000;
 const AUDIT_LOG_PATH = path.join(os.homedir(), ".daygle", "audit.jsonl");
@@ -131,6 +134,54 @@ function cleanupCheckpointStore(): void {
 }
 
 cleanupCheckpointStore();
+
+function jobCheckpointManifestPath(jobId: string): string {
+  return path.join(JOB_CHECKPOINT_ROOT, jobId, "manifest.json");
+}
+
+function loadJobCheckpoint(jobId: string): WorkingTreeCheckpoint | null {
+  try {
+    const raw = JSON.parse(fs.readFileSync(jobCheckpointManifestPath(jobId), "utf8")) as WorkingTreeCheckpoint;
+    const root = path.resolve(JOB_CHECKPOINT_ROOT);
+    if (raw.directory && path.resolve(raw.directory).startsWith(root + path.sep)) return raw;
+  } catch {
+    // Checkpoints are best effort and may be incomplete after a crash.
+  }
+  return null;
+}
+
+function saveJobCheckpoint(jobId: string, checkpoint: WorkingTreeCheckpoint): void {
+  const manifest = jobCheckpointManifestPath(jobId);
+  fs.mkdirSync(path.dirname(manifest), { recursive: true, mode: 0o700 });
+  fs.writeFileSync(manifest, JSON.stringify(checkpoint), { encoding: "utf8", mode: 0o600 });
+}
+
+function removeJobRecoveryData(jobId: string): void {
+  try { fs.rmSync(path.join(JOB_CHECKPOINT_ROOT, jobId), { recursive: true, force: true }); } catch { /* best effort */ }
+  try { fs.rmSync(path.join(JOB_WORKSPACE_ROOT, jobId), { recursive: true, force: true }); } catch { /* best effort */ }
+}
+
+function cleanupJobRecoveryData(): void {
+  const candidates = new Set<string>();
+  for (const root of [JOB_CHECKPOINT_ROOT, JOB_WORKSPACE_ROOT]) {
+    try {
+      for (const jobId of fs.readdirSync(root)) candidates.add(jobId);
+    } catch {
+      // root may not exist yet
+    }
+  }
+  for (const jobId of candidates) {
+    try {
+      const manifest = jobCheckpointManifestPath(jobId);
+      const age = fs.existsSync(manifest) ? Date.now() - fs.statSync(manifest).mtimeMs : JOB_CHECKPOINT_TTL_MS + 1;
+      if (age > JOB_CHECKPOINT_TTL_MS) removeJobRecoveryData(jobId);
+    } catch {
+      // recovery cleanup is best effort per job
+    }
+  }
+}
+
+cleanupJobRecoveryData();
 
 /** Append structured, redacted tool activity for post-mortem debugging. */
 function audit(scope: string, event: unknown): void {
@@ -213,6 +264,8 @@ interface Job {
   createdAt: number;
   finishedAt?: number;
   config?: AgentConfig;
+  /** Persistent, isolated recovery checkpoint for this autonomous task. */
+  checkpointId?: string;
 }
 
 const jobs = new Map<string, Job>();
@@ -249,6 +302,7 @@ const chatSweeper = setInterval(() => {
   }
   for (const [id, job] of jobs) {
     if (job.status !== "running" && job.finishedAt && now - job.finishedAt > JOB_TTL_MS) {
+      removeJobRecoveryData(id);
       jobs.delete(id);
     }
   }
@@ -328,6 +382,7 @@ function toStored(job: Job): StoredJob {
     summary: job.summary,
     createdAt: job.createdAt,
     finishedAt: job.finishedAt,
+    checkpointId: job.checkpointId,
   };
 }
 
@@ -462,7 +517,6 @@ async function executeJob(job: Job): Promise<void> {
     if (signal.aborted) throw new CancelledError();
   };
   let workDir = "";
-  let tempWorkDir = false;
 
   // Debounced working-tree diff snapshots so the UI can show file changes live.
   let diffTimer: ReturnType<typeof setTimeout> | undefined;
@@ -505,9 +559,17 @@ async function executeJob(job: Job): Promise<void> {
     }
 
     emit({ type: "status", message: `Cloning ${job.repoUrl}…` });
-    workDir = fs.mkdtempSync(path.join(os.tmpdir(), "daygle-"));
-    tempWorkDir = true;
+    // Keep the autonomous checkout isolated from the user's source tree, but
+    // retain it beside its checkpoint for the recovery TTL so a server restart
+    // does not erase the only rollback target.
+    workDir = path.join(JOB_WORKSPACE_ROOT, job.id);
+    fs.rmSync(workDir, { recursive: true, force: true });
+    fs.mkdirSync(JOB_WORKSPACE_ROOT, { recursive: true, mode: 0o700 });
     await cloneRepo(job.repoUrl, workDir, token);
+    const jobCheckpoint = await createCheckpoint(workDir, path.join(JOB_CHECKPOINT_ROOT, job.id));
+    job.checkpointId = job.id;
+    saveJobCheckpoint(job.id, jobCheckpoint);
+    persist(job);
 
     base = job.baseBranch || (await detectDefaultBranch(job.repoUrl, token));
     branch = `daygle/${slugify(job.task)}-${Date.now().toString(36)}`;
@@ -518,7 +580,7 @@ async function executeJob(job: Job): Promise<void> {
       type: "status",
       message: sandbox
         ? `Command sandbox: ${sandbox.name}`
-        : "No container sandbox available - commands run on the host (policy-gated).",
+        : "No container sandbox available - the agent may inspect/edit, but QA and agentic review are disabled until a sandbox is available.",
     });
     emit({ type: "status", message: `Running ${job.model}…` });
     let summary = await runAgentLoop({
@@ -648,7 +710,10 @@ async function executeJob(job: Job): Promise<void> {
           reviewText = review.text;
           if (review.verdict === "approved") break;
           if (round >= maxRounds) {
-            emit({ type: "status", message: "Reviewer still has concerns - opening the PR with review notes." });
+            if (job.config?.blockOnReviewConcerns !== false) {
+              throw new Error("Review gate blocked completion: unresolved reviewer concerns remain after all fix rounds.");
+            }
+            emit({ type: "status", message: "Reviewer still has concerns - opening the PR with review notes (block disabled)." });
             break;
           }
           reviewFixRounds += 1;
@@ -708,13 +773,9 @@ async function executeJob(job: Job): Promise<void> {
     }
   } finally {
     if (diffTimer) clearTimeout(diffTimer);
-    if (tempWorkDir && workDir) {
-      try {
-        fs.rmSync(workDir, { recursive: true, force: true });
-      } catch {
-        // best effort cleanup
-      }
-    }
+    // The isolated workspace and checkpoint are intentionally retained until
+    // the recovery TTL. They are never the user's checkout and are pruned by
+    // cleanupJobRecoveryData / the job sweeper.
   }
 }
 
@@ -781,7 +842,7 @@ const server = http.createServer((req, res) => {
           sendJson(res, 200, {
             ok: false,
             name: null,
-            output: "No sandbox backend detected - commands run on the host (policy-gated).",
+            output: "No sandbox backend detected - QA and agentic review refuse to execute repository commands until one is available.",
           });
           return;
         }
@@ -1385,10 +1446,49 @@ const server = http.createServer((req, res) => {
       return;
     }
 
-    const jobMatch = url.pathname.match(/^\/api\/jobs\/([^/]+)(?:\/(events|cancel))?$/);
+    const jobMatch = url.pathname.match(/^\/api\/jobs\/([^/]+)(?:\/(events|cancel|checkpoint|restore))?$/);
     if (jobMatch) {
       const id = jobMatch[1];
       const sub = jobMatch[2];
+      if (!/^[a-z0-9-]+$/i.test(id)) {
+        sendJson(res, 400, { error: "Invalid job id." });
+        return;
+      }
+
+      if (sub === "checkpoint" && req.method === "GET") {
+        const live = jobs.get(id);
+        const stored = live ? toStored(live) : historyStore.load(id);
+        const checkpoint = loadJobCheckpoint(id);
+        if (!stored || !checkpoint) {
+          sendJson(res, 404, { error: "No retained autonomous-task checkpoint is available." });
+          return;
+        }
+        sendJson(res, 200, { available: true, id: stored.checkpointId ?? id, workspace: fs.existsSync(path.join(JOB_WORKSPACE_ROOT, id)), createdAt: stored.createdAt });
+        return;
+      }
+
+      if (sub === "restore" && req.method === "POST") {
+        const live = jobs.get(id);
+        if (live?.status === "running") {
+          sendJson(res, 409, { error: "Stop the autonomous task before restoring its checkpoint." });
+          return;
+        }
+        const stored = live ? toStored(live) : historyStore.load(id);
+        const checkpoint = loadJobCheckpoint(id);
+        const workspace = path.join(JOB_WORKSPACE_ROOT, id);
+        if (!stored || !checkpoint || !fs.existsSync(workspace)) {
+          sendJson(res, 404, { error: "The isolated autonomous-task workspace is no longer retained." });
+          return;
+        }
+        try {
+          await restoreCheckpoint(workspace, checkpoint);
+          audit(`job:${id}`, { type: "restore", diff: `isolated workspace restored to checkpoint ${id}` });
+          sendJson(res, 200, { ok: true, checkpointId: stored.checkpointId ?? id });
+        } catch (err) {
+          sendJson(res, 400, { error: `Failed to restore autonomous-task workspace: ${errMessage(err)}` });
+        }
+        return;
+      }
 
       if (sub === "events" && req.method === "GET") {
         const job = jobs.get(id);

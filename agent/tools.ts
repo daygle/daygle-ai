@@ -179,7 +179,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         properties: {
           pattern: { type: "string", description: "Regular expression to search for." },
           path: { type: "string", description: "Optional file or directory to search (defaults to the whole repo). Space-separated paths are accepted." },
-          semantic: { type: "boolean", description: "Use a lightweight word-based search when the exact regular expression is unknown." },
+          semantic: { type: "boolean", description: "Use local Ollama embeddings for intent-based retrieval when available, with a bounded lexical fallback." },
         },
         required: ["pattern"],
       },
@@ -264,24 +264,32 @@ function packageScript(root: string, script: string): string | undefined {
 }
 
 function isSafeScriptBody(body: string, root: string): boolean {
-  const withoutAnd = body.replace(/&&/g, " ");
-  if (/[;&|<>`$()]/.test(withoutAnd)) return false;
-  return body.split("&&").map((part) => part.trim()).filter(Boolean).every((part) => {
-    const tokens = part.split(/\s+/);
-    const program = tokens[0];
-    if (PACKAGE_MANAGERS.has(program)) return Boolean(tokens[1]) && SAFE_SCRIPT_NAMES.has(tokens[1]) && tokens.slice(2).every((token) => token !== "--eval" && token !== "-e");
-    if ((program === "node" || program === "deno") && (tokens[1] === "--version" || tokens[1] === "-v")) return tokens.length === 2;
-    if (INLINE_CODE_FLAGS.has(tokens[1]) || tokens.slice(1).some((token) => INLINE_CODE_FLAGS.has(token))) return false;
-    if (SAFE_PROGRAMS.has(program)) return !isMutatingReadOnlyCommand(tokens);
-    return REVIEW_RUNNERS.has(program) && isReviewSafeCommand(part, root);
-  });
+  // Do not recursively execute package scripts. That makes the inspection
+  // compositional and prevents a harmless-looking `test` script from hiding a
+  // second package-manager invocation or an arbitrary shell chain.
+  if (/[;&|<>`$()]/.test(body) || body.includes("&&")) return false;
+  const tokens = body.trim().split(/\s+/).filter(Boolean);
+  if (tokens.length === 0) return false;
+  const program = tokens[0];
+  // Bun's built-in test runner is a direct verifier; package-manager
+  // recursion (`npm run ...`, `pnpm run ...`, etc.) remains forbidden.
+  if (program === "bun" && tokens[1] === "test") return tokens.length === 2;
+  if (PACKAGE_MANAGERS.has(program)) return false;
+  if ((program === "node" || program === "deno") && (tokens[1] === "--version" || tokens[1] === "-v")) return tokens.length === 2;
+  if (INLINE_CODE_FLAGS.has(tokens[1]) || tokens.slice(1).some((token) => INLINE_CODE_FLAGS.has(token))) return false;
+  if (SAFE_PROGRAMS.has(program)) return !isMutatingReadOnlyCommand(tokens);
+  return REVIEW_RUNNERS.has(program) && isReviewSafeCommand(body, root);
 }
 
 function isSafePackageInvocation(tokens: string[], root?: string): boolean {
   const manager = tokens[0];
   if (!PACKAGE_MANAGERS.has(manager)) return false;
-  const script = tokens[1] === "run" ? tokens[2] : tokens[1];
-  if (!script || !SAFE_SCRIPT_NAMES.has(script)) return false;
+  const usesRun = tokens[1] === "run";
+  const script = usesRun ? tokens[2] : tokens[1];
+  // Do not accept package-manager flags or arbitrary forwarded arguments:
+  // `--prefix`, `--workspace`, and similar options can redirect execution to a
+  // different package than the one inspected here.
+  if (!script || !SAFE_SCRIPT_NAMES.has(script) || tokens.length !== (usesRun ? 3 : 2)) return false;
   const body = root ? packageScript(root, script) : undefined;
   // Without a checkout we can still validate the command shape, but callers
   // with a root (the reviewer/QA) must also validate the package script body.
@@ -324,7 +332,7 @@ export const reviewApprover: CommandApprover = (command: string) =>
 
 function safeResolve(root: string, rel: string): string {
   const rootAbs = path.resolve(root);
-  const abs = path.resolve(rootAbs, rel || ".");
+  const abs = path.resolve(rootAbs, normalizeToolPath(rel || "."));
   if (abs !== rootAbs && !abs.startsWith(rootAbs + path.sep)) {
     throw new Error(`Path is outside the repository: ${rel}`);
   }
@@ -361,17 +369,31 @@ function asNumber(value: unknown): number | undefined {
   return typeof value === "number" ? value : undefined;
 }
 
+function normalizeToolPath(value: string): string {
+  let normalized = value.trim();
+  if ((normalized.startsWith("\"") && normalized.endsWith("\"")) || (normalized.startsWith("'") && normalized.endsWith("'"))) {
+    normalized = normalized.slice(1, -1);
+  }
+  // Always use slash-separated repository paths in tool arguments/results.
+  // This lets a model reuse paths returned by a Windows checkout on a POSIX
+  // backend (and vice versa) instead of turning `src\\lib` into one filename.
+  normalized = normalized.replaceAll("\\", "/");
+  if (normalized === "/" || /^[a-z]:\/$/i.test(normalized)) return normalized;
+  return normalized.length > 1 ? normalized.replace(/\/+$/, "") : normalized;
+}
+
 function splitPaths(root: string, rel: string): string[] {
   const trimmed = rel.trim();
   if (!trimmed) return ["."];
   // Prefer the literal string as a single path when it actually exists, so
   // paths containing spaces work; otherwise fall back to splitting on
   // whitespace for the multi-path shorthand the model sometimes emits.
+  const literal = normalizeToolPath(trimmed);
   try {
     // existsSync deliberately does not throw for a missing aggregate string;
     // the old statSync-first path made the model's multi-path shorthand surface
     // an ENOENT before searchFiles could split it.
-    if (fs.existsSync(safeResolve(root, trimmed))) return [trimmed];
+    if (fs.existsSync(safeResolve(root, literal))) return [literal];
   } catch {
     // An invalid/outside aggregate is still eligible for the safe token split;
     // each resulting path is checked independently below.
@@ -385,13 +407,13 @@ function splitPaths(root: string, rel: string): string[] {
       continue;
     }
     if (/\s/.test(char) && !quote) {
-      if (current) paths.push(current);
+      if (current) paths.push(normalizeToolPath(current));
       current = "";
     } else {
       current += char;
     }
   }
-  if (current) paths.push(current);
+  if (current) paths.push(normalizeToolPath(current));
   return paths;
 }
 
@@ -428,7 +450,7 @@ function listFiles(root: string, rel: string): string {
       for (const entry of entries) {
         if (out.length >= MAX_LIST) break;
         if (entry.name === ".git" || entry.name === "node_modules" || entry.name === "dist" || entry.name === ".ollama") continue;
-        const childRel = relDir ? path.join(relDir, entry.name) : entry.name;
+        const childRel = relDir ? `${relDir}/${entry.name}` : entry.name;
         if (entry.isDirectory()) {
           out.push(`${childRel}/`);
           walk(path.join(dirAbs, entry.name), childRel, depth + 1);
@@ -518,7 +540,115 @@ function collectFiles(dirAbs: string, out: string[], budget: { count: number }):
   }
 }
 
-function searchFiles(root: string, pattern: string, rel?: string, semantic = false): string {
+interface EmbeddingDocument {
+  file: string;
+  startLine: number;
+  lines: string[];
+  text: string;
+}
+
+const EMBEDDING_CACHE = new Map<string, { signature: string; documents: EmbeddingDocument[] }>();
+const EMBEDDING_CHUNK_LINES = 80;
+const MAX_EMBEDDING_DOCUMENTS = 512;
+const EMBEDDING_MODEL = process.env.DAYGLE_EMBED_MODEL ?? "nomic-embed-text";
+const EMBEDDING_URL = process.env.DAYGLE_OLLAMA_URL ?? "http://127.0.0.1:11434";
+
+function cosineSimilarity(a: number[], b: number[]): number {
+  let dot = 0;
+  let aa = 0;
+  let bb = 0;
+  for (let i = 0; i < Math.min(a.length, b.length); i++) {
+    dot += a[i] * b[i];
+    aa += a[i] * a[i];
+    bb += b[i] * b[i];
+  }
+  return aa && bb ? dot / (Math.sqrt(aa) * Math.sqrt(bb)) : 0;
+}
+
+function embeddingEndpoint(): string | null {
+  try {
+    const url = new URL(EMBEDDING_URL);
+    if (url.protocol !== "http:" || !["127.0.0.1", "localhost", "::1"].includes(url.hostname)) return null;
+    return `${url.origin}/api/embed`;
+  } catch {
+    return null;
+  }
+}
+
+function buildEmbeddingDocuments(root: string, files: string[]): EmbeddingDocument[] {
+  const signature = files.map((file) => {
+    try {
+      const stat = fs.statSync(file);
+      return `${file}:${stat.size}:${stat.mtimeMs}`;
+    } catch {
+      return `${file}:missing`;
+    }
+  }).join("|");
+  const cached = EMBEDDING_CACHE.get(root);
+  if (cached?.signature === signature) return cached.documents;
+
+  const documents: EmbeddingDocument[] = [];
+  for (const file of files) {
+    if (documents.length >= MAX_EMBEDDING_DOCUMENTS) break;
+    let content: string;
+    try {
+      if (fs.statSync(file).size > MAX_SEARCH_FILE) continue;
+      content = fs.readFileSync(file, "utf8");
+    } catch {
+      continue;
+    }
+    if (content.includes("\u0000")) continue;
+    const lines = content.split("\n");
+    for (let start = 0; start < lines.length && documents.length < MAX_EMBEDDING_DOCUMENTS; start += EMBEDDING_CHUNK_LINES) {
+      const chunk = lines.slice(start, start + EMBEDDING_CHUNK_LINES);
+      const text = `${path.relative(root, file)}\n${chunk.join("\n")}`.trim();
+      if (text) documents.push({ file, startLine: start + 1, lines: chunk, text });
+    }
+  }
+  EMBEDDING_CACHE.set(root, { signature, documents });
+  return documents;
+}
+
+async function embeddingSearch(root: string, pattern: string, files: string[]): Promise<string[] | null> {
+  const endpoint = embeddingEndpoint();
+  if (!endpoint || files.length === 0) return null;
+  const documents = buildEmbeddingDocuments(root, files);
+  if (documents.length === 0) return null;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 2_000);
+  try {
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: EMBEDDING_MODEL, input: [pattern, ...documents.map((document) => document.text)] }),
+      signal: controller.signal,
+    });
+    if (!response.ok) return null;
+    const data = (await response.json()) as { embeddings?: unknown };
+    if (!Array.isArray(data.embeddings) || data.embeddings.length !== documents.length + 1) return null;
+    const vectors = data.embeddings as number[][];
+    const query = vectors[0];
+    return documents
+      .map((document, index) => ({ document, score: cosineSimilarity(query, vectors[index + 1]) }))
+      .filter((entry) => Number.isFinite(entry.score))
+      .sort((a, b) => b.score - a.score)
+      .slice(0, MAX_SEARCH_MATCHES)
+      .flatMap(({ document }) => document.lines.map((line, offset) => {
+        const text = line.trim();
+        return text ? `${path.relative(root, document.file)}:${document.startLine + offset}: ${text.slice(0, 200)}` : "";
+      }))
+      .filter(Boolean)
+      .slice(0, MAX_SEARCH_MATCHES);
+  } catch {
+    // Ollama may not be running or the embedding model may not be installed.
+    // Search remains useful through the deterministic lexical fallback.
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function searchFiles(root: string, pattern: string, rel?: string, semantic = false): Promise<string> {
   if (!pattern.trim()) {
     throw new Error("Missing search pattern.");
   }
@@ -555,11 +685,19 @@ function searchFiles(root: string, pattern: string, rel?: string, semantic = fal
   }
   const files: string[] = [...new Set(collected)];
 
+  if (semantic) {
+    const embedded = await embeddingSearch(root, pattern, files);
+    if (embedded && embedded.length > 0) {
+      const note = missing.length > 0 ? `\n(not found: ${missing.join(", ")})` : "";
+      return embedded.join("\n") + note;
+    }
+  }
+
   const matches: Array<{ text: string; score: number }> = [];
   const words = semantic
     ? pattern.toLowerCase().match(/[a-z0-9_]{2,}/g)?.filter((word, index, all) => all.indexOf(word) === index) ?? []
     : [];
-  const candidateLimit = semantic ? MAX_SEARCH_MATCHES * 10 : MAX_SEARCH_MATCHES;
+  const candidateLimit = semantic ? MAX_SEARCH_MATCHES * 40 : MAX_SEARCH_MATCHES;
   for (const file of files) {
     if (matches.length >= candidateLimit) break;
     try {
@@ -574,7 +712,7 @@ function searchFiles(root: string, pattern: string, rel?: string, semantic = fal
       continue;
     }
     if (content.includes("\u0000")) continue; // skip binary
-    const relPath = path.relative(root, file);
+    const relPath = path.relative(root, file).replaceAll("\\", "/");
     content.split("\n").forEach((line, i) => {
       if (matches.length >= candidateLimit) return;
       const lower = line.toLowerCase();
@@ -591,9 +729,9 @@ function searchFiles(root: string, pattern: string, rel?: string, semantic = fal
   if (matches.length === 0) {
     return missing.length > 0 ? `(no matches; not found: ${missing.join(", ")})` : "(no matches)";
   }
-  // Semantic mode is intentionally dependency-free: rank lines containing the
-  // most query words. It is a useful retrieval fallback, not a claim of true
-  // embedding-based understanding.
+  // If Ollama is unavailable, rank lines containing the most query words. This
+  // deterministic fallback keeps search functional without disguising lexical
+  // matching as semantic understanding.
   if (semantic) matches.sort((a, b) => b.score - a.score);
   // Surface skipped paths so the model can correct course instead of
   // assuming every target was searched.
@@ -768,6 +906,7 @@ async function runCommand(
   approve?: CommandApprover,
   sandbox?: SandboxRunner,
   signal?: AbortSignal,
+  readOnlySandbox = false,
 ): Promise<string> {
   const decision = classifyCommand(command);
   if (decision === "block") {
@@ -782,7 +921,14 @@ async function runCommand(
       return "Command denied by the user.";
     }
   }
-  return sandbox ? sandbox.run(root, command, signal) : executeCommand(root, command, signal);
+  if (sandbox) {
+    if (readOnlySandbox) {
+      if (!sandbox.runReadOnly) throw new Error("Read-only sandbox execution is unavailable.");
+      return sandbox.runReadOnly(root, command, signal);
+    }
+    return sandbox.run(root, command, signal);
+  }
+  return executeCommand(root, command, signal);
 }
 
 export async function runTool(
@@ -792,6 +938,7 @@ export async function runTool(
   approve?: CommandApprover,
   sandbox?: SandboxRunner,
   signal?: AbortSignal,
+  readOnlySandbox = false,
 ): Promise<string> {
   switch (name) {
     case "list_files":
@@ -799,7 +946,7 @@ export async function runTool(
     case "read_file":
       return readFile(root, String(args.path ?? ""), asNumber(args.start_line), asNumber(args.end_line));
     case "search":
-      return searchFiles(
+      return await searchFiles(
         root,
         String(args.pattern ?? ""),
         typeof args.path === "string" ? args.path : undefined,
@@ -817,7 +964,7 @@ export async function runTool(
         approve,
       );
     case "run_command":
-      return runCommand(root, String(args.command ?? ""), approve, sandbox, signal);
+      return runCommand(root, String(args.command ?? ""), approve, sandbox, signal, readOnlySandbox);
     default:
       throw new Error(`Unknown tool: ${name}`);
   }

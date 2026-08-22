@@ -245,7 +245,7 @@ These do nothing - they are just text. To use a tool you MUST invoke it through 
 Available tools:
 - list_files(path) - list files/directories under a path
 - read_file(path, start_line?, end_line?) - read a file with numbered lines
-- search(pattern, path?, semantic?) - regex-search files; use semantic=true for lightweight word-based retrieval when exact names are unknown
+- search(pattern, path?, semantic?) - regex-search files; use semantic=true for local embedding retrieval with a lexical fallback when exact names are unknown
 - write_file(path, content) - create or overwrite a file with its COMPLETE contents
 - str_replace(path, old_string, new_string, replace_all?) - replace exact text in place
 - run_command(command) - run a shell command (tests, typecheck, etc.)

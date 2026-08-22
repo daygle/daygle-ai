@@ -32,10 +32,29 @@ describe("space-separated tool paths", () => {
     expect(result).toContain("one.txt");
   });
 
+  test("semantic search uses local embeddings when Ollama is available", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (..._args: Parameters<typeof fetch>) =>
+      new Response(JSON.stringify({ embeddings: [[1, 0], [0.99, 0.01]] }), { status: 200 })) as typeof fetch;
+    try {
+      const result = await runTool(root, "search", { pattern: "unrelated wording", semantic: true, path: "a" });
+      expect(result).toContain("one.txt");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   test("list_files accepts several space-separated paths in one call", async () => {
     const result = await runTool(root, "list_files", { path: "a b" });
     expect(result).toContain("a/one.txt");
     expect(result).toContain("b/two.txt");
+  });
+
+  test("search and list_files normalize Windows separators from model output", async () => {
+    const result = await runTool(root, "search", { pattern: "needle", path: "a\\\\" });
+    expect(result).toContain("one.txt");
+    const listing = await runTool(root, "list_files", { path: "a\\\\" });
+    expect(listing).toContain("a/one.txt");
   });
 
   test("search reports missing paths instead of crashing on ENOENT", async () => {
@@ -92,6 +111,20 @@ describe("tool hardening", () => {
     expect(isReviewSafeCommand("npm test")).toBe(true);
     expect(isReviewSafeCommand("npm test", root)).toBe(true);
     expect(isReviewSafeCommand("npm run deploy", root)).toBe(false);
+    expect(isReviewSafeCommand("npm run test --prefix ../other", root)).toBe(false);
+  });
+
+  test("read-only command execution uses the sandbox's immutable path", async () => {
+    let mode = "";
+    const sandbox = {
+      name: "test",
+      run: async () => "writable",
+      runReadOnly: async () => { mode = "readonly"; return "readonly"; },
+      runCapture: async () => ({ code: 0, stdout: "", stderr: "", timedOut: false, overflow: false }),
+    };
+    const result = await runTool(root, "run_command", { command: "true" }, undefined, sandbox, undefined, true);
+    expect(result).toBe("readonly");
+    expect(mode).toBe("readonly");
   });
 });
 
@@ -151,6 +184,11 @@ describe("paths with spaces", () => {
 
   test("search treats a literal path with spaces as one path", async () => {
     const result = await runTool(root, "search", { pattern: "needle", path: "my notes.txt" });
+    expect(result).toContain("my notes.txt:1:");
+  });
+
+  test("search parses a quoted path with spaces", async () => {
+    const result = await runTool(root, "search", { pattern: "needle", path: '"my notes.txt"' });
     expect(result).toContain("my notes.txt:1:");
   });
 

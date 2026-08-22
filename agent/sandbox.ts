@@ -4,11 +4,13 @@ import fs from "node:fs";
 export interface SandboxRunner {
   name: string;
   run(root: string, command: string, signal?: AbortSignal): Promise<string>;
+  /** Read-only variant for reviewers: the checkout mount itself is immutable. */
+  runReadOnly?(root: string, command: string, signal?: AbortSignal): Promise<string>;
   /** Structured variant for harness code (e.g. the QA gate): raw exit code and output. */
   runCapture(
     root: string,
     command: string,
-    opts?: { signal?: AbortSignal; timeoutMs?: number },
+    opts?: { signal?: AbortSignal; timeoutMs?: number; readOnly?: boolean },
   ): Promise<CaptureResult>;
   /**
    * Background warm-up hook (e.g. pre-pull the container image) so the first
@@ -146,7 +148,7 @@ function formatResult(result: CaptureResult): string {
   return `exit code: ${result.code ?? "error"}\n${parts.join("\n") || "(no output)"}`;
 }
 
-function buildBwrapArgs(root: string, command: string): string[] {
+function buildBwrapArgs(root: string, command: string, readOnly = false): string[] {
   const args = ["bwrap"];
 
   // Read-only toolchain + config from the host.
@@ -168,8 +170,14 @@ function buildBwrapArgs(root: string, command: string): string[] {
   args.push("--dev", "/dev");
   args.push("--tmpfs", "/tmp");
 
-  // The repo is the only writable location (mounted at /work).
-  args.push("--bind", root, "/work");
+  // Normal agent commands need a writable checkout. Reviewer/QA commands get
+  // an ephemeral writable copy whose source mount is immutable, so builds and
+  // test caches can work without changing the pending diff.
+  if (readOnly) {
+    args.push("--ro-bind", root, "/source", "--tmpfs", "/work");
+  } else {
+    args.push("--bind", root, "/work");
+  }
 
   if (NETWORK_ENABLED) {
     args.push("--unshare-pid", "--unshare-ipc", "--unshare-uts");
@@ -178,7 +186,8 @@ function buildBwrapArgs(root: string, command: string): string[] {
   }
   args.push("--die-with-parent", "--new-session", "--chdir", "/work");
 
-  args.push("--", "sh", "-c", command);
+  const effectiveCommand = readOnly ? "cp -a /source/. /work/ && " + command : command;
+  args.push("--", "sh", "-c", effectiveCommand);
   return args;
 }
 
@@ -196,7 +205,7 @@ function bwrapRunner(): SandboxRunner {
         'exec "$@"',
       ].join("\n"),
       "bwrap-sandbox",
-      ...buildBwrapArgs(root, command),
+      ...buildBwrapArgs(root, command, opts?.readOnly),
     ];
     return spawnCapture(args, { signal: opts?.signal, timeoutMs: opts?.timeoutMs });
   };
@@ -204,6 +213,7 @@ function bwrapRunner(): SandboxRunner {
     name: "bubblewrap",
     runCapture,
     run: (root, command, signal) => runCapture(root, command, { signal }).then(formatResult),
+    runReadOnly: (root, command, signal) => runCapture(root, command, { signal, readOnly: true }).then(formatResult),
   };
 }
 
@@ -326,8 +336,14 @@ function containerRunner(engine: "docker" | "podman"): SandboxRunner {
       args.push("--cap-drop", "ALL");
       args.push("--security-opt", "no-new-privileges");
       args.push("--init");
-      args.push("-v", `${root}:/work`, "-w", "/work");
-      args.push(await resolveImageRef(), "sh", "-c", command);
+      if (opts?.readOnly) {
+        args.push("-v", `${root}:/source:ro`, "--tmpfs", "/work");
+      } else {
+        args.push("-v", `${root}:/work`);
+      }
+      args.push("-w", "/work");
+      const effectiveCommand = opts?.readOnly ? "cp -a /source/. /work/ && " + command : command;
+      args.push(await resolveImageRef(), "sh", "-c", effectiveCommand);
       return await spawnCapture(args, { signal: opts?.signal, timeoutMs: opts?.timeoutMs });
     } catch (err) {
       // Surface config/pull errors as a failed command result instead of an
@@ -346,6 +362,7 @@ function containerRunner(engine: "docker" | "podman"): SandboxRunner {
     name: engine,
     runCapture,
     run: (root, command, signal) => runCapture(root, command, { signal }).then(formatResult),
+    runReadOnly: (root, command, signal) => runCapture(root, command, { signal, readOnly: true }).then(formatResult),
     warmup: async () => {
       try {
         await resolveImageRef();

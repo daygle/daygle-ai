@@ -46,6 +46,8 @@ export interface AgentConfig {
   agenticReview?: boolean;
   /** Max tool-using steps for the agentic reviewer before it must decide. */
   maxReviewSteps?: number;
+  /** Block autonomous completion when review concerns remain after all fix rounds. */
+  blockOnReviewConcerns?: boolean;
   /** Defaults to true; set false to skip the test-generation pass. */
   generateTests?: boolean;
   /** Max tool-using steps for the test-generation pass. */
@@ -112,7 +114,7 @@ Work in small, verifiable steps. Read and understand before editing.
 Available tools:
 - list_files(path) - list files/directories under a path (recursive, capped)
 - read_file(path, start_line?, end_line?) - read a file with numbered lines (up to 1500)
-- search(pattern, path?, semantic?) - search files by regex or use semantic=true for lightweight word-based retrieval; space-separated paths are accepted
+- search(pattern, path?, semantic?) - search files by regex or use semantic=true for local embedding retrieval with a lexical fallback; space-separated paths are accepted
 - write_file(path, content) - create or overwrite a file with its COMPLETE contents
 - str_replace(path, old_string, new_string, replace_all?) - replace exact text in place
 - run_command(command) - run a shell command in the repo (tests, typecheck, git status, etc.)
@@ -473,7 +475,7 @@ You have READ-ONLY tools to investigate before you decide:
 - list_files(path) - list files/directories
 - read_file(path, start_line?, end_line?) - read a file with numbered lines
 - search(pattern, path?) - regex-search the repo
-- run_command(command) - run verification commands (tests, typecheck, lint, build). Only test/build runners are permitted; anything else is denied. You cannot modify files.
+- run_command(command) - run verification commands (tests, typecheck, lint, build) inside a mandatory read-only sandbox. Only approved verification runners are permitted; anything else is denied. You cannot modify files.
 
 How to review:
 1. Read the diff, then open the surrounding code and call sites the change affects - don't judge from the diff alone.
@@ -505,6 +507,11 @@ export async function runAgenticReview(opts: {
   writePathPolicy?: (path: string) => boolean;
 }): Promise<ReviewResult> {
   const { root, ollamaUrl, model, task, diff, emit, approve, sandbox, signal } = opts;
+  if (!sandbox) {
+    throw new Error(
+      "Agentic review refused: a command sandbox is unavailable. Start Docker/Podman/bubblewrap before running a review that executes repository checks.",
+    );
+  }
   const temperature = opts.config?.temperature ?? DEFAULT_TEMPERATURE;
   const numCtx = boundedNumCtx(opts.config?.numCtx ?? DEFAULT_NUM_CTX);
   const maxSteps = Math.max(1, Math.min(40, opts.config?.maxReviewSteps ?? DEFAULT_MAX_REVIEW_STEPS));
@@ -564,10 +571,10 @@ export async function runAgenticReview(opts: {
         if (opts.writePathPolicy && (name === "write_file" || name === "str_replace")) {
           const target = typeof args.path === "string" ? args.path : "";
           result = opts.writePathPolicy(target)
-            ? await runTool(root, name, args, approve, sandbox, signal)
+            ? await runTool(root, name, args, approve, sandbox, signal, true)
             : `Denied: this restricted pass may only edit test files; refused ${target || "an unspecified path"}.`;
         } else {
-          result = await runTool(root, name, args, approve, sandbox, signal);
+          result = await runTool(root, name, args, approve, sandbox, signal, true);
         }
         throwIfCancelled();
       } catch (err) {

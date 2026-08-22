@@ -100,8 +100,12 @@ const MAX_DIFF = 100_000;
 export interface WorkingTreeCheckpoint {
   head: string;
   directory: string;
-  /** Ignored paths present before the task, so newly-created ignored files can be removed on restore. */
+  /** Ignored files present before the task, used to remove generated ignored files on restore. */
   ignored: string[];
+  /** Separate patches preserve staged/index state instead of flattening everything into HEAD. */
+  stagedPatchPath?: string;
+  unstagedPatchPath?: string;
+  ignoredSnapshotDirectory?: string;
 }
 
 function truncate(text: string, max: number): string {
@@ -126,56 +130,110 @@ export async function changedFiles(dir: string): Promise<string[]> {
     .filter(Boolean);
 }
 
+/** Maximum snapshot size for a single checkpoint, including ignored-file copies. */
+const CHECKPOINT_PATCH_LIMIT = 5 * 1024 * 1024;
+const CHECKPOINT_IGNORED_COPY_LIMIT = 50 * 1024 * 1024;
+const IGNORED_COPY_EXCLUSIONS = new Set(["node_modules", ".git", "dist", "build", ".ollama"]);
+
+function checkpointRelativePath(root: string, relative: string): string {
+  const normalized = relative.replaceAll("\\", "/");
+  if (!normalized || normalized.startsWith("/") || normalized.split("/").includes("..")) {
+    throw new Error(`Invalid checkpoint path: ${relative}`);
+  }
+  return path.join(root, ...normalized.split("/"));
+}
+
+async function ignoredFiles(dir: string): Promise<string[]> {
+  return (await runRaw("git", ["ls-files", "-z", "--others", "--ignored", "--exclude-standard"], dir))
+    .split("\0")
+    .filter(Boolean)
+    .map((entry) => entry.replaceAll("\\", "/"));
+}
+
 /**
- * Capture the exact working tree before a chat task starts. The checkpoint is
- * kept outside the checkout so it cannot appear in the user's diff.
+ * Capture the exact working tree before a task starts. Staged and unstaged
+ * patches are stored separately, and ignored files are snapshotted by file
+ * rather than by directory so generated files under an existing ignored
+ * directory can be removed without deleting the baseline cache itself.
  */
 export async function createCheckpoint(dir: string, directory: string): Promise<WorkingTreeCheckpoint> {
   fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
   const head = await run("git", ["rev-parse", "HEAD"], dir);
-  const patch = await run("git", ["diff", "--binary", "HEAD"], dir);
-  if (Buffer.byteLength(patch, "utf8") > 5 * 1024 * 1024) {
+  const staged = await run("git", ["diff", "--cached", "--binary"], dir);
+  const unstaged = await run("git", ["diff", "--binary"], dir);
+  if (Buffer.byteLength(staged, "utf8") + Buffer.byteLength(unstaged, "utf8") > CHECKPOINT_PATCH_LIMIT) {
     throw new Error("Checkpoint is too large (working diff exceeds 5 MB).");
   }
-  fs.writeFileSync(path.join(directory, "working.patch"), patch, "utf8");
+  const stagedPatchPath = path.join(directory, "staged.patch");
+  const unstagedPatchPath = path.join(directory, "unstaged.patch");
+  fs.writeFileSync(stagedPatchPath, staged, "utf8");
+  fs.writeFileSync(unstagedPatchPath, unstaged, "utf8");
+
   const untracked = await runRaw("git", ["ls-files", "-z", "--others", "--exclude-standard"], dir);
-  const ignoredStatus = await runRaw("git", ["status", "--porcelain=v1", "--ignored=matching", "-z"], dir);
-  const ignored = ignoredStatus
-    .split("\0")
-    .filter((entry) => entry.startsWith("!! "))
-    .map((entry) => entry.slice(3).trim())
-    .filter(Boolean);
-  fs.writeFileSync(path.join(directory, "ignored.json"), JSON.stringify(ignored), "utf8");
   const untrackedDir = path.join(directory, "untracked");
   for (const relative of untracked.split("\0").filter(Boolean)) {
-    const source = path.join(dir, relative);
-    const destination = path.join(untrackedDir, relative);
+    const source = checkpointRelativePath(dir, relative);
+    const destination = checkpointRelativePath(untrackedDir, relative);
     fs.mkdirSync(path.dirname(destination), { recursive: true });
     fs.cpSync(source, destination, { recursive: true, verbatimSymlinks: true });
   }
-  return { head, directory, ignored };
+
+  const ignored = await ignoredFiles(dir);
+  const ignoredSnapshotDirectory = path.join(directory, "ignored");
+  let ignoredBytes = 0;
+  for (const relative of ignored) {
+    const firstSegment = relative.split("/")[0];
+    if (IGNORED_COPY_EXCLUSIONS.has(firstSegment)) continue;
+    const source = checkpointRelativePath(dir, relative);
+    let stat: fs.Stats;
+    try { stat = fs.lstatSync(source); } catch { continue; }
+    if (!stat.isFile() && !stat.isSymbolicLink()) continue;
+    if (ignoredBytes + stat.size > CHECKPOINT_IGNORED_COPY_LIMIT) continue;
+    const destination = checkpointRelativePath(ignoredSnapshotDirectory, relative);
+    fs.mkdirSync(path.dirname(destination), { recursive: true });
+    fs.cpSync(source, destination, { verbatimSymlinks: true, force: true });
+    ignoredBytes += stat.size;
+  }
+  fs.writeFileSync(path.join(directory, "ignored.json"), JSON.stringify(ignored), "utf8");
+  return { head, directory, ignored, stagedPatchPath, unstagedPatchPath, ignoredSnapshotDirectory };
 }
 
 /** Restore a checkout to a previously captured working-tree checkpoint. */
 export async function restoreCheckpoint(dir: string, checkpoint: WorkingTreeCheckpoint): Promise<void> {
   await run("git", ["reset", "--hard", checkpoint.head], dir);
   await run("git", ["clean", "-fd"], dir);
-  // Preserve ignored dependencies/cache directories that existed at the
-  // checkpoint, while removing newly-created ignored paths where possible.
-  const currentIgnored = (await runRaw("git", ["status", "--porcelain=v1", "--ignored=matching", "-z"], dir))
-    .split("\0")
-    .filter((entry) => entry.startsWith("!! "))
-    .map((entry) => entry.slice(3).trim())
-    .filter(Boolean);
-  const baselineIgnored = new Set(checkpoint.ignored);
+
+  const currentIgnored = await ignoredFiles(dir);
+  const baselineIgnored = new Set(checkpoint.ignored ?? []);
   for (const relative of currentIgnored) {
     if (!baselineIgnored.has(relative)) {
-      try { fs.rmSync(path.join(dir, relative), { recursive: true, force: true }); } catch { /* best effort */ }
+      try { fs.rmSync(checkpointRelativePath(dir, relative), { recursive: true, force: true }); } catch { /* best effort */ }
     }
   }
-  const patchFile = path.join(checkpoint.directory, "working.patch");
-  if (fs.existsSync(patchFile) && fs.statSync(patchFile).size > 0) {
-    await run("git", ["apply", "--binary", patchFile], dir);
+  const ignoredSnapshotDirectory = checkpoint.ignoredSnapshotDirectory ?? path.join(checkpoint.directory, "ignored");
+  if (fs.existsSync(ignoredSnapshotDirectory)) {
+    for (const relative of baselineIgnored) {
+      const source = checkpointRelativePath(ignoredSnapshotDirectory, relative);
+      if (!fs.existsSync(source)) continue; // excluded/too-large baseline cache
+      const destination = checkpointRelativePath(dir, relative);
+      fs.mkdirSync(path.dirname(destination), { recursive: true });
+      fs.cpSync(source, destination, { verbatimSymlinks: true, force: true });
+    }
+  }
+
+  const stagedPatch = checkpoint.stagedPatchPath ?? path.join(checkpoint.directory, "staged.patch");
+  const unstagedPatch = checkpoint.unstagedPatchPath ?? path.join(checkpoint.directory, "unstaged.patch");
+  if (fs.existsSync(stagedPatch) && fs.statSync(stagedPatch).size > 0) {
+    await run("git", ["apply", "--binary", "--index", stagedPatch], dir);
+  } else {
+    // Compatibility with checkpoints written by the previous format.
+    const legacyPatch = path.join(checkpoint.directory, "working.patch");
+    if (fs.existsSync(legacyPatch) && fs.statSync(legacyPatch).size > 0) {
+      await run("git", ["apply", "--binary", legacyPatch], dir);
+    }
+  }
+  if (fs.existsSync(unstagedPatch) && fs.statSync(unstagedPatch).size > 0) {
+    await run("git", ["apply", "--binary", unstagedPatch], dir);
   }
   const untrackedDir = path.join(checkpoint.directory, "untracked");
   if (fs.existsSync(untrackedDir)) {
