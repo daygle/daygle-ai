@@ -4,16 +4,20 @@
 #   - installs JS dependencies
 #   - installs the bundled Ollama server (skips if already present)
 #   - optionally pulls a model
+#   - optionally installs vLLM for Hugging Face models
 #
 # Usage:
-#   sh scripts/setup.sh                              # full setup
-#   sh scripts/setup.sh --model qwen2.5-coder:7b     # also pull a model
+#   sh scripts/setup.sh                                          # full setup
+#   sh scripts/setup.sh --model qwen2.5-coder:7b                 # also pull a model
+#   sh scripts/setup.sh --vllm                                   # install vLLM too
+#   sh scripts/setup.sh --vllm Qwen/Qwen2.5-Coder-7B-Instruct   # install + serve model
 set -eu
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 MODEL=""
+VLLM_MODEL=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --model)
@@ -27,9 +31,16 @@ while [ "$#" -gt 0 ]; do
     --model=*)
       MODEL="${1#--model=}"
       ;;
+    --vllm)
+      shift
+      VLLM_MODEL="${1:-}"
+      ;;
+    --vllm=*)
+      VLLM_MODEL="${1#--vllm=}"
+      ;;
     *)
       echo "Error: unknown option: $1" >&2
-      echo "Usage: sh scripts/setup.sh [--model <name>]" >&2
+      echo "Usage: sh scripts/setup.sh [--model <name>] [--vllm [MODEL]]" >&2
       exit 1
       ;;
   esac
@@ -109,6 +120,18 @@ if [ -n "$MODEL" ]; then
   trap - EXIT
 fi
 
+# --- Optional vLLM (Hugging Face models) ----------------------------------
+if [ -n "$VLLM_MODEL" ]; then
+  echo ""
+  sh scripts/install-vllm.sh --serve "$VLLM_MODEL"
+elif command -v python3 >/dev/null 2>&1 || command -v python >/dev/null 2>&1; then
+  if [ ! -x "$ROOT/.venv-vllm/bin/python" ]; then
+    echo ""
+    echo "Installing vLLM (for Hugging Face models)…"
+    sh scripts/install-vllm.sh
+  fi
+fi
+
 # --- Next steps ------------------------------------------------------------
 echo ""
 echo "== Setup complete =="
@@ -116,6 +139,10 @@ echo ""
 echo " 1. bun run ollama    # start the Ollama server (models in .ollama/models/)"
 echo " 2. bun run dev       # start Daygle AI, then pull a model from the Models page"
 echo " 3. bun run agent     # optional: start the coding agent server for the Agent page"
+if [ -x "$ROOT/.venv-vllm/bin/python" ]; then
+echo " 4. vllm serve MODEL  # start a Hugging Face model (e.g. vllm serve Qwen/Qwen2.5-Coder-7B-Instruct)"
+echo "    Then in Settings → Cloud Provider, set Base URL to http://127.0.0.1:8000/v1"
+fi
 echo ""
 echo "Agent page authentication (pick one):"
 echo "   - GitHub App: set GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY, then bun run agent"

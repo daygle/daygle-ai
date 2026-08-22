@@ -8,6 +8,8 @@
     "setup": "sh scripts/setup.sh",
     "ollama:install": "sh scripts/install-ollama.sh",
     "ollama": "sh scripts/run-ollama.sh",
+    "vllm:install": "sh scripts/install-vllm.sh",
+    "vllm": "sh scripts/install-vllm.sh --serve Qwen/Qwen2.5-Coder-7B-Instruct",
     "agent": "bun run agent/server.ts",
     "test": "bun test",
     "build": "tsc -b && vite build",
