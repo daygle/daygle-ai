@@ -1,7 +1,7 @@
 {
   "name": "daygle-ai",
   "private": true,
-  "version": "1.0.5",
+  "version": "0.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0",
@@ -13,6 +13,7 @@
     "agent": "bun run agent/server.ts",
     "test": "bun test",
     "build": "tsc -b && vite build",
+    "release": "sh scripts/release.sh",
     "preview": "vite preview --host 0.0.0.0",
     "typecheck": "tsc -b --noEmit"
   },
