@@ -1702,7 +1702,7 @@ const server = http.createServer((req, res) => {
 
     // App update endpoints
     if (req.method === "GET" && url.pathname === "/api/app-update") {
-      const info = await checkForAppUpdate();
+      const info = await checkForAppUpdate(loadGithubToken() || undefined);
       sendJson(res, 200, info);
       return;
     }
@@ -1729,7 +1729,7 @@ const server = http.createServer((req, res) => {
     }
 
     if (req.method === "GET" && url.pathname === "/api/app-update/status") {
-      const info = await checkForAppUpdateCached();
+      const info = await checkForAppUpdateCached(loadGithubToken() || undefined);
       const progress = getUpdateProgress();
       sendJson(res, 200, {
         currentVersion: info.currentVersion,

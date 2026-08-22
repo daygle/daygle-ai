@@ -57,14 +57,18 @@ function normalizeVersion(tag: string): string {
 /**
  * Check GitHub for the latest release of the application.
  */
-const GH_HEADERS = {
-  Accept: "application/vnd.github.v3+json",
-  "User-Agent": "daygle-ai-updater",
-};
+function ghHeaders(githubToken?: string): Record<string, string> {
+  const h: Record<string, string> = {
+    Accept: "application/vnd.github.v3+json",
+    "User-Agent": "daygle-ai-updater",
+  };
+  if (githubToken) h.Authorization = `Bearer ${githubToken}`;
+  return h;
+}
 
-async function ghFetch<T>(url: string): Promise<{ data: T | null; error?: string }> {
+async function ghFetch<T>(url: string, githubToken?: string): Promise<{ data: T | null; error?: string }> {
   try {
-    const res = await fetch(url, { headers: GH_HEADERS });
+    const res = await fetch(url, { headers: ghHeaders(githubToken) });
     if (!res.ok) {
       const label = res.status === 403 ? "GitHub API rate-limited" : `GitHub API ${res.status}`;
       console.error(label, url);
@@ -78,20 +82,20 @@ async function ghFetch<T>(url: string): Promise<{ data: T | null; error?: string
   }
 }
 
-export async function checkForAppUpdate(): Promise<AppUpdateInfo> {
+export async function checkForAppUpdate(githubToken?: string): Promise<AppUpdateInfo> {
   const currentVersion = getCurrentVersion();
   const base = `https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}`;
 
   try {
     // 1. Try /releases/latest (non-draft, non-prerelease).
-    const latest = await ghFetch<any>(`${base}/releases/latest`);
+    const latest = await ghFetch<any>(`${base}/releases/latest`, githubToken);
     if (latest.data) {
       return buildReleaseInfo(currentVersion, latest.data);
     }
 
     // 2. Fall back to the full releases list and pick the newest
     //    non-draft, non-prerelease entry.
-    const relList = await ghFetch<any[]>(`${base}/releases?per_page=10`);
+    const relList = await ghFetch<any[]>(`${base}/releases?per_page=10`, githubToken);
     if (relList.data) {
       const stable = relList.data.find((r: any) => !r.draft && !r.prerelease);
       if (stable) {
@@ -106,7 +110,7 @@ export async function checkForAppUpdate(): Promise<AppUpdateInfo> {
 
     // 3. Fall back to tags – the user may have pushed a version tag
     //    without creating a formal release.
-    const tags = await ghFetch<Array<{ name: string }>>(`${base}/tags?per_page=10`);
+    const tags = await ghFetch<Array<{ name: string }>>(`${base}/tags?per_page=10`, githubToken);
     if (tags.data && tags.data.length > 0) {
       // Find the newest tag whose name looks like a semver version.
       for (const tag of tags.data) {
@@ -159,11 +163,11 @@ let lastCheckAt = 0;
 const CHECK_CACHE_TTL_MS = 60_000; // 1 minute
 
 /** Cached version of checkForAppUpdate used by the status endpoint. */
-export async function checkForAppUpdateCached(): Promise<AppUpdateInfo> {
+export async function checkForAppUpdateCached(githubToken?: string): Promise<AppUpdateInfo> {
   if (lastCheckResult && Date.now() - lastCheckAt < CHECK_CACHE_TTL_MS) {
     return lastCheckResult;
   }
-  lastCheckResult = await checkForAppUpdate();
+  lastCheckResult = await checkForAppUpdate(githubToken);
   lastCheckAt = Date.now();
   return lastCheckResult;
 }
