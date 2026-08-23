@@ -9,8 +9,9 @@ export interface ChatMessage {
   content: string;
   images?: string[];
   imageMimeTypes?: string[];
-  tool_calls?: Array<{ function: { name: string; arguments: Record<string, unknown> } }>;
+  tool_calls?: Array<{ id?: string; function: { name: string; arguments: Record<string, unknown> } }>;
   tool_name?: string;
+  tool_call_id?: string;
 }
 
 export interface ChatImage {
@@ -49,6 +50,7 @@ export interface ChatSession {
   title?: string;
   /** Chat provider — when set, used instead of the raw Ollama fetch. */
   provider?: ChatProvider;
+  providerConfig?: { kind: "ollama" | "openai"; baseUrl: string; apiKey?: string };
   /** Timestamp the workspace payload was last computed, for client polling. */
   lastWorkspaceUpdate?: number;
 }
@@ -57,9 +59,9 @@ export type ChatEvent =
   | { type: "status"; message: string }
   | { type: "model_delta"; content: string }
   | { type: "model_done"; content: string }
-  | { type: "tool_start"; name: string; args: Record<string, unknown> }
-  | { type: "tool_result"; name: string; result: string; diff?: string }
-  | { type: "diff_preview"; name: string; path: string; diff: string; requestId: string }
+  | { type: "tool_start"; name: string; args: Record<string, unknown>; toolCallId?: string }
+  | { type: "tool_result"; name: string; result: string; diff?: string; toolCallId?: string }
+  | { type: "diff_preview"; name: string; path: string; diff: string; requestId: string; toolCallId?: string }
   | { type: "approval_requested"; requestId: string; command: string }
   | { type: "approval_resolved"; requestId: string; decision: "approve" | "deny" }
   | { type: "clarification_requested"; requestId: string; question: string; options: Array<{ label: string; description?: string }> }
@@ -107,7 +109,23 @@ function lineDiff(oldText: string, newText: string): string {
   return out.join("\n") || "(no changes)";
 }
 
-const TOOL_NAMES = new Set(["list_files", "read_file", "search", "write_file", "str_replace", "run_command"]);
+const TOOL_NAMES = new Set(["list_files", "read_headers", "read_file", "search", "write_file", "str_replace", "run_command", "create_pr"]);
+const MAX_IDENTICAL_TOOL_CALLS = 3;
+
+function stableSerialize(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableSerialize).join(",")}]`;
+  if (value && typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, entry]) => `${JSON.stringify(key)}:${stableSerialize(entry)}`);
+    return `{${entries.join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function toolCallSignature(name: string, args: Record<string, unknown>): string {
+  return `${name}:${stableSerialize(args)}`;
+}
 
 /**
  * Normalize a keep_alive value for Ollama. Ollama accepts either a Go duration
@@ -155,22 +173,47 @@ function parseClarificationRequest(text: string): { question: string; options: A
  *   bash list_files("src")
  *   list_files("src")
  *   list_files({path: "src"})
+ *   read_headers({paths: "src/main.ts", lines: 20})
+ *   create_pr({title: "Fix bug", body: "Details", base: "main"})
  */
 function parseTextToolCalls(text: string): Array<{ function: { name: string; arguments: Record<string, unknown> } }> {
   const calls: Array<{ function: { name: string; arguments: Record<string, unknown> } }> = [];
 
-  // First: try to match JSON objects that look like tool calls
-  const jsonRegex = /\{\s*"name"\s*:\s*"([^"]+)"\s*,\s*"arguments"\s*:\s*(\{[^}]*\})\s*\}/g;
+  // First: scan balanced JSON objects so nested arguments (for example a PR
+  // body or replacement content containing braces) are not cut off early.
+  const jsonMarker = /\{\s*"name"\s*:/g;
   let match;
-  while ((match = jsonRegex.exec(text)) !== null) {
-    const name = match[1];
-    if (!TOOL_NAMES.has(name)) continue;
+  while ((match = jsonMarker.exec(text)) !== null) {
+    const start = match.index;
+    let depth = 0;
+    let quoted = false;
+    let escaped = false;
+    let end = -1;
+    for (let index = start; index < text.length; index++) {
+      const character = text[index];
+      if (quoted) {
+        if (escaped) escaped = false;
+        else if (character === "\\\\") escaped = true;
+        else if (character === '"') quoted = false;
+        continue;
+      }
+      if (character === '"') quoted = true;
+      else if (character === "{") depth += 1;
+      else if (character === "}" && --depth === 0) {
+        end = index + 1;
+        break;
+      }
+    }
+    if (end < 0) continue;
     try {
-      const args = JSON.parse(match[2]) as Record<string, unknown>;
-      calls.push({ function: { name, arguments: args } });
+      const candidate = JSON.parse(text.slice(start, end)) as { name?: unknown; arguments?: unknown };
+      if (typeof candidate.name === "string" && TOOL_NAMES.has(candidate.name) && candidate.arguments && typeof candidate.arguments === "object" && !Array.isArray(candidate.arguments)) {
+        calls.push({ function: { name: candidate.name, arguments: candidate.arguments as Record<string, unknown> } });
+      }
     } catch {
       // skip malformed args
     }
+    jsonMarker.lastIndex = end;
   }
 
   // Second: if no JSON calls found, try to match bash-style calls like:
@@ -211,15 +254,19 @@ function parseTextToolCalls(text: string): Array<{ function: { name: string; arg
           if (strMatch) {
             // First positional arg maps to the main parameter
             if (name === 'list_files' || name === 'read_file') args.path = strMatch[1];
+            else if (name === 'read_headers') args.paths = strMatch[1];
             else if (name === 'search') args.pattern = strMatch[1];
             else if (name === 'write_file' || name === 'str_replace') args.path = strMatch[1];
             else if (name === 'run_command') args.command = strMatch[1];
+            else if (name === 'create_pr') args.title = strMatch[1];
           } else {
             // Unquoted string
             if (name === 'list_files' || name === 'read_file') args.path = argStr;
+            else if (name === 'read_headers') args.paths = argStr;
             else if (name === 'search') args.pattern = argStr;
             else if (name === 'write_file' || name === 'str_replace') args.path = argStr;
             else if (name === 'run_command') args.command = argStr;
+            else if (name === 'create_pr') args.title = argStr;
           }
         }
       }      calls.push({ function: { name, arguments: args } });
@@ -261,6 +308,7 @@ Available tools:
 - write_file(path, content) - create or overwrite a file with its COMPLETE contents
 - str_replace(path, old_string, new_string, replace_all?) - replace exact text in place
 - run_command(command) - run a shell command (tests, typecheck, etc.) through the command sandbox; without one, execution is denied unless trusted host fallback is explicitly enabled.
+- create_pr(title, body, base?) - commit the current changes, push the branch, and open a GitHub pull request. This is interactive-chat only, requires explicit approval, a configured sandbox, and DAYGLE_SANDBOX_NETWORK=1.
   IMPORTANT: For commands that need to run in a subdirectory, use "cd <dir> && <command>" as a single command string.
 
 Before editing any file, use read_headers to check its imports and exports so you understand how it connects to the rest of the codebase.
@@ -352,6 +400,8 @@ export async function* streamChat(
   const MAX_RUNTIME_MS = 30 * 60 * 1000;
   const startedAt = Date.now();
   let toolCallsUsed = 0;
+  let previousToolSignature = "";
+  let consecutiveIdenticalToolCalls = 0;
   // User-tunable generation options, falling back to sensible defaults.
   const opts = session.options ?? {};
   const genOptions: Record<string, number> = {
@@ -382,7 +432,7 @@ export async function* streamChat(
       return rest;
     });
     let content = "";
-    let toolCalls: Array<{ function: { name: string; arguments: Record<string, unknown> } }> = [];
+    let toolCalls: Array<{ id?: string; function: { name: string; arguments: Record<string, unknown> } }> = [];
 
     if (session.provider) {
       // Use the provider abstraction (cloud or Ollama-via-provider).
@@ -439,12 +489,37 @@ export async function* streamChat(
         return;
       }
 
+      const contentType = res.headers.get("content-type") ?? "";
+      const rawToolCalls = new Map<number, { id?: string; name: string; arguments: string }>();
+      if (!contentType.includes("application/x-ndjson") && !contentType.includes("text/event-stream")) {
+        try {
+          const data = await res.json() as { message?: { content?: string; tool_calls?: Array<{ id?: string; function?: { name?: string; arguments?: unknown } }> } };
+          const msg = data.message ?? {};
+          if (typeof msg.content === "string" && msg.content) {
+            content += msg.content;
+            yield { type: "model_delta", content: msg.content };
+          }
+          if (msg.tool_calls?.length) {
+            for (const [index, call] of msg.tool_calls.entries()) {
+              const current = rawToolCalls.get(index) ?? { id: undefined, name: "", arguments: "" };
+              if (call.id) current.id = call.id;
+              if (call.function?.name) current.name = call.function.name;
+              if (call.function?.arguments !== undefined) {
+                current.arguments += typeof call.function.arguments === "string" ? call.function.arguments : JSON.stringify(call.function.arguments);
+              }
+              rawToolCalls.set(index, current);
+            }
+          }
+        } catch {
+          yield { type: "error", message: "Ollama returned an unreadable response." };
+          return;
+        }
+      } else {
       // Stream the response
       const reader = res.body?.getReader();
       if (!reader) return;
 
       const decoder = new TextDecoder();
-      let rawToolCalls: Array<{ function?: { name?: string; arguments?: unknown } }> | undefined;
       let buffer = "";
 
       for (;;) {
@@ -462,14 +537,29 @@ export async function* streamChat(
           const trimmed = line.trim();
           if (!trimmed) continue;
           try {
-            const data = JSON.parse(trimmed) as { message?: { content?: string; tool_calls?: Array<{ function?: { name?: string; arguments?: unknown } }> } };
+            const data = JSON.parse(trimmed) as { message?: { content?: string; tool_calls?: Array<{ id?: string; function?: { name?: string; arguments?: unknown } }> } };
             const msg = data.message ?? {};
             const delta = typeof msg.content === "string" ? msg.content : "";
             if (delta) {
               content += delta;
               yield { type: "model_delta", content: delta };
             }
-            if (msg.tool_calls?.length) rawToolCalls = msg.tool_calls;
+            if (msg.tool_calls?.length) {
+              for (const [index, call] of msg.tool_calls.entries()) {
+                const key = typeof (call as { index?: unknown }).index === "number"
+                  ? (call as { index: number }).index
+                  : index;
+                const current = rawToolCalls.get(key) ?? { id: undefined, name: "", arguments: "" };
+                if (call.id) current.id = call.id;
+                if (call.function?.name) current.name = call.function.name;
+                if (call.function?.arguments !== undefined) {
+                  current.arguments += typeof call.function.arguments === "string"
+                    ? call.function.arguments
+                    : JSON.stringify(call.function.arguments);
+                }
+                rawToolCalls.set(key, current);
+              }
+            }
           } catch {
             // skip malformed lines
           }
@@ -477,28 +567,44 @@ export async function* streamChat(
       }
       if (buffer.trim()) {
         try {
-          const data = JSON.parse(buffer.trim()) as { message?: { content?: string; tool_calls?: Array<{ function?: { name?: string; arguments?: unknown } }> } };
+          const data = JSON.parse(buffer.trim()) as { message?: { content?: string; tool_calls?: Array<{ id?: string; function?: { name?: string; arguments?: unknown } }> } };
           const msg = data.message ?? {};
           const delta = typeof msg.content === "string" ? msg.content : "";
           if (delta) {
             content += delta;
             yield { type: "model_delta", content: delta };
           }
-          if (msg.tool_calls?.length) rawToolCalls = msg.tool_calls;
+          if (msg.tool_calls?.length) {
+            for (const [index, call] of msg.tool_calls.entries()) {
+              const key = typeof (call as { index?: unknown }).index === "number"
+                ? (call as { index: number }).index
+                : index;
+              const current = rawToolCalls.get(key) ?? { id: undefined, name: "", arguments: "" };
+              if (call.id) current.id = call.id;
+              if (call.function?.name) current.name = call.function.name;
+              if (call.function?.arguments !== undefined) {
+                current.arguments += typeof call.function.arguments === "string"
+                  ? call.function.arguments
+                  : JSON.stringify(call.function.arguments);
+              }
+              rawToolCalls.set(key, current);
+            }
+          }
         } catch {
           // skip
         }
       }
 
+      }
+
       toolCalls = hasRepo
-        ? (rawToolCalls ?? []).map((call) => {
-            const name = call.function?.name ?? "unknown";
-            let args: unknown = call.function?.arguments ?? {};
-            if (typeof args === "string") {
-              try { args = JSON.parse(args); } catch { args = {}; }
+        ? [...rawToolCalls.values()].map((call) => {
+            let args: unknown = {};
+            if (call.arguments) {
+              try { args = JSON.parse(call.arguments); } catch { args = {}; }
             }
             if (typeof args !== "object" || args === null || Array.isArray(args)) args = {};
-            return { function: { name, arguments: args as Record<string, unknown> } };
+            return { id: call.id, function: { name: call.name || "unknown", arguments: args as Record<string, unknown> } };
           })
         : [];
     }
@@ -517,7 +623,7 @@ export async function* streamChat(
         // Strip example output objects like: { "file": "...", "line": 12 }
         .replace(/\{\s*"file"\s*:\s*"[^"]+"\s*,\s*"line"\s*:\s*\d+\s*\}/g, "")
         // Strip bash-style tool calls like: bash list_files("src")
-        .replace(/(?:bash\s+)?(?:list_files|read_file|search|write_file|str_replace|run_command)\s*\([^)]*\)/gi, "")
+        .replace(/(?:bash\s+)?(?:list_files|read_headers|read_file|search|write_file|str_replace|run_command|create_pr)\s*\([^)]*\)/gi, "")
         // Strip bash cd patterns like: bash cd web vite
         .replace(/(?:bash\s+)?cd\s+\S+\s+.+/gi, "")
         .trim();
@@ -555,7 +661,21 @@ export async function* streamChat(
       }
       const name = call.function.name;
       const args = call.function.arguments ?? {};
-      yield { type: "tool_start", name, args };
+      const signature = toolCallSignature(name, args);
+      if (signature === previousToolSignature) {
+        consecutiveIdenticalToolCalls += 1;
+      } else {
+        previousToolSignature = signature;
+        consecutiveIdenticalToolCalls = 1;
+      }
+      if (consecutiveIdenticalToolCalls >= MAX_IDENTICAL_TOOL_CALLS) {
+        yield {
+          type: "error",
+          message: `The model repeated ${name} with the same arguments ${MAX_IDENTICAL_TOOL_CALLS} times. Stopping to prevent a tool loop.`,
+        };
+        return;
+      }
+      yield { type: "tool_start", name, args, toolCallId: call.id };
 
       // For file edits, compute a preview diff and require approval for large changes.
       let before: string | undefined;
@@ -589,11 +709,11 @@ export async function* streamChat(
           if (changedLines > 20 && approve) {
             const requestId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
             const filePath = String(args.path ?? "");
-            yield { type: "diff_preview", name, path: filePath, diff: previewDiff, requestId };
+            yield { type: "diff_preview", name, path: filePath, diff: previewDiff, requestId, toolCallId: call.id };
             const decision = await approve(`edit ${filePath}: ${changedLines} lines changed`);
             if (decision !== "approve") {
-              yield { type: "tool_result", name, result: `Edit denied: ${filePath} was not changed.`, diff: previewDiff };
-              session.messages.push({ role: "tool", content: `Edit denied: ${filePath} was not changed.`, tool_name: name });
+              yield { type: "tool_result", name, result: `Edit denied: ${filePath} was not changed.`, diff: previewDiff, toolCallId: call.id };
+              session.messages.push({ role: "tool", content: `Edit denied: ${filePath} was not changed.`, tool_name: name, tool_call_id: call.id });
               continue;
             }
           }
@@ -620,8 +740,8 @@ export async function* streamChat(
         }
       }
 
-      yield { type: "tool_result", name, result, diff };
-      session.messages.push({ role: "tool", content: result, tool_name: name });
+      yield { type: "tool_result", name, result, diff, toolCallId: call.id };
+      session.messages.push({ role: "tool", content: result, tool_name: name, tool_call_id: call.id });
     }
   }
 

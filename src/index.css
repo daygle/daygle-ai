@@ -19,12 +19,32 @@
     --destructive-foreground: 0 0% 100%;
   }
 
+  :root[data-theme="light"] {
+    --background: 210 20% 98%;
+    --foreground: 220 20% 14%;
+    --card: 0 0% 100%;
+    --card-foreground: 220 20% 14%;
+    --muted: 210 18% 93%;
+    --muted-foreground: 220 10% 42%;
+    --border: 214 18% 84%;
+    --input: 214 18% 84%;
+    --ring: 82 68% 38%;
+    --accent: 82 68% 38%;
+    --accent-foreground: 0 0% 100%;
+    --destructive: 0 68% 44%;
+    --destructive-foreground: 0 0% 100%;
+  }
+
   * {
     @apply border-border;
   }
 
   html {
     color-scheme: dark;
+  }
+
+  html[data-theme="light"] {
+    color-scheme: light;
   }
 
   body {

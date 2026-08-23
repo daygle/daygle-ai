@@ -50,10 +50,12 @@ function toolStatus(name: string): string {
   switch (name) {
     case "search": return "Searching the code…";
     case "read_file": return "Reading files…";
+    case "read_headers": return "Checking file headers…";
     case "list_files": return "Exploring the repo…";
     case "write_file": return "Writing changes…";
     case "str_replace": return "Editing a file…";
     case "run_command": return "Running a command…";
+    case "create_pr": return "Preparing pull request…";
     default: return "Working…";
   }
 }
@@ -63,6 +65,7 @@ interface ChatBubble {
   role: "user" | "assistant" | "tool" | "approval" | "clarification" | "qa" | "review";
   content: string;
   toolName?: string;
+  toolCallId?: string;
   toolArgs?: Record<string, unknown>;
   toolResult?: string;
   toolDiff?: string;
@@ -381,7 +384,7 @@ function Markdown({ children }: { children: string }) {
 /** Rebuilds display bubbles from a stored transcript when resuming a chat. */
 function bubblesFromMessages(messages: StoredChatMessage[]): ChatBubble[] {
   const bubbles: ChatBubble[] = [];
-  const toolQueue: Array<{ name: string; args: Record<string, unknown> }> = [];
+  const toolQueue: Array<{ id?: string; name: string; args: Record<string, unknown> }> = [];
   for (const m of messages) {
     if (m.role === "user") {
       bubbles.push({
@@ -395,15 +398,19 @@ function bubblesFromMessages(messages: StoredChatMessage[]): ChatBubble[] {
       const text = stripToolJson(m.content);
       if (text) bubbles.push({ id: uid(), role: "assistant", content: text });
       for (const call of m.tool_calls ?? []) {
-        toolQueue.push({ name: call.function.name, args: call.function.arguments ?? {} });
+        toolQueue.push({ id: call.id, name: call.function.name, args: call.function.arguments ?? {} });
       }
     } else if (m.role === "tool") {
-      const meta = toolQueue.shift();
+      const metaIndex = m.tool_call_id
+        ? toolQueue.findIndex((call) => call.id === m.tool_call_id)
+        : 0;
+      const meta = metaIndex >= 0 ? toolQueue.splice(metaIndex, 1)[0] : toolQueue.shift();
       bubbles.push({
         id: uid(),
         role: "tool",
         content: "",
         toolName: m.tool_name ?? meta?.name ?? "tool",
+        toolCallId: m.tool_call_id,
         toolArgs: meta?.args ?? {},
         toolResult: m.content,
       });
@@ -423,11 +430,13 @@ function ToolCall({ name, args, result, diff }: { name: string; args: Record<str
       : <FileEdit className="h-3.5 w-3.5 text-emerald-400" />;
 
   const label = name === "read_file" && args.path ? `Read ${args.path}`
+    : name === "read_headers" && args.paths ? `Headers ${args.paths}`
     : name === "list_files" && args.path ? `List ${args.path}`
     : name === "search" && args.pattern ? `Search "${args.pattern}"`
     : name === "write_file" && args.path ? `Write ${args.path}`
     : name === "str_replace" && args.path ? `Edit ${args.path}`
     : name === "run_command" && args.command ? `${args.command}`
+    : name === "create_pr" && args.title ? `Create PR: ${args.title}`
     : name;
 
   const hasDetail = diff !== undefined || result !== undefined;
@@ -871,7 +880,7 @@ function WorkspacePanel({
                     ? `justify-center py-3 text-muted-foreground hover:bg-muted/50 hover:text-foreground ${isOpen ? "bg-accent/10 text-accent" : ""}`
                     : isOpen
                       ? "gap-2 px-3 py-2.5 text-[11px] font-medium bg-accent/10 text-accent"
-                      : "gap-2 px-3 py-2 text-muted-foreground hover:bg-muted/50 hover:text-foreground"
+                      : "gap-2 px-3 py-2 text-[11px] font-medium text-muted-foreground hover:bg-muted/50 hover:text-foreground"
                 }`}
               >
                 {!sidebarExpanded ? (
@@ -1041,7 +1050,7 @@ function WorkspacePanel({
             <div className="space-y-2">
               {terminalEntries.map((entry) => (
                 <div key={entry.id} className="overflow-hidden rounded-lg border border-border bg-background">
-                  <div className="flex items-center gap-2 border-b border-border px-2.5 py-2 font-mono text-[11px] text-amber-300">
+                  <div className="flex items-center gap-2 border-b border-border px-2.5 py-2 font-mono text-[11px] text-amber-700 dark:text-amber-300">
                     <Terminal className="h-3 w-3" />
                     <span className="truncate">{String(entry.toolArgs?.command ?? "command")}</span>
                   </div>
@@ -1619,14 +1628,14 @@ export function AgentPage() {
         }
 
         case "tool_start": {
-          const toolId = `${assistantId}-tool-${event.name}-${Date.now()}`;
+          const toolId = `${assistantId}-tool-${event.toolCallId ?? event.name}-${Date.now()}`;
           setMessages((prev) => {
             // Freeze any still-streaming assistant bubble before the tool card,
             // and drop it if it only held tool-call JSON (now empty).
             const finalized = prev
               .map((m) => (m.role === "assistant" && m.streaming ? { ...m, streaming: false } : m))
               .filter((m) => !(m.role === "assistant" && !m.content));
-            return [...finalized, { id: toolId, role: "tool", content: "", toolName: event.name, toolArgs: event.args }];
+            return [...finalized, { id: toolId, role: "tool", content: "", toolName: event.name, toolCallId: event.toolCallId, toolArgs: event.args }];
           });
           setStatusText(toolStatus(event.name));
           // Subsequent model text belongs to a fresh turn (a new bubble after the tool).
@@ -1639,7 +1648,7 @@ export function AgentPage() {
           setMessages((prev) => {
             // Find the last tool message without a result
             for (let i = prev.length - 1; i >= 0; i--) {
-              if (prev[i].role === "tool" && prev[i].toolName === event.name && !prev[i].toolResult) {
+              if (prev[i].role === "tool" && prev[i].toolName === event.name && (event.toolCallId ? prev[i].toolCallId === event.toolCallId : true) && !prev[i].toolResult) {
                 const updated = [...prev];
                 updated[i] = { ...updated[i], toolResult: event.result, toolDiff: event.diff };
                 return updated;
@@ -1655,7 +1664,7 @@ export function AgentPage() {
             // Update the last tool card with the preview diff so the user can see it
             // while deciding on the approval that follows.
             for (let i = prev.length - 1; i >= 0; i--) {
-              if (prev[i].role === "tool" && prev[i].toolName === event.name && !prev[i].toolResult) {
+              if (prev[i].role === "tool" && prev[i].toolName === event.name && (event.toolCallId ? prev[i].toolCallId === event.toolCallId : true) && !prev[i].toolResult) {
                 const updated = [...prev];
                 updated[i] = { ...updated[i], toolDiff: event.diff };
                 return updated;
@@ -1776,13 +1785,13 @@ export function AgentPage() {
         case "tool_start":
           setMessages((prev) => [
             ...prev,
-            { id: uid(), role: "tool", content: "", toolName: event.name, toolArgs: event.args },
+            { id: uid(), role: "tool", content: "", toolName: event.name, toolCallId: event.toolCallId, toolArgs: event.args },
           ]);
           break;
         case "tool_result":
           setMessages((prev) => {
             for (let i = prev.length - 1; i >= 0; i--) {
-              if (prev[i].role === "tool" && prev[i].toolName === event.name && !prev[i].toolResult) {
+              if (prev[i].role === "tool" && prev[i].toolName === event.name && (event.toolCallId ? prev[i].toolCallId === event.toolCallId : true) && !prev[i].toolResult) {
                 const updated = [...prev];
                 updated[i] = { ...updated[i], toolResult: event.result, toolDiff: event.diff };
                 return updated;
@@ -2015,7 +2024,7 @@ export function AgentPage() {
                 <p className="text-[11px] text-destructive" role="alert">{connectionError}</p>
               )}
               {noModels && (
-                <p className="text-[11px] text-amber-400/90">
+                <p className="text-[11px] text-amber-700 dark:text-amber-400/90">
                   No models detected. Pull one on the{" "}
                   <Link to="/models" className="underline">Models</Link> page, or check the server in{" "}
                   <Link to="/settings" className="underline">Settings</Link>.

@@ -1,8 +1,9 @@
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
-import { Bot, Box, Settings } from "lucide-react";
+import { Bot, Box, Moon, Settings, Sun } from "lucide-react";
 import { Logo } from "./Logo";
 import { ConnectionStatus } from "./ConnectionStatus";
 import { cn } from "../lib/utils";
+import { useTheme } from "../context/ThemeProvider";
 
 const nav = [
   { to: "/agent", label: "Agent", icon: Bot },
@@ -14,6 +15,7 @@ export function AppShell() {
   const navigate = useNavigate();
   const location = useLocation();
   const isAgentRoute = location.pathname === "/agent";
+  const { theme, toggleTheme } = useTheme();
 
   return (
     <div className="flex h-[100dvh] flex-col bg-background">
@@ -42,7 +44,16 @@ export function AppShell() {
             </NavLink>
           ))}
         </nav>
-        <div className="ml-auto shrink-0">
+        <div className="ml-auto flex shrink-0 items-center gap-2">
+          <button
+            type="button"
+            onClick={toggleTheme}
+            className="rounded-md p-2 text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
+            title={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
+            aria-label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
+          >
+            {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+          </button>
           <ConnectionStatus compact />
         </div>
       </header>

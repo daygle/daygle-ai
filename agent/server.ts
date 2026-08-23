@@ -453,6 +453,7 @@ function persistChat(session: ChatSession): void {
         createdAt: session.createdAt,
         lastActivity: session.lastActivity,
         options: session.options,
+        providerConfig: session.providerConfig,
       });
     }).catch(() => {}); // Ignore errors
   }
@@ -466,6 +467,7 @@ function persistChat(session: ChatSession): void {
     createdAt: session.createdAt,
     lastActivity: session.lastActivity,
     options: session.options,
+    providerConfig: session.providerConfig,
   });
 }
 
@@ -497,6 +499,8 @@ async function rehydrateChat(id: string): Promise<ChatSession | null> {
     createdAt: stored.createdAt,
     lastActivity: Date.now(),
     options: stored.options,
+    providerConfig: stored.providerConfig,
+    provider: stored.providerConfig ? createProvider(stored.providerConfig) : undefined,
     title: stored.title,
   };
   chatSessions.set(id, session);
@@ -1384,13 +1388,13 @@ const server = http.createServer((req, res) => {
             // visible in the chat transcript.
             const forward = (event: AgentEvent) => {
               if (event.type === "status") emit({ type: "status", message: event.message });
-              else if (event.type === "tool_start") emit({ type: "tool_start", name: event.name, args: event.args });
-              else if (event.type === "tool_result") emit({ type: "tool_result", name: event.name, result: event.result });
+              else if (event.type === "tool_start") emit({ type: "tool_start", name: event.name, args: event.args, toolCallId: event.toolCallId });
+              else if (event.type === "tool_result") emit({ type: "tool_result", name: event.name, result: event.result, toolCallId: event.toolCallId });
             };
             const review = agentic
               ? await runAgenticReview({
                   root: session.root,
-                  provider: providerFor(session.ollamaUrl),
+                  provider: session.provider ?? providerFor(session.ollamaUrl, session.providerConfig),
                   model: reviewModel,
                   task: deriveTitle(session.messages) || "the requested changes",
                   diff,
@@ -1401,7 +1405,7 @@ const server = http.createServer((req, res) => {
                   config: reviewConfig,
                 })
               : await runReview({
-                  provider: providerFor(session.ollamaUrl),
+                  provider: session.provider ?? providerFor(session.ollamaUrl, session.providerConfig),
                   model: reviewModel,
                   task: deriveTitle(session.messages) || "the requested changes",
                   diff,
@@ -1429,6 +1433,7 @@ const server = http.createServer((req, res) => {
     if (chatIdMatch && req.method === "GET") {
       const id = chatIdMatch[1];
       const live = chatSessions.get(id);
+      const stored = live ? null : chatHistoryStore.load(id);
       const chat = live
         ? {
             id: live.id,
@@ -1441,7 +1446,19 @@ const server = http.createServer((req, res) => {
             lastActivity: live.lastActivity,
             busy: Boolean(live.busy),
           }
-        : chatHistoryStore.load(id);
+        : stored
+          ? {
+              id: stored.id,
+              repoUrl: stored.repoUrl,
+              model: stored.model,
+              ollamaUrl: stored.ollamaUrl,
+              title: stored.title,
+              messages: stored.messages,
+              createdAt: stored.createdAt,
+              lastActivity: stored.lastActivity,
+              busy: false,
+            }
+          : null;
       if (!chat) {
         sendJson(res, 404, { error: "Chat not found." });
         return;
@@ -1559,6 +1576,7 @@ const server = http.createServer((req, res) => {
         createdAt: Date.now(),
         lastActivity: Date.now(),
         options: body.options,
+        providerConfig: body.providerConfig,
         provider: body.providerConfig ? createProvider(body.providerConfig) : undefined,
       };
       // Detect a fallback model for automatic retry on failure (Ollama only).

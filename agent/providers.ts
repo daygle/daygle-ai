@@ -166,6 +166,7 @@ class OllamaProvider implements ChatProvider {
     const decoder = new TextDecoder();
     let content = "";
     const toolCallMap = new Map<number, ParsedToolCall>();
+    const toolArgBuffers = new Map<number, string>();
     // NDJSON lines can span network chunks; buffer the remainder so a JSON
     // object split across reads isn't silently dropped.
     let buffer = "";
@@ -184,13 +185,14 @@ class OllamaProvider implements ChatProvider {
             const idx = call.index ?? 0;
             if (!toolCallMap.has(idx)) {
               toolCallMap.set(idx, { id: call.id, function: { name: call.function?.name ?? "", arguments: {} } });
+              toolArgBuffers.set(idx, "");
             }
             const existing = toolCallMap.get(idx)!;
+            if (call.id) existing.id = call.id;
             if (call.function?.name) existing.function.name = call.function.name;
             if (call.function?.arguments) {
               const argStr = typeof call.function.arguments === "string" ? call.function.arguments : JSON.stringify(call.function.arguments);
-              const prev = typeof existing.function.arguments === "object" ? JSON.stringify(existing.function.arguments) : "";
-              try { existing.function.arguments = JSON.parse(prev + argStr); } catch { /* partial JSON */ }
+              toolArgBuffers.set(idx, (toolArgBuffers.get(idx) ?? "") + argStr);
             }
           }
         }
@@ -207,7 +209,15 @@ class OllamaProvider implements ChatProvider {
     }
     if (buffer.trim()) handleLine(buffer);
 
-    return { content, toolCalls: [...toolCallMap.values()] };
+    const toolCalls: ParsedToolCall[] = [...toolCallMap.entries()].map(([idx, call]) => {
+      const rawArgs = toolArgBuffers.get(idx) ?? "";
+      let args: Record<string, unknown> = {};
+      if (rawArgs) {
+        try { args = JSON.parse(rawArgs); } catch { /* malformed or incomplete arguments */ }
+      }
+      return { id: call.id, function: { name: call.function.name, arguments: args } };
+    });
+    return { content, toolCalls };
   }
 
   async listModels(): Promise<string[]> {
@@ -253,20 +263,29 @@ class OpenAICompatibleProvider implements ChatProvider {
 
   /** Convert our internal message format to OpenAI chat format. */
   private toOpenAIMessages(messages: ChatMessage[]): unknown[] {
-    return messages.map((m) => {
+    const pendingToolIds: string[] = [];
+    return messages.map((m, messageIndex) => {
       if (m.role === "tool") {
-        return { role: "tool", content: m.content, tool_call_id: m.tool_call_id };
+        return {
+          role: "tool",
+          content: m.content,
+          tool_call_id: m.tool_call_id ?? pendingToolIds.shift() ?? `call_legacy_${messageIndex}`,
+        };
       }
       const out: any = { role: m.role, content: m.content };
       if (m.tool_calls?.length) {
-        out.tool_calls = m.tool_calls.map((tc) => ({
-          id: tc.id ?? `call_${Math.random().toString(36).slice(2)}`,
-          type: "function",
-          function: {
-            name: tc.function.name,
-            arguments: typeof tc.function.arguments === "string" ? tc.function.arguments : JSON.stringify(tc.function.arguments),
-          },
-        }));
+        out.tool_calls = m.tool_calls.map((tc, callIndex) => {
+          const id = tc.id ?? `call_${messageIndex}_${callIndex}`;
+          pendingToolIds.push(id);
+          return {
+            id,
+            type: "function",
+            function: {
+              name: tc.function.name,
+              arguments: typeof tc.function.arguments === "string" ? tc.function.arguments : JSON.stringify(tc.function.arguments),
+            },
+          };
+        });
       }
       return out;
     });
@@ -309,9 +328,10 @@ class OpenAICompatibleProvider implements ChatProvider {
     }
 
     const contentType = res.headers.get("content-type") ?? "";
-    const isStream = contentType.includes("text/event-stream") || contentType.includes("application/x-ndjson") || contentType.includes("application/json");
+    const isStream = contentType.includes("text/event-stream") || contentType.includes("application/x-ndjson");
 
-    // Non-streaming fallback
+    // Non-streaming JSON responses are common even when the request included
+    // stream:true (some OpenAI-compatible gateways ignore that flag).
     if (!isStream || !res.body) {
       const data = await res.json() as any;
       const choice = data.choices?.[0];

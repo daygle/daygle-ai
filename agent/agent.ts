@@ -1,8 +1,9 @@
-import { REVIEW_TOOL_DEFINITIONS, TOOL_DEFINITIONS, runTool, type CommandApprover, type ToolDefinition } from "./tools";
+import { AGENT_TOOL_DEFINITIONS, REVIEW_TOOL_DEFINITIONS, runTool, type CommandApprover, type ToolDefinition } from "./tools";
 import type { SandboxRunner } from "./sandbox";
 import type { ChatProvider } from "./providers";
 
 export interface ToolCall {
+  id?: string;
   function: { name: string; arguments: Record<string, unknown> };
 }
 
@@ -11,6 +12,7 @@ interface AgentMessage {
   content: string;
   tool_calls?: ToolCall[];
   tool_name?: string;
+  tool_call_id?: string;
 }
 
 export type AgentEvent =
@@ -20,8 +22,8 @@ export type AgentEvent =
   | { type: "diff"; stat: string; diff: string }
   | { type: "review"; verdict: "approved" | "changes_requested"; text: string }
   | { type: "qa"; command: string; output: string; passed: boolean; skipped?: boolean }
-  | { type: "tool_start"; name: string; args: Record<string, unknown> }
-  | { type: "tool_result"; name: string; result: string }
+  | { type: "tool_start"; name: string; args: Record<string, unknown>; toolCallId?: string }
+  | { type: "tool_result"; name: string; result: string; toolCallId?: string }
   | { type: "approval_requested"; requestId: string; command: string }
   | { type: "error"; message: string }
   | { type: "cancelled"; message: string }
@@ -182,6 +184,8 @@ Available tools:
 - run_command(command) - run a shell command in the repo (tests, typecheck, git status, etc.) through the command sandbox. If no sandbox is available, it is denied unless the trusted host fallback is explicitly enabled.
   For commands in a subdirectory, use: "cd <dir> && <command>"
 
+The autonomous agent does not create commits, push branches, or open pull requests; those actions remain explicit interactive operations.
+
 Rules:
 - Make the smallest change that solves the problem. Do not rewrite files unnecessarily.
 - ALWAYS use str_replace for small, targeted edits (find-and-replace, fixing a line, renaming). Only use write_file for a brand-new file or a deliberate full rewrite, and then provide EVERY line of the file.
@@ -210,6 +214,17 @@ async function chatOnce(
 ): Promise<{ content: string; toolCalls: ToolCall[] }> {
   const result = await provider.chat(model, messages as any, tools, options);
   return { content: result.content, toolCalls: result.toolCalls as ToolCall[] };
+}
+
+function toolCallSignature(name: string, args: Record<string, unknown>): string {
+  const stable = (value: unknown): string => {
+    if (Array.isArray(value)) return `[${value.map(stable).join(",")}]`;
+    if (value && typeof value === "object") {
+      return `{${Object.entries(value as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b)).map(([key, entry]) => `${JSON.stringify(key)}:${stable(entry)}`).join(",")}}`;
+    }
+    return JSON.stringify(value);
+  };
+  return `${name}:${stable(args)}`;
 }
 
 function isLikelyTestPath(value: string): boolean {
@@ -255,6 +270,8 @@ export async function runAgentLoop(opts: {
   ];
   const startedAt = Date.now();
   let toolCallsUsed = 0;
+  let previousToolSignature = "";
+  let consecutiveIdenticalToolCalls = 0;
   let totalOutputBytes = 0;
   let totalDiskWriteBytes = 0;
   const maxToolCalls = opts.config?.maxToolCalls ?? DEFAULT_MAX_TOOL_CALLS;
@@ -272,7 +289,7 @@ export async function runAgentLoop(opts: {
       provider,
       model,
       compactAgentMessages(messages, Math.max(32_000, Math.min(96_000, numCtx * 3))),
-      TOOL_DEFINITIONS,
+      AGENT_TOOL_DEFINITIONS,
       {
         temperature,
         numCtx,
@@ -294,7 +311,17 @@ export async function runAgentLoop(opts: {
       toolCallsUsed += 1;
       const name = call.function.name;
       const args = call.function.arguments ?? {};
-      emit({ type: "tool_start", name, args });
+      const signature = `${name}:${JSON.stringify(args, Object.keys(args).sort())}`;
+      if (signature === previousToolSignature) {
+        consecutiveIdenticalToolCalls += 1;
+      } else {
+        previousToolSignature = signature;
+        consecutiveIdenticalToolCalls = 1;
+      }
+      if (consecutiveIdenticalToolCalls >= 3) {
+        throw new Error(`The model repeated ${name} with the same arguments 3 times. Stopping to prevent a tool loop.`);
+      }
+      emit({ type: "tool_start", name, args, toolCallId: call.id });
 
       // Track disk writes for quota enforcement.
       if (name === "write_file" && typeof args.content === "string") {
@@ -319,8 +346,8 @@ export async function runAgentLoop(opts: {
         result = `Error: ${err instanceof Error ? err.message : String(err)}`;
       }
       totalOutputBytes += Buffer.byteLength(result, "utf8");
-      emit({ type: "tool_result", name, result });
-      messages.push({ role: "tool", content: result, tool_name: name });
+      emit({ type: "tool_result", name, result, toolCallId: call.id });
+      messages.push({ role: "tool", content: result, tool_name: name, tool_call_id: call.id });
     }
   }
 
@@ -457,6 +484,7 @@ const AGENTIC_REVIEW_SYSTEM_PROMPT = `You are a senior software engineer perform
 You have READ-ONLY tools to investigate before you decide:
 - list_files(path) - list files/directories
 - read_file(path, start_line?, end_line?) - read a file with numbered lines
+- read_headers(paths, lines?) - inspect imports and top-level definitions
 - search(pattern, path?) - regex-search the repo
 - run_command(command) - run verification commands (tests, typecheck, lint, build) inside a mandatory read-only sandbox. Only approved verification runners are permitted; anything else is denied. You cannot modify files.
 
@@ -512,6 +540,8 @@ export async function runAgenticReview(opts: {
   ];
 
   let lastContent = "";
+  let previousToolSignature = "";
+  let consecutiveIdenticalToolCalls = 0;
   for (let step = 0; step < maxSteps; step++) {
     throwIfCancelled();
     emit({ type: "status", message: `Reviewing… (step ${step + 1}/${maxSteps})` });
@@ -540,12 +570,24 @@ export async function runAgenticReview(opts: {
     for (const call of toolCalls) {
       const name = call.function.name;
       const args = call.function.arguments ?? {};
+      const signature = toolCallSignature(name, args);
+      if (signature === previousToolSignature) {
+        consecutiveIdenticalToolCalls += 1;
+      } else {
+        previousToolSignature = signature;
+        consecutiveIdenticalToolCalls = 1;
+      }
+      if (consecutiveIdenticalToolCalls >= 3) {
+        const text = `${lastContent.trim() || "CHANGES REQUESTED"}\n\nReviewer stopped after three identical ${name} calls.`;
+        emit({ type: "review", verdict: "changes_requested", text });
+        return { verdict: "changes_requested", text };
+      }
       // Defense in depth: the reviewer must never mutate the tree.
       if (name === "write_file" || name === "str_replace") {
-        emit({ type: "tool_start", name, args });
+        emit({ type: "tool_start", name, args, toolCallId: call.id });
         const result = "Denied: the reviewer is read-only and cannot write files.";
-        emit({ type: "tool_result", name, result });
-        messages.push({ role: "tool", content: result, tool_name: name });
+        emit({ type: "tool_result", name, result, toolCallId: call.id });
+        messages.push({ role: "tool", content: result, tool_name: name, tool_call_id: call.id });
         continue;
       }
       emit({ type: "tool_start", name, args });
@@ -564,8 +606,8 @@ export async function runAgenticReview(opts: {
         if (err instanceof CancelledError) throw err;
         result = `Error: ${err instanceof Error ? err.message : String(err)}`;
       }
-      emit({ type: "tool_result", name, result });
-      messages.push({ role: "tool", content: result, tool_name: name });
+      emit({ type: "tool_result", name, result, toolCallId: call.id });
+      messages.push({ role: "tool", content: result, tool_name: name, tool_call_id: call.id });
     }
   }
 

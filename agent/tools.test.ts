@@ -122,6 +122,12 @@ describe("tool hardening", () => {
     expect(isReviewSafeCommand("npm run test --prefix ../other", root)).toBe(false);
   });
 
+  test("requires a sandbox for create_pr instead of using host execution", async () => {
+    await expect(
+      runTool(root, "create_pr", { title: "Test", body: "Body", base: "main" }, async () => "approve"),
+    ).rejects.toThrow(/requires a command sandbox/);
+  });
+
   test("denies host command execution unless explicitly opted in", async () => {
     const previous = process.env.DAYGLE_ALLOW_HOST_COMMANDS;
     delete process.env.DAYGLE_ALLOW_HOST_COMMANDS;

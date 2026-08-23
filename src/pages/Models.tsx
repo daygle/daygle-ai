@@ -323,7 +323,7 @@ export function ModelsPage() {
       {/* Hugging Face browser */}
       <section className="rounded-2xl border border-border bg-card p-5">
         <div className="flex items-center gap-2.5">
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-amber-500/15 text-amber-400">
+          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-amber-500/15 text-amber-700 dark:text-amber-400">
             <Star className="h-4 w-4" />
           </div>
           <div>
@@ -524,7 +524,7 @@ export function ModelsPage() {
                       {model.details?.quantization_level && <Badge>{model.details.quantization_level}</Badge>}
                       {model.details?.family && <Badge>{model.details.family}</Badge>}
                       {updates?.[model.name]?.updateAvailable && (
-                        <Badge className="border-amber-400/40 bg-amber-400/10 text-amber-300">
+                        <Badge className="border-amber-600/40 bg-amber-400/10 text-amber-800 dark:border-amber-400/40 dark:text-amber-300">
                           Update available
                         </Badge>
                       )}

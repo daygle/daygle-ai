@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { SandboxRunner } from "./sandbox";
+import { isSandboxNetworkEnabled, type SandboxRunner } from "./sandbox";
 
 export interface ToolDefinition {
   type: "function";
@@ -276,8 +276,13 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
 ];
 
 /** Read-only tool surface for the agentic reviewer - every tool except the mutating editors. */
+export const AGENT_TOOL_DEFINITIONS: ToolDefinition[] = TOOL_DEFINITIONS.filter(
+  (tool) => tool.function.name !== "create_pr",
+);
+
+/** Read-only tool surface for the agentic reviewer - no editors or GitHub side effects. */
 export const REVIEW_TOOL_DEFINITIONS: ToolDefinition[] = TOOL_DEFINITIONS.filter(
-  (tool) => tool.function.name !== "write_file" && tool.function.name !== "str_replace",
+  (tool) => !["write_file", "str_replace", "create_pr"].includes(tool.function.name),
 );
 
 // Only these package scripts are eligible for unattended reviewer execution.
@@ -1193,26 +1198,97 @@ async function runCommand(
   return executeCommand(root, command, signal);
 }
 
-async function createPr(root: string, title: string, body: string, base: string, approve?: CommandApprover): Promise<string> {
+async function runSandboxCommand(
+  root: string,
+  command: string,
+  sandbox: SandboxRunner,
+  signal?: AbortSignal,
+  network = false,
+): Promise<string> {
+  const result = await sandbox.runCapture(root, command, { signal, network });
+  const parts: string[] = [];
+  if (result.stdout.trim()) parts.push(truncate(result.stdout.trim(), MAX_OUTPUT));
+  if (result.stderr.trim()) parts.push(`[stderr]\n${truncate(result.stderr.trim(), MAX_OUTPUT)}`);
+  if (result.overflow) parts.push("(output truncated)");
+  const status = result.timedOut ? "timeout" : result.code ?? "error";
+  return `exit code: ${status}\n${parts.join("\n") || "(no output)"}`;
+}
+
+async function createPr(
+  root: string,
+  title: string,
+  body: string,
+  base: string,
+  approve?: CommandApprover,
+  sandbox?: SandboxRunner,
+  signal?: AbortSignal,
+): Promise<string> {
   if (!title.trim()) throw new Error("create_pr: title is required.");
   if (!body.trim()) throw new Error("create_pr: body is required.");
-  // Commit all changes first - use shellEscape for title to prevent injection.
-  const commitResult = await runCommand(root, `git add -A && git commit -m ${shellEscape(title)}`, approve);
-  if (commitResult.includes("nothing to commit")) {
-    return "No changes to commit. Nothing was pushed or opened as a PR.";
+  if (!sandbox) throw new Error("create_pr requires a command sandbox.");
+  if (!isSandboxNetworkEnabled()) throw new Error("create_pr requires DAYGLE_SANDBOX_NETWORK=1 for GitHub access.");
+  if (!/^[A-Za-z0-9._\\/-]+$/.test(base) || base.includes("..")) {
+    throw new Error("create_pr: base must be a simple repository branch name.");
   }
-  // Push the current branch.
-  const branch = (await executeCommand(root, "git branch --show-current", undefined)).trim() || "main";
-  await runCommand(root, `git push -u origin ${branch}`, approve);
-  // Create the PR using gh CLI - use shellEscape for title to prevent injection.
-  const bodyFile = path.join(root, ".daygle-pr-body.md");
-  fs.writeFileSync(bodyFile, body, "utf8");
+  if (!approve || await approve(`create PR on ${base}: ${title.trim()}`) !== "approve") {
+    return "Create PR denied by the user.";
+  }
+
+  const bodyFile = `.daygle-pr-body-${Date.now().toString(36)}.md`;
+
   try {
-    const prResult = await executeCommand(root, `gh pr create --base ${base} --head ${branch} --title ${shellEscape(title)} --body-file .daygle-pr-body.md`, undefined);
+    const commitResult = await runSandboxCommand(
+      root,
+      `git add -A -- ':!.daygle-pr-body-*.md' && git commit -m ${shellEscape(title)}`,
+      sandbox,
+      signal,
+    );
+    if (!commitResult.startsWith("exit code: 0")) {
+      if (/nothing to commit/i.test(commitResult)) return "No changes to commit. Nothing was pushed or opened as a PR.";
+      return `Could not commit changes.\n${commitResult}`;
+    }
+
+    const branchResult = await runSandboxCommand(root, "git branch --show-current", sandbox, signal);
+    if (!branchResult.startsWith("exit code: 0")) return `Could not determine the current branch.\n${branchResult}`;
+    const branch = branchResult
+      .split(/\r?\n/)
+      .slice(1)
+      .join("\n")
+      .trim();
+    if (!/^[A-Za-z0-9._\/-]+$/.test(branch) || branch.includes("..")) {
+      return "Could not create PR: the current branch name is invalid.";
+    }
+
+    const writeResult = await runSandboxCommand(
+      root,
+      `printf %s ${shellEscape(body)} > ${shellEscape(bodyFile)}`,
+      sandbox,
+      signal,
+    );
+    if (!writeResult.startsWith("exit code: 0")) return `Could not prepare PR body.\n${writeResult}`;
+
+    const pushResult = await runSandboxCommand(
+      root,
+      `git push -u origin ${shellEscape(branch)}`,
+      sandbox,
+      signal,
+      true,
+    );
+    if (!pushResult.startsWith("exit code: 0")) return `Could not push branch.\n${pushResult}`;
+
+    const prResult = await runSandboxCommand(
+      root,
+      `gh pr create --base ${shellEscape(base)} --head ${shellEscape(branch)} --title ${shellEscape(title)} --body-file ${shellEscape(bodyFile)}`,
+      sandbox,
+      signal,
+      true,
+    );
+    if (!prResult.startsWith("exit code: 0")) return `Could not create PR.\n${prResult}`;
     const urlMatch = prResult.match(/https:\/\/github\.com\/[^\s]+/);
-    return urlMatch ? `PR created: ${urlMatch[0]}` : `PR created: ${prResult.trim()}`;
+    return urlMatch ? `PR created: ${urlMatch[0]}` : `PR created: ${prResult}`;
   } finally {
-    try { fs.rmSync(bodyFile, { force: true }); } catch { /* best effort */ }
+    // Remove the temporary body file even when a later git/GitHub command fails.
+    await runSandboxCommand(root, `rm -f ${shellEscape(bodyFile)}`, sandbox, signal).catch(() => undefined);
   }
 }
 
@@ -1253,7 +1329,15 @@ export async function runTool(
     case "run_command":
       return runCommand(root, String(args.command ?? ""), approve, sandbox, signal, readOnlySandbox);
     case "create_pr":
-      return createPr(root, String(args.title ?? ""), String(args.body ?? ""), String(args.base ?? "main"), approve);
+      return createPr(
+        root,
+        String(args.title ?? ""),
+        String(args.body ?? ""),
+        String(args.base ?? "main"),
+        approve,
+        sandbox,
+        signal,
+      );
     default:
       throw new Error(`Unknown tool: ${name}`);
   }

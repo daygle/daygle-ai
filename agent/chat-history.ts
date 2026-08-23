@@ -12,6 +12,7 @@ export interface StoredChat {
   createdAt: number;
   lastActivity: number;
   options?: GenOptions;
+  providerConfig?: { kind: "ollama" | "openai"; baseUrl: string; apiKey?: string };
 }
 
 export interface ChatSummary {
@@ -31,7 +32,7 @@ export class ChatHistoryStore {
   save(chat: StoredChat): void {
     try {
       fs.mkdirSync(this.dir, { recursive: true });
-      fs.writeFileSync(path.join(this.dir, `${chat.id}.json`), JSON.stringify(chat), "utf8");
+      fs.writeFileSync(path.join(this.dir, `${chat.id}.json`), JSON.stringify(chat), { encoding: "utf8", mode: 0o600 });
     } catch {
       // history is best-effort; never break a chat because of a write failure
     }

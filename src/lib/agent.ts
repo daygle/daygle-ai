@@ -8,8 +8,8 @@ export type AgentEvent =
   | { type: "diff"; stat: string; diff: string }
   | { type: "review"; verdict: "approved" | "changes_requested"; text: string }
   | { type: "qa"; command: string; output: string; passed: boolean; skipped?: boolean }
-  | { type: "tool_start"; name: string; args: Record<string, unknown> }
-  | { type: "tool_result"; name: string; result: string }
+  | { type: "tool_start"; name: string; args: Record<string, unknown>; toolCallId?: string }
+  | { type: "tool_result"; name: string; result: string; toolCallId?: string }
   | { type: "approval_requested"; requestId: string; command: string }
   | { type: "error"; message: string }
   | { type: "cancelled"; message: string }
@@ -277,8 +277,9 @@ export interface StoredChatMessage {
   content: string;
   images?: string[];
   imageMimeTypes?: string[];
-  tool_calls?: Array<{ function: { name: string; arguments: Record<string, unknown> } }>;
+  tool_calls?: Array<{ id?: string; function: { name: string; arguments: Record<string, unknown> } }>;
   tool_name?: string;
+  tool_call_id?: string;
 }
 
 export interface ChatImage {
@@ -466,9 +467,9 @@ export type ChatEvent =
   | { type: "status"; message: string }
   | { type: "model_delta"; content: string }
   | { type: "model_done"; content: string }
-  | { type: "tool_start"; name: string; args: Record<string, unknown> }
-  | { type: "tool_result"; name: string; result: string; diff?: string }
-  | { type: "diff_preview"; name: string; path: string; diff: string; requestId: string }
+  | { type: "tool_start"; name: string; args: Record<string, unknown>; toolCallId?: string }
+  | { type: "tool_result"; name: string; result: string; diff?: string; toolCallId?: string }
+  | { type: "diff_preview"; name: string; path: string; diff: string; requestId: string; toolCallId?: string }
   | { type: "approval_requested"; requestId: string; command: string }
   | { type: "approval_resolved"; requestId: string; decision: "approve" | "deny" }
   | { type: "clarification_requested"; requestId: string; question: string; options: Array<{ label: string; description?: string }> }
