@@ -8,7 +8,7 @@ const localServiceProxy = {
     rewrite: (path: string) => path.replace(/^\/api\/ollama/, ""),
     // Strip the browser Origin header so Ollama doesn't 403 on LAN IPs that
     // aren't in OLLAMA_ORIGINS (only localhost is allowed by default). The
-    // proxy is the trusted same-origin boundary — Ollama is loopback-only.
+    // proxy is the trusted same-origin boundary - Ollama is loopback-only.
     configure: (proxy: any) => {
       proxy.on("proxyReq", (proxyReq: any) => proxyReq.removeHeader("origin"));
     },

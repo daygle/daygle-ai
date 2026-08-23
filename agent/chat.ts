@@ -48,7 +48,7 @@ export interface ChatSession {
   fallbackModel?: string;
   /** AI-generated title for the chat session. */
   title?: string;
-  /** Chat provider — when set, used instead of the raw Ollama fetch. */
+  /** Chat provider - when set, used instead of the raw Ollama fetch. */
   provider?: ChatProvider;
   providerConfig?: { kind: "ollama" | "openai"; baseUrl: string; apiKey?: string };
   /** Timestamp the workspace payload was last computed, for client polling. */

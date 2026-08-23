@@ -76,7 +76,7 @@ fi
 # --- Install vLLM -----------------------------------------------------------
 # Check if vllm is already installed in the venv
 if "$VENV/bin/python" -c "import vllm" 2>/dev/null; then
-  echo "vLLM already installed — skipping."
+  echo "vLLM already installed - skipping."
 else
   echo ""
   echo "Installing vLLM (this may take a few minutes)…"

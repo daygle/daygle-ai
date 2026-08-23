@@ -157,24 +157,24 @@ describe("tool hardening", () => {
 describe("str_replace", () => {
   const root = mkdtempSync(join(tmpdir(), "daygle-tools-strreplace-"));
   const file = join(root, "code.txt");
-  const reset = () => writeFileSync(file, "line one — dash\nline two — dash\nline three\n");
+  const reset = () => writeFileSync(file, "line one - dash\nline two - dash\nline three\n");
 
   test("replaces a unique match in place, preserving the rest of the file", async () => {
     reset();
     const result = await runTool(root, "str_replace", {
       path: "code.txt",
-      old_string: "line two — dash",
+      old_string: "line two - dash",
       new_string: "line two - dash",
     });
     expect(result).toContain("Replaced 1 occurrence");
-    expect(readFileSync(file, "utf8")).toBe("line one — dash\nline two - dash\nline three\n");
+    expect(readFileSync(file, "utf8")).toBe("line one - dash\nline two - dash\nline three\n");
   });
 
   test("replaces every occurrence with replace_all", async () => {
     reset();
     const result = await runTool(root, "str_replace", {
       path: "code.txt",
-      old_string: "—",
+      old_string: "-",
       new_string: "-",
       replace_all: true,
     });
@@ -185,7 +185,7 @@ describe("str_replace", () => {
   test("rejects an ambiguous match unless replace_all is set", async () => {
     reset();
     await expect(
-      runTool(root, "str_replace", { path: "code.txt", old_string: "—", new_string: "-" }),
+      runTool(root, "str_replace", { path: "code.txt", old_string: "-", new_string: "-" }),
     ).rejects.toThrow(/appears 2 times/);
   });
 

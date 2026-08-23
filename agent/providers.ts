@@ -71,7 +71,7 @@ export type ProviderKind = "ollama" | "openai";
 
 export interface ProviderConfig {
   kind: ProviderKind;
-  /** Base URL — for Ollama e.g. http://localhost:11434, for OpenAI-compatible e.g. https://api.together.xyz/v1 */
+  /** Base URL - for Ollama e.g. http://localhost:11434, for OpenAI-compatible e.g. https://api.together.xyz/v1 */
   baseUrl: string;
   /** API key (required for cloud providers, ignored for Ollama). */
   apiKey?: string;
@@ -354,7 +354,7 @@ class OpenAICompatibleProvider implements ChatProvider {
       if (!trimmed || trimmed === "[DONE]") return;
       // SSE comments (": keep-alive") carry no payload.
       if (trimmed.startsWith(":")) return;
-      // SSE framing: "data: {...}" — some compatible providers omit the space
+      // SSE framing: "data: {...}" - some compatible providers omit the space
       // after the colon. Otherwise treat the line as a raw NDJSON object.
       // Deciding per line avoids misdetecting NDJSON payloads that merely
       // contain "data: " inside their text content.
@@ -410,7 +410,7 @@ class OpenAICompatibleProvider implements ChatProvider {
     if (buffer.trim()) handleLine(buffer);
 
     // Finalize tool call arguments (they arrive as partial JSON strings).
-    // Look up each argument buffer by its own tool-call index — array position
+    // Look up each argument buffer by its own tool-call index - array position
     // would desync when a provider skips index 0 (e.g. parallel tool calls).
     const toolCalls: ParsedToolCall[] = [...toolCallMap.entries()].map(([idx, tc]) => {
       const rawJson = toolArgBuffers.get(idx);

@@ -71,7 +71,7 @@ function acquireSessionLock(sessionId: string, clientId: string): boolean {
   const existing = sessionLocks.get(sessionId);
   if (existing) {
     if (existing.owner === clientId) {
-      // Same client re-acquiring — refresh the timer.
+      // Same client re-acquiring - refresh the timer.
       clearTimeout(existing.timer);
       existing.timer = setTimeout(() => sessionLocks.delete(sessionId), SESSION_LOCK_TIMEOUT_MS);
       return true;
@@ -113,7 +113,7 @@ async function detectCoverageCommand(root: string, sandbox?: SandboxRunner | nul
   ];
   for (const candidate of candidates) {
     // Coverage detection requires executing the tool's version check, which
-    // is only safe inside a sandbox. Without one, skip detection entirely —
+    // is only safe inside a sandbox. Without one, skip detection entirely -
     // probing the host or guessing from file names would be unreliable.
     if (!sandbox) return null;
     try {

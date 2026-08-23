@@ -649,7 +649,7 @@ function readFile(root: string, rel: string, startLine?: number, endLine?: numbe
 
 /**
  * Read the first N lines of one or more files to show imports, exports, and
- * type definitions — enough to understand module structure without loading
+ * type definitions - enough to understand module structure without loading
  * the full file.
  */
 function readHeaders(root: string, pathsStr: string, lines: number): string {
@@ -1001,7 +1001,7 @@ async function searchFiles(root: string, pattern: string, rel?: string, semantic
   if (collected.length === 0 && missing.length > 0) {
     // Every requested scope was missing (e.g. the model used the repo name or
     // an absolute path that doesn't exist in the checkout). Searching the whole
-    // workspace with a note beats failing the call — the model can still
+    // workspace with a note beats failing the call - the model can still
     // correct course, and the pattern itself is usually what matters.
     const fallback = findExistingTarget(root, ".");
     if (!fallback) throw new Error(`No such file or directory: ${missing.join(", ")}`);

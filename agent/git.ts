@@ -341,7 +341,7 @@ export async function restoreCheckpoint(dir: string, checkpoint: WorkingTreeChec
   const trackedFiles = checkpoint.trackedFiles ?? [];
   const trackedDeletedFiles = checkpoint.trackedDeletedFiles ?? [];
 
-  // Restore index state — prefer patch-free index-info when available.
+  // Restore index state - prefer patch-free index-info when available.
   const indexData = checkpoint.indexModifications
     ? { modifications: checkpoint.indexModifications, deletions: checkpoint.indexDeletions ?? [] }
     : JSON.parse(fs.readFileSync(path.join(checkpoint.directory, "index.json"), "utf8") ?? "null") as { modifications: IndexEntry[]; deletions: string[] } | null;
