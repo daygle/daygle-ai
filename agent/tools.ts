@@ -245,9 +245,38 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     type: "function",
     function: {
+      name: "move_path",
+      description: "Rename or move a file or directory to another location within the repository. Requires user approval.",
+      parameters: {
+        type: "object",
+        properties: {
+          from: { type: "string", description: "Existing file or directory path relative to the repo root." },
+          to: { type: "string", description: "New path relative to the repo root (must not already exist)." },
+        },
+        required: ["from", "to"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "delete_path",
+      description: "Permanently delete a file or directory within the repository. Requires explicit user approval.",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string", description: "File or directory path relative to the repo root." },
+        },
+        required: ["path"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "run_command",
       description:
-        "Run a shell command in the repo (tests, typecheck, builds, git status, etc.). Commands require a sandbox by default; trusted users may explicitly opt into host execution. Read-only inspection commands run automatically; commands that mutate files, execute code, or use the network require user approval, and destructive or credential-accessing commands are blocked.",
+        "Run a shell command in the repo (tests, typecheck, builds, git status, etc.). Commands require a sandbox by default; trusted users may explicitly opt into host execution. Read-only inspection commands run automatically; commands that mutate files, execute code, or use the network require user approval, and destructive or credential-accessing commands are blocked. Note: the sandbox has no network access unless the operator sets DAYGLE_SANDBOX_NETWORK=1, so package installs and downloads fail until then.",
       parameters: {
         type: "object",
         properties: {
@@ -275,9 +304,9 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   },
 ];
 
-/** Read-only tool surface for the agentic reviewer - every tool except the mutating editors. */
+/** Read-only tool surface for the agentic reviewer - everything except the mutating editors. */
 export const REVIEW_TOOL_DEFINITIONS: ToolDefinition[] = TOOL_DEFINITIONS.filter(
-  (tool) => tool.function.name !== "write_file" && tool.function.name !== "str_replace",
+  (tool) => !["write_file", "str_replace", "move_path", "delete_path"].includes(tool.function.name),
 );
 
 // Only these package scripts are eligible for unattended reviewer execution.
@@ -425,7 +454,13 @@ function normalizeToolPath(value: string): string {
   // This lets a model reuse paths returned by a Windows checkout on a POSIX
   // backend (and vice versa) instead of turning `src\\lib` into one filename.
   normalized = normalized.replaceAll("\\", "/");
-  if (normalized === "/" || /^[a-z]:\/$/i.test(normalized)) return normalized;
+  // Models routinely emit filesystem-absolute paths ("/", "/src/lib.ts",
+  // "C:/repo/x") when they mean the checkout root or a repo-relative path.
+  // Treat any leading drive/root as workspace-relative: safeResolve still
+  // guards real traversal ("../" beyond the repo) and symlinks, so this only
+  // rescues valid intents instead of weakening containment.
+  normalized = normalized.replace(/^([a-z]:)?\/+/i, "");
+  if (!normalized || normalized === ".") return ".";
   return normalized.length > 1 ? normalized.replace(/\/+$/, "") : normalized;
 }
 
@@ -721,7 +756,23 @@ interface SymbolEntry {
   line: number;
 }
 
-const SYMBOL_CACHE = new Map<string, SymbolEntry[]>();
+// Cached per repo alongside a size+mtime signature of the indexed file set,
+// mirroring the embedding cache, so edits during a long session invalidate
+// stale entries instead of serving them forever.
+const SYMBOL_CACHE = new Map<string, { signature: string; symbols: SymbolEntry[] }>();
+
+/** Cheap staleness fingerprint of the file set (relative path, size, mtime). */
+function fileSetSignature(root: string, files: string[]): string {
+  return files.map((file) => {
+    const rel = path.relative(root, file).replaceAll("\\", "/");
+    try {
+      const stat = fs.statSync(file);
+      return `${rel}:${stat.size}:${stat.mtimeMs}`;
+    } catch {
+      return `${rel}:missing`;
+    }
+  }).join("|");
+}
 
 /** Extract symbols from a file's content. */
 function extractSymbols(filePath: string, content: string): SymbolEntry[] {
@@ -760,16 +811,19 @@ function extractSymbols(filePath: string, content: string): SymbolEntry[] {
 /** Build or update the symbol index for a repository. */
 function buildSymbolIndex(root: string, files: string[]): SymbolEntry[] {
   const cacheKey = root.replace(/[^a-z0-9]/gi, "_").slice(0, 80);
-  const cached = SYMBOL_CACHE.get(cacheKey);
-  if (cached) return cached;
-
-  // Try loading from disk first.
   const indexPath = path.join(EMBEDDING_CACHE_DIR, `${cacheKey}-symbols.json`);
+  const signature = fileSetSignature(root, files);
+
+  const cached = SYMBOL_CACHE.get(cacheKey);
+  if (cached?.signature === signature) return cached.symbols;
+
+  // Try loading from disk first. Legacy entries persisted without a signature
+  // are treated as a miss so they are rebuilt with invalidation support.
   try {
-    const data = JSON.parse(fs.readFileSync(indexPath, "utf8")) as SymbolEntry[];
-    if (Array.isArray(data) && data.length > 0) {
-      SYMBOL_CACHE.set(cacheKey, data);
-      return data;
+    const data = JSON.parse(fs.readFileSync(indexPath, "utf8")) as { signature?: string; symbols?: SymbolEntry[] };
+    if (data.signature === signature && Array.isArray(data.symbols)) {
+      SYMBOL_CACHE.set(cacheKey, { signature, symbols: data.symbols });
+      return data.symbols;
     }
   } catch { /* cache miss */ }
 
@@ -784,11 +838,11 @@ function buildSymbolIndex(root: string, files: string[]): SymbolEntry[] {
     } catch { /* skip */ }
   }
 
-  SYMBOL_CACHE.set(cacheKey, allSymbols);
+  SYMBOL_CACHE.set(cacheKey, { signature, symbols: allSymbols });
   // Persist to disk.
   try {
     fs.mkdirSync(EMBEDDING_CACHE_DIR, { recursive: true, mode: 0o700 });
-    fs.writeFileSync(indexPath, JSON.stringify(allSymbols), { encoding: "utf8", mode: 0o600 });
+    fs.writeFileSync(indexPath, JSON.stringify({ signature, symbols: allSymbols }), { encoding: "utf8", mode: 0o600 });
   } catch { /* best effort */ }
   return allSymbols;
 }
@@ -940,7 +994,14 @@ async function searchFiles(root: string, pattern: string, rel?: string, semantic
   }
 
   if (collected.length === 0 && missing.length > 0) {
-    throw new Error(`No such file or directory: ${missing.join(", ")}`);
+    // Every requested scope was missing (e.g. the model used the repo name or
+    // an absolute path that doesn't exist in the checkout). Searching the whole
+    // workspace with a note beats failing the call — the model can still
+    // correct course, and the pattern itself is usually what matters.
+    const fallback = findExistingTarget(root, ".");
+    if (!fallback) throw new Error(`No such file or directory: ${missing.join(", ")}`);
+    collectFiles(fallback.abs, collected, { count: 0 });
+    resolvedNotes.push(`(path not found: ${missing.join(", ")}; searched entire workspace)`);
   }
   const files: string[] = [...new Set(collected)];
 
@@ -1090,6 +1151,50 @@ async function strReplace(root: string, rel: string, oldStr: string, newStr: str
   return `Replaced ${count} occurrence${count === 1 ? "" : "s"} in ${rel}.`;
 }
 
+async function movePath(root: string, fromRel: string, toRel: string, approve?: CommandApprover): Promise<string> {
+  const fromAbs = safeResolve(root, fromRel);
+  try {
+    fs.statSync(fromAbs);
+  } catch {
+    throw new Error(`No such file or directory: ${fromRel}`);
+  }
+  const toAbs = safeResolve(root, toRel);
+  if (fs.existsSync(toAbs)) {
+    throw new Error(`Destination already exists: ${toRel}`);
+  }
+  if (!approve) {
+    throw new Error(`Moving requires approval, but no approval channel is available: ${fromRel} -> ${toRel}`);
+  }
+  if ((await approve(`move_path ${fromRel} -> ${toRel}`)) !== "approve") {
+    return "Move denied by the user.";
+  }
+  fs.mkdirSync(path.dirname(toAbs), { recursive: true });
+  fs.renameSync(fromAbs, toAbs);
+  return `Moved ${fromRel} to ${toRel}.`;
+}
+
+async function deletePath(root: string, rel: string, approve?: CommandApprover): Promise<string> {
+  const abs = safeResolve(root, rel);
+  if (abs === path.resolve(root)) {
+    throw new Error("Refusing to delete the repository root.");
+  }
+  let stat: fs.Stats;
+  try {
+    stat = fs.statSync(abs);
+  } catch {
+    throw new Error(`No such file or directory: ${rel}`);
+  }
+  if (!approve) {
+    throw new Error(`Deleting requires approval, but no approval channel is available: ${rel}`);
+  }
+  const kind = stat.isDirectory() ? "directory" : "file";
+  if ((await approve(`delete_path ${rel} (${kind})`)) !== "approve") {
+    return "Delete denied by the user.";
+  }
+  fs.rmSync(abs, { recursive: true });
+  return `Deleted ${kind} ${rel}.`;
+}
+
 function executeCommand(root: string, command: string, signal?: AbortSignal): Promise<string> {
   return new Promise((resolve) => {
     const child = spawn(command, {
@@ -1201,9 +1306,25 @@ async function createPr(root: string, title: string, body: string, base: string,
   if (commitResult.includes("nothing to commit")) {
     return "No changes to commit. Nothing was pushed or opened as a PR.";
   }
-  // Push the current branch.
+  // Push the current branch. Deliberately bypasses classifyCommand here:
+  // `git push` is on the hard-block list for model-initiated run_command calls,
+  // but pushing is the entire purpose of an explicitly requested create_pr —
+  // routing it through the classifier would block every PR at this step. The
+  // same trust level already applies to the gh call below.
   const branch = (await executeCommand(root, "git branch --show-current", undefined)).trim() || "main";
-  await runCommand(root, `git push -u origin ${branch}`, approve);
+  // create_pr depends on `gh`, which only works against GitHub. Fail fast with
+  // a clear message here rather than a cryptic gh failure after the push.
+  const remoteOut = await executeCommand(root, "git remote get-url origin", undefined);
+  const remoteUrl = remoteOut.split("\n").find((line) => !/^exit code/.test(line) && line.trim())?.trim() ?? "";
+  // Redact any embedded credentials (https://user:token@host) before echoing.
+  const displayUrl = remoteUrl.replace(/:\/\/[^/@\s]+@/, "://");
+  if (displayUrl && !/github\.com[/:]/i.test(displayUrl)) {
+    return `create_pr supports GitHub repositories only, but origin is ${displayUrl || "(unset)"}. Push manually and open the pull request on your git host.`;
+  }
+  const pushResult = await executeCommand(root, `git push -u origin ${branch}`, undefined);
+  if (/exit code: (timeout|error)/.test(pushResult) && !/https?:\/\//.test(pushResult)) {
+    return `Failed to push branch ${branch}:\n${pushResult}`;
+  }
   // Create the PR using gh CLI - use shellEscape for title to prevent injection.
   const bodyFile = path.join(root, ".daygle-pr-body.md");
   fs.writeFileSync(bodyFile, body, "utf8");
@@ -1250,6 +1371,10 @@ export async function runTool(
         args.replace_all,
         approve,
       );
+    case "move_path":
+      return movePath(root, String(args.from ?? ""), String(args.to ?? ""), approve);
+    case "delete_path":
+      return deletePath(root, String(args.path ?? ""), approve);
     case "run_command":
       return runCommand(root, String(args.command ?? ""), approve, sandbox, signal, readOnlySandbox);
     case "create_pr":

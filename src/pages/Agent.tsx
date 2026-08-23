@@ -786,6 +786,8 @@ function AuditView({ entries }: { entries: AuditEntry[] }) {
 function WorkspacePanel({
   tab,
   onTabChange,
+  sidebarExpanded,
+  onSidebarExpandedChange,
   hasRepo,
   queue,
   onRemoveQueueItem,
@@ -800,6 +802,9 @@ function WorkspacePanel({
   auditEntries: AuditEntry[];
   tab: WorkspaceTab;
   onTabChange: (tab: WorkspaceTab) => void;
+  /** Controlled by the parent so the panel wrapper can shrink when collapsed. */
+  sidebarExpanded: boolean;
+  onSidebarExpandedChange: (expanded: boolean) => void;
   hasRepo: boolean;
   queue: QueuedMessage[];
   onRemoveQueueItem: (index: number) => void;
@@ -810,9 +815,6 @@ function WorkspacePanel({
   onRefresh: () => void;
   refreshing: boolean;
 }) {
-  // Sidebar expansion state: expanded shows text, collapsed shows icons only
-  const [sidebarExpanded, setSidebarExpanded] = useState(true);
-
   // Files / Changes / Preview / Terminal only make sense with a checkout; a
   // repo-less chat gets just Queue.
   const repoOnly = new Set<WorkspaceTab>(["files", "changes", "preview", "terminal"]);
@@ -837,7 +839,7 @@ function WorkspacePanel({
     <aside className={`flex h-full flex-col border-l border-border bg-card overflow-y-auto ${sidebarExpanded ? "w-full min-w-0" : "w-12 min-w-12"}`}>
       {/* Sidebar toggle button */}
       <button
-        onClick={() => setSidebarExpanded(!sidebarExpanded)}
+        onClick={() => onSidebarExpandedChange(!sidebarExpanded)}
         className="flex items-center justify-center border-b border-border py-2 text-muted-foreground hover:bg-muted/50 hover:text-foreground"
         title={sidebarExpanded ? "Collapse sidebar" : "Expand sidebar"}
       >
@@ -861,7 +863,7 @@ function WorkspacePanel({
                   if (sidebarExpanded) {
                     onTabChange(isOpen ? "" as WorkspaceTab : id);
                   } else {
-                    setSidebarExpanded(true);
+                    onSidebarExpandedChange(true);
                     onTabChange(id);
                   }
                 }}
@@ -1098,6 +1100,10 @@ export function AgentPage() {
   // inline side panels as before.
   const [isMobile, setIsMobile] = useState(() => typeof window !== "undefined" && window.matchMedia("(max-width: 767px)").matches);
   const [workspaceOpen, setWorkspaceOpen] = useState(() => !isMobile);
+  // Collapsed workspace sidebar (icons only). Lives here, not in WorkspacePanel,
+  // so the outer wrapper can shrink to the rail instead of leaving dead space
+  // between the collapsed bar and the right edge of the page.
+  const [workspaceSidebarExpanded, setWorkspaceSidebarExpanded] = useState(true);
   const [workspaceWidth, setWorkspaceWidth] = useState(() => loadPanelWidth("daygle.agent.workspaceWidth", 360, 280, 620));
   const [workspaceRefreshing, setWorkspaceRefreshing] = useState(false);
   const [autoSendQueued, setAutoSendQueued] = useState(false);
@@ -2542,12 +2548,14 @@ export function AgentPage() {
 
       {workspaceOpen ? (
         <div
-          style={{ width: isMobile ? "min(90vw, 26rem)" : `${workspaceWidth}px` }}
-          className={`relative z-40 h-full shrink-0 ${isMobile ? "absolute inset-y-0 right-0 shadow-2xl" : ""}`}
+          style={{ width: workspaceSidebarExpanded ? (isMobile ? "min(90vw, 26rem)" : `${workspaceWidth}px`) : "48px" }}
+          className={`relative z-40 h-full shrink-0 transition-[width] duration-200 ${isMobile ? "absolute inset-y-0 right-0 shadow-2xl" : ""}`}
         >
           <WorkspacePanel
           tab={workspaceTab}
           onTabChange={setWorkspaceTab}
+          sidebarExpanded={workspaceSidebarExpanded}
+          onSidebarExpandedChange={setWorkspaceSidebarExpanded}
           hasRepo={Boolean(sessionRepo)}
           queue={queuedMessages}
           onRemoveQueueItem={(index) => setQueuedMessages((prev) => prev.filter((_, itemIndex) => itemIndex !== index))}
