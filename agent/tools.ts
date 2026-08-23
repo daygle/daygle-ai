@@ -158,7 +158,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       parameters: {
         type: "object",
         properties: {
-          path: { type: "string", description: "Directory to list. Defaults to the repository root." },
+          path: { type: "string", description: "Directory, file, or glob to list. Defaults to the repository root; patterns like api/src/**/*.ts are supported." },
         },
       },
     },
@@ -203,7 +203,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         type: "object",
         properties: {
           pattern: { type: "string", description: "Regular expression to search for." },
-          path: { type: "string", description: "Optional file or directory to search (defaults to the whole repo). Space-separated paths are accepted." },
+          path: { type: "string", description: "Optional file, directory, or glob to search (defaults to the whole repo). Space-separated paths are accepted; patterns like api/src/**/*.ts are supported." },
           semantic: { type: "boolean", description: "Use local Ollama embeddings for intent-based retrieval when available, with a bounded lexical fallback." },
         },
         required: ["pattern"],
@@ -233,7 +233,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       parameters: {
         type: "object",
         properties: {
-          path: { type: "string", description: "File path relative to the repo root." },
+          path: { type: "string", description: "File, directory, or glob relative to the repo root. Directories and patterns like api/src/**/*.ts apply to matching files." },
           old_string: { type: "string", description: "The exact text to replace." },
           new_string: { type: "string", description: "The replacement text." },
           replace_all: { type: "boolean", description: "Replace every occurrence instead of requiring a single unique match." },
@@ -469,6 +469,67 @@ function normalizeToolPath(value: string): string {
   return normalized.length > 1 ? normalized.replace(/\/+$/, "") : normalized;
 }
 
+function hasGlob(value: string): boolean {
+  return /[*?\[\]]/.test(value);
+}
+
+function globToRegExp(pattern: string): RegExp {
+  let source = "^";
+  for (let index = 0; index < pattern.length; index++) {
+    const character = pattern[index];
+    if (character === "*") {
+      if (pattern[index + 1] === "*") {
+        if (pattern[index + 2] === "/") {
+          source += "(?:.*/)?";
+          index += 2;
+        } else {
+          source += ".*";
+          index += 1;
+        }
+      } else {
+        source += "[^/]*";
+      }
+    } else if (character === "?") {
+      source += "[^/]";
+    } else if (character === "[") {
+      const end = pattern.indexOf("]", index + 1);
+      if (end > index + 1) {
+        const contents = pattern.slice(index + 1, end).replace(/[\\^$]/g, "\\$&");
+        source += `[${contents}]`;
+        index = end;
+      } else {
+        source += "\\[";
+      }
+    } else {
+      source += character.replace(/[.+^${}()|\\]/g, "\\$&");
+    }
+  }
+  return new RegExp(`${source}$`);
+}
+
+function expandGlob(root: string, pattern: string): Array<{ abs: string; path: string }> {
+  const normalized = normalizeToolPath(pattern);
+  if (!hasGlob(normalized)) return [];
+  const matcher = globToRegExp(normalized);
+  const matches: Array<{ abs: string; path: string }> = [];
+  const walk = (dirAbs: string, relDir: string, depth: number) => {
+    if (matches.length >= MAX_LIST || depth > 20) return;
+    let entries: fs.Dirent[];
+    try { entries = fs.readdirSync(dirAbs, { withFileTypes: true }); } catch { return; }
+    for (const entry of entries) {
+      if (matches.length >= MAX_LIST) break;
+      if ([".git", "node_modules", "dist", ".ollama"].includes(entry.name)) continue;
+      const childPath = relDir ? `${relDir}/${entry.name}` : entry.name;
+      const childAbs = path.join(dirAbs, entry.name);
+      try { safeResolve(root, childPath); } catch { continue; }
+      if (matcher.test(childPath)) matches.push({ abs: childAbs, path: childPath });
+      if (entry.isDirectory()) walk(childAbs, childPath, depth + 1);
+    }
+  };
+  walk(root, "", 0);
+  return matches.sort((left, right) => left.path.localeCompare(right.path));
+}
+
 function splitPaths(root: string, rel: string): string[] {
   const trimmed = rel.trim();
   if (!trimmed) return ["."];
@@ -593,7 +654,16 @@ function listFiles(root: string, rel: string): string {
   // list_files call; handle each independently so the call still succeeds.
   // A literal path (which may contain spaces) wins over the shorthand split.
   const paths = splitPaths(root, rel);
-  for (const p of paths) listOne(p);
+  for (const p of paths) {
+    const globMatches = expandGlob(root, p);
+    if (globMatches.length > 0) {
+      for (const match of globMatches) listOne(match.path);
+    } else if (hasGlob(p)) {
+      missing.push(p);
+    } else {
+      listOne(p);
+    }
+  }
 
   if (out.length === 0 && missing.length > 0) {
     throw new Error(`No such file or directory: ${missing.join(", ")}`);
@@ -985,12 +1055,24 @@ async function searchFiles(root: string, pattern: string, rel?: string, semantic
   const resolvedNotes: string[] = [];
   const collected: string[] = [];
   for (const requested of targets) {
+    const globMatches = expandGlob(root, requested);
+    if (globMatches.length > 0) {
+      for (const match of globMatches) {
+        if (fs.statSync(match.abs).isFile()) collected.push(match.abs);
+        else collectFiles(match.abs, collected, { count: 0 });
+      }
+      continue;
+    }
+    if (hasGlob(requested)) {
+      missing.push(requested);
+      continue;
+    }
     const target = findExistingTarget(root, requested);
     if (!target) {
       missing.push(normalizeToolPath(requested));
       continue;
     }
-    if (target.resolvedFrom) resolvedNotes.push(`(resolved ${target.resolvedFrom} to ${target.path})`);
+    if (target.resolvedFrom) resolvedNotes.push(`(resolved ${requested} to ${target.path})`);
     if (fs.statSync(target.abs).isFile()) {
       collected.push(target.abs);
       continue;
@@ -1118,42 +1200,44 @@ async function strReplace(root: string, rel: string, oldStr: string, newStr: str
   if (!oldStr) {
     throw new Error("str_replace: old_string must not be empty.");
   }
-  const abs = safeResolve(root, rel);
-  let stat: fs.Stats;
-  try {
-    stat = fs.statSync(abs);
-  } catch {
-    throw new Error(`No such file or directory: ${rel}`);
-  }
-  if (stat.isDirectory()) throw new Error(`Path is a directory: ${rel}`);
-  if (stat.size > MAX_READ_BYTES) {
-    throw new Error(`File too large (${stat.size} bytes). Use run_command instead.`);
-  }
-  const raw = fs.readFileSync(abs, "utf8");
-  if (raw.includes("\u0000")) {
-    throw new Error(`File appears to be binary: ${rel}.`);
-  }
-  const occurrences = raw.split(oldStr).length - 1;
-  if (occurrences === 0) {
-    throw new Error(`str_replace: old_string was not found in ${rel}. Match it exactly (including whitespace), or read the file first to copy the exact text.`);
-  }
-  const all = replaceAll === true || replaceAll === "true" || replaceAll === 1 || replaceAll === "1";
-  if (occurrences > 1 && !all) {
-    throw new Error(`str_replace: old_string appears ${occurrences} times in ${rel}. Include more surrounding context to make it unique, or set replace_all to true.`);
-  }
-  const replaced = all ? raw.split(oldStr).join(newStr) : raw.replace(oldStr, newStr);
-  if (Buffer.byteLength(replaced, "utf8") > MAX_READ_BYTES) {
-    throw new Error(`Replacement would create a file larger than ${MAX_READ_BYTES} bytes.`);
-  }
-  if (all && occurrences > 10) {
-    if (!approve) throw new Error(`Refusing to replace ${occurrences} occurrences in ${rel} without explicit approval.`);
-    if (await approve(`str_replace ${rel}: replace ${occurrences} occurrences`) !== "approve") {
-      return `Edit denied: ${rel} was not changed.`;
+  const globMatches = expandGlob(root, rel);
+  let targets = globMatches;
+  if (targets.length === 0 && !hasGlob(rel)) {
+    const target = findExistingTarget(root, rel);
+    if (target) {
+      targets = fs.statSync(target.abs).isDirectory()
+        ? expandGlob(root, `${target.path}/**/*`)
+        : [{ abs: target.abs, path: target.path }];
     }
   }
-  fs.writeFileSync(abs, replaced, "utf8");
-  const count = all ? occurrences : 1;
-  return `Replaced ${count} occurrence${count === 1 ? "" : "s"} in ${rel}.`;
+  if (targets.length === 0) throw new Error(`No files matched path pattern: ${rel}`);
+
+  const edits: Array<{ abs: string; path: string; replaced: string; occurrences: number }> = [];
+  for (const target of targets) {
+    let stat: fs.Stats;
+    try { stat = fs.statSync(target.abs); } catch { continue; }
+    if (stat.isDirectory()) continue;
+    if (stat.size > MAX_READ_BYTES) throw new Error(`File too large (${target.path}). Use run_command instead.`);
+    const raw = fs.readFileSync(target.abs, "utf8");
+    if (raw.includes("\u0000")) throw new Error(`File appears to be binary: ${target.path}.`);
+    const occurrences = raw.split(oldStr).length - 1;
+    if (occurrences === 0) continue;
+    const all = replaceAll === true || replaceAll === "true" || replaceAll === 1 || replaceAll === "1";
+    if (occurrences > 1 && !all) {
+      throw new Error(`str_replace: old_string appears ${occurrences} times in ${target.path}. Include more surrounding context to make it unique, or set replace_all to true.`);
+    }
+    const replaced = all ? raw.split(oldStr).join(newStr) : raw.replace(oldStr, newStr);
+    if (Buffer.byteLength(replaced, "utf8") > MAX_READ_BYTES) throw new Error(`Replacement would create a file larger than ${MAX_READ_BYTES} bytes in ${target.path}.`);
+    edits.push({ abs: target.abs, path: target.path, replaced, occurrences });
+  }
+  if (edits.length === 0) throw new Error(`old_string was not found in matched files for ${rel}.`);
+  const totalOccurrences = edits.reduce((sum, edit) => sum + edit.occurrences, 0);
+  if (edits.length > 1 || totalOccurrences > 10) {
+    if (!approve) throw new Error(`Refusing to replace ${totalOccurrences} occurrences across ${edits.length} files without explicit approval.`);
+    if (await approve(`str_replace ${rel}: replace ${totalOccurrences} occurrences across ${edits.length} files`) !== "approve") return `Edit denied: ${rel} was not changed.`;
+  }
+  for (const edit of edits) fs.writeFileSync(edit.abs, edit.replaced, "utf8");
+  return `Replaced ${totalOccurrences} occurrence${totalOccurrences === 1 ? "" : "s"} across ${edits.length} file${edits.length === 1 ? "" : "s"}.`;
 }
 
 async function movePath(root: string, fromRel: string, toRel: string, approve?: CommandApprover): Promise<string> {

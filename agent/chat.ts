@@ -306,7 +306,8 @@ Available tools:
 - read_headers(paths, lines?) - read the first N lines (default 40) of one or more files to see imports, exports, and type definitions. Use this BEFORE editing to understand module boundaries and dependencies.
 - search(pattern, path?, semantic?) - regex-search files; use semantic=true for local embedding retrieval with a lexical fallback when exact names are unknown. Use exact repository paths from list_files; do not assume a root-level src directory.
 - write_file(path, content) - create or overwrite a file with its COMPLETE contents
-- str_replace(path, old_string, new_string, replace_all?) - replace exact text in place
+- str_replace(path, old_string, new_string, replace_all?) - replace exact text in place; path may be a file, directory, or glob such as api/src/**/*.ts
+
 - run_command(command) - run a shell command (tests, typecheck, etc.) through the command sandbox; without one, execution is denied unless trusted host fallback is explicitly enabled.
 - create_pr(title, body, base?) - commit the current changes, push the branch, and open a GitHub pull request. This is interactive-chat only, requires explicit approval, a configured sandbox, and DAYGLE_SANDBOX_NETWORK=1.
   IMPORTANT: For commands that need to run in a subdirectory, use "cd <dir> && <command>" as a single command string.

@@ -10,6 +10,9 @@ describe("space-separated tool paths", () => {
   mkdirSync(join(root, "a"), { recursive: true });
   mkdirSync(join(root, "b"), { recursive: true });
   mkdirSync(join(root, "modules", "src"), { recursive: true });
+  mkdirSync(join(root, "api", "src", "nested"), { recursive: true });
+  writeFileSync(join(root, "api", "src", "one.ts"), "alpha needle\n");
+  writeFileSync(join(root, "api", "src", "nested", "two.ts"), "beta needle\n");
   writeFileSync(join(root, "a", "one.txt"), "alpha needle\n");
   writeFileSync(join(root, "b", "two.txt"), "beta needle\n");
   writeFileSync(join(root, "modules", "src", "nested.txt"), "nested needle\n");
@@ -74,6 +77,16 @@ describe("space-separated tool paths", () => {
   test("search skips missing paths when at least one target exists", async () => {
     const result = await runTool(root, "search", { pattern: "needle", path: "a ghost.txt" });
     expect(result).toContain("one.txt");
+  });
+
+  test("search and list_files expand recursive directory globs", async () => {
+    const searchResult = await runTool(root, "search", { pattern: "needle", path: "api/src/**/*.ts" });
+    expect(searchResult).toContain("api/src/one.ts");
+    expect(searchResult).toContain("api/src/nested/two.ts");
+
+    const listing = await runTool(root, "list_files", { path: "api/src/**/*.ts" });
+    expect(listing).toContain("api/src/one.ts");
+    expect(listing).toContain("api/src/nested/two.ts");
   });
 });
 
@@ -157,6 +170,10 @@ describe("tool hardening", () => {
 describe("str_replace", () => {
   const root = mkdtempSync(join(tmpdir(), "daygle-tools-strreplace-"));
   const file = join(root, "code.txt");
+  const apiSrc = join(root, "api", "src");
+  mkdirSync(apiSrc, { recursive: true });
+  writeFileSync(join(apiSrc, "one.ts"), "needle one\n");
+  writeFileSync(join(apiSrc, "two.ts"), "needle two\n");
   const reset = () => writeFileSync(file, "line one - dash\nline two - dash\nline three\n");
 
   test("replaces a unique match in place, preserving the rest of the file", async () => {
@@ -187,6 +204,17 @@ describe("str_replace", () => {
     await expect(
       runTool(root, "str_replace", { path: "code.txt", old_string: "-", new_string: "-" }),
     ).rejects.toThrow(/appears 2 times/);
+  });
+
+  test("replaces matching files under a directory with approval", async () => {
+    const result = await runTool(root, "str_replace", {
+      path: "api/src",
+      old_string: "needle",
+      new_string: "found",
+    }, async () => "approve");
+    expect(result).toContain("across 2 files");
+    expect(readFileSync(join(apiSrc, "one.ts"), "utf8")).toBe("found one\n");
+    expect(readFileSync(join(apiSrc, "two.ts"), "utf8")).toBe("found two\n");
   });
 
   test("errors clearly when old_string is not found", async () => {

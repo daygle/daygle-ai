@@ -175,12 +175,12 @@ CRITICAL: Never write tool calls or shell commands as text. Do NOT type things l
 Work in small, verifiable steps. Read and understand before editing.
 
 Available tools:
-- list_files(path) - list files/directories under a path (recursive, capped); use the exact nested path returned (for example api/src, not src)
+- list_files(path) - list files/directories under a path (recursive, capped); directories, files, and globs such as api/src/**/*.ts are supported
 - read_file(path, start_line?, end_line?) - read a file with numbered lines (up to 1500)
 - read_headers(paths, lines?) - read the first N lines (default 40) of one or more files to see imports, exports, and type definitions. Use this BEFORE editing to understand module boundaries and dependencies.
-- search(pattern, path?, semantic?) - search files by regex or use semantic=true for local embedding retrieval with a lexical fallback; space-separated paths are accepted. Use exact repository paths from list_files; do not assume a root-level src directory.
+- search(pattern, path?, semantic?) - search files by regex or use semantic=true for local embedding retrieval with a lexical fallback; directories, recursive globs such as api/src/**/*.ts, and space-separated paths are accepted. Use exact repository paths from list_files; do not assume a root-level src directory.
 - write_file(path, content) - create or overwrite a file with its COMPLETE contents
-- str_replace(path, old_string, new_string, replace_all?) - replace exact text in place
+- str_replace(path, old_string, new_string, replace_all?) - replace exact text in place; path may be a file, directory, or glob such as api/src/**/*.ts
 - run_command(command) - run a shell command in the repo (tests, typecheck, git status, etc.) through the command sandbox. If no sandbox is available, it is denied unless the trusted host fallback is explicitly enabled.
   For commands in a subdirectory, use: "cd <dir> && <command>"
 
@@ -482,10 +482,10 @@ const DEFAULT_MAX_REVIEW_STEPS = 12;
 const AGENTIC_REVIEW_SYSTEM_PROMPT = `You are a senior software engineer performing a pre-merge code review inside the repository checkout that already contains the change.
 
 You have READ-ONLY tools to investigate before you decide:
-- list_files(path) - list files/directories
+- list_files(path) - list files/directories, including recursive glob targets such as api/src/**/*.ts
 - read_file(path, start_line?, end_line?) - read a file with numbered lines
 - read_headers(paths, lines?) - inspect imports and top-level definitions
-- search(pattern, path?) - regex-search the repo
+- search(pattern, path?) - regex-search the repo; directory and recursive glob paths are supported
 - run_command(command) - run verification commands (tests, typecheck, lint, build) inside a mandatory read-only sandbox. Only approved verification runners are permitted; anything else is denied. You cannot modify files.
 
 How to review:
