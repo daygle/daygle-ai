@@ -65,10 +65,10 @@ describe("space-separated tool paths", () => {
     expect(result).toContain("resolved src to modules/src");
   });
 
-  test("search reports missing paths instead of crashing on ENOENT", async () => {
-    await expect(
-      runTool(root, "search", { pattern: "needle", path: "does-not-exist" }),
-    ).rejects.toThrow(/No such file or directory/);
+  test("search falls back to the whole workspace when every path is missing", async () => {
+    const result = await runTool(root, "search", { pattern: "needle", path: "does-not-exist" });
+    expect(result).toContain("one.txt");
+    expect(result).toContain("path not found: does-not-exist");
   });
 
   test("search skips missing paths when at least one target exists", async () => {

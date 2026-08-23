@@ -124,8 +124,7 @@ class OllamaProvider implements ChatProvider {
     options: ChatCompletionOptions,
   ): Promise<ChatCompletionResult> {
     const { temperature, numCtx, signal, onDelta } = options;
-    let res: Response;
-    res = await fetch(this.url("/api/chat"), {
+    const res = await fetch(this.url("/api/chat"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -350,39 +349,50 @@ class OpenAICompatibleProvider implements ChatProvider {
     // event split across reads isn't dropped mid-stream.
     let buffer = "";
 
-    const handleChunk = (chunk: string) => {
-      // SSE format: lines starting with "data: "
-      // NDJSON format: raw JSON lines
-      const lines = chunk.includes("data: ")
-        ? chunk.split("\n").filter((l) => l.startsWith("data: ")).map((l) => l.slice(6))
-        : chunk.split("\n");
-
-      for (const line of lines) {
-        if (!line.trim() || line.trim() === "[DONE]") continue;
-        try {
-          const obj = JSON.parse(line) as any;
-          const delta = obj.choices?.[0]?.delta;
-          if (!delta) continue;
-          if (delta.content) {
-            content += delta.content;
-            onDelta?.(delta.content);
-          }
-          if (delta.tool_calls) {
-            for (const tc of delta.tool_calls) {
-              const idx = tc.index ?? 0;
-              if (!toolCallMap.has(idx)) {
-                toolCallMap.set(idx, { id: tc.id, function: { name: "", arguments: {} } });
-                toolArgBuffers.set(idx, "");
-              }
-              const existing = toolCallMap.get(idx)!;
-              if (tc.id) existing.id = tc.id;
-              if (tc.function?.name) existing.function.name += tc.function.name;
-              if (tc.function?.arguments) {
-                toolArgBuffers.set(idx, (toolArgBuffers.get(idx) ?? "") + tc.function.arguments);
-              }
+    const handleLine = (line: string) => {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed === "[DONE]") return;
+      // SSE comments (": keep-alive") carry no payload.
+      if (trimmed.startsWith(":")) return;
+      // SSE framing: "data: {...}" — some compatible providers omit the space
+      // after the colon. Otherwise treat the line as a raw NDJSON object.
+      // Deciding per line avoids misdetecting NDJSON payloads that merely
+      // contain "data: " inside their text content.
+      const payload = trimmed.startsWith("data:") ? trimmed.slice(5).trim() : trimmed;
+      if (!payload) return;
+      try {
+        const obj = JSON.parse(payload) as any;
+        // Some OpenAI-compatible providers surface errors mid-stream while
+        // still sending HTTP 200; without this check they end as a silent
+        // empty response.
+        if (obj.error) {
+          const message = typeof obj.error === "string" ? obj.error : obj.error.message ?? JSON.stringify(obj.error);
+          throw new Error(`OpenAI-compatible API stream error: ${message}`);
+        }
+        const delta = obj.choices?.[0]?.delta;
+        if (!delta) return;
+        if (delta.content) {
+          content += delta.content;
+          onDelta?.(delta.content);
+        }
+        if (delta.tool_calls) {
+          for (const tc of delta.tool_calls) {
+            const idx = tc.index ?? 0;
+            if (!toolCallMap.has(idx)) {
+              toolCallMap.set(idx, { id: tc.id, function: { name: "", arguments: {} } });
+              toolArgBuffers.set(idx, "");
+            }
+            const existing = toolCallMap.get(idx)!;
+            if (tc.id) existing.id = tc.id;
+            if (tc.function?.name) existing.function.name += tc.function.name;
+            if (tc.function?.arguments) {
+              toolArgBuffers.set(idx, (toolArgBuffers.get(idx) ?? "") + tc.function.arguments);
             }
           }
-        } catch { /* skip malformed lines */ }
+        }
+      } catch (err) {
+        if (err instanceof Error && err.message.startsWith("OpenAI-compatible API stream error:")) throw err;
+        /* skip malformed lines */
       }
     };
 
@@ -395,9 +405,9 @@ class OpenAICompatibleProvider implements ChatProvider {
       // uses SSE framing we can't know if it's complete, so hold it back; a
       // trailing flush below handles providers that end without a newline.
       buffer = lines.pop() ?? "";
-      for (const line of lines) handleChunk(line);
+      for (const line of lines) handleLine(line);
     }
-    if (buffer.trim()) handleChunk(buffer);
+    if (buffer.trim()) handleLine(buffer);
 
     // Finalize tool call arguments (they arrive as partial JSON strings).
     // Look up each argument buffer by its own tool-call index — array position

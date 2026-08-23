@@ -205,7 +205,10 @@ function bwrapRunner(): SandboxRunner {
         "set -e",
         `ulimit -v ${SANDBOX_MEM_LIMIT_KB}`,
         `ulimit -t ${SANDBOX_CPU_LIMIT_S}`,
-        `ulimit -u ${SANDBOX_NPROC_LIMIT}`,
+        // RLIMIT_NPROC (-u) isn't supported by every /bin/sh (dash on Debian
+        // rejects it with "Illegal option -u"); apply it only where the shell
+        // supports it instead of failing the sandbox before anything runs.
+        `ulimit -u ${SANDBOX_NPROC_LIMIT} 2>/dev/null || true`,
         'exec "$@"',
       ].join("\n"),
       "bwrap-sandbox",
