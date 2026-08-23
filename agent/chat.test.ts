@@ -32,9 +32,9 @@ describe("streamChat loop protection", () => {
       requestCount += 1;
       const response = requestCount === 1
         ? [
-            JSON.stringify({ message: { tool_calls: [{ index: 0, function: { name: "list_files", arguments: '{"path":"' } }] } }) + "\\n",
-            JSON.stringify({ message: { tool_calls: [{ index: 0, function: { arguments: "src" } }] } }) + "\\n",
-            JSON.stringify({ message: { tool_calls: [{ index: 0, function: { arguments: '"}' } }] } }) + "\\n",
+            JSON.stringify({ message: { tool_calls: [{ index: 0, function: { name: "list_files", arguments: '{"path":"' } }] } }) + "\n",
+            JSON.stringify({ message: { tool_calls: [{ index: 0, function: { arguments: "src" } }] } }) + "\n",
+            JSON.stringify({ message: { tool_calls: [{ index: 0, function: { arguments: '"}' } }] } }) + "\n",
           ].join("")
         : JSON.stringify({ message: { content: "Finished." } });
       return new Response(response, { headers: { "content-type": "application/x-ndjson" } });
@@ -42,7 +42,7 @@ describe("streamChat loop protection", () => {
 
     try {
       const root = mkdtempSync(join(tmpdir(), "daygle-chat-ollama-"));
-      writeFileSync(join(root, "src.txt"), "test\\n");
+      writeFileSync(join(root, "src.txt"), "test\n");
       const session: ChatSession = {
         id: "direct-ollama-session",
         repoUrl: "https://github.com/example/repo",

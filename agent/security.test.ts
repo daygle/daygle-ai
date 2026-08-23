@@ -1,6 +1,6 @@
 /// <reference types="bun" />
 import { describe, expect, test } from "bun:test";
-import { getAllowedUiOrigins, isAllowedUiOrigin, isLoopbackUrl, LOOPBACK_HOST } from "./security";
+import { getAllowedUiOrigins, isAllowedUiOrigin, isLoopbackUrl, isSafeExternalUrl, LOOPBACK_HOST } from "./security";
 
 describe("agent security defaults", () => {
   test("uses IPv4 loopback", () => {
@@ -21,6 +21,12 @@ describe("agent security defaults", () => {
     expect(isLoopbackUrl("https://127.0.0.1:11434")).toBe(false);
     expect(isLoopbackUrl("http://192.168.1.20:11434")).toBe(false);
     expect(isLoopbackUrl("http://127.0.0.1:11434@evil.example")).toBe(false);
+  });
+
+  test("accepts public DNS names without treating them as IPv4", () => {
+    // Cloud provider hosts commonly contain dots but are not IPv4 literals.
+    expect(isSafeExternalUrl("https://api.example.com/v1")).toBe(true);
+    expect(isSafeExternalUrl("https://192.168.1.20/v1")).toBe(false);
   });
 
   test("supports explicit comma-separated origins", () => {

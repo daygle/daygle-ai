@@ -13,8 +13,9 @@ export function isSafeExternalUrl(value: string): boolean {
     // Block ALL literal IPv6 hosts (e.g. [::1], [fc00::1], [::ffff:127.0.0.1]).
     // Legitimate cloud providers use domain names, so nothing is lost.
     if (h.startsWith("[")) return false;
-    // Parse IPv4 if present
-    const ipv4 = h.includes(".") ? h : "";
+    // Parse only numeric IPv4 hosts; ordinary dotted DNS names are valid
+    // public provider hosts (for example, api.example.com).
+    const ipv4 = /^\d+(?:\.\d+){3}$/.test(h) ? h : "";
     if (ipv4) {
       const parts = ipv4.split(".");
       // Reject octal/hex encodings (leading zeros): "0177.0.0.1" must not
