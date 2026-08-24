@@ -76,6 +76,33 @@ function progressToolText(name: string, args: Record<string, unknown>): string {
   }
 }
 
+/**
+ * Frames a raw error string as a warm, reassuring chat message with a concrete
+ * next step. Common, recognizable failures get tailored guidance; anything else
+ * keeps the original detail so nothing is lost, just softened.
+ */
+function friendlyChatError(raw: string): string {
+  const message = raw.replace(/^Error:\s*/i, "").trim();
+  const lower = message.toLowerCase();
+  if (/\b429\b|rate limit|too many requests/.test(lower)) {
+    return `Looks like the model is a bit busy right now (rate limited). Give it a few seconds and try again — your message is safe.`;
+  }
+  if (/not found|no such model|unknown model|model .* does not exist/.test(lower)) {
+    return `I couldn't find that model. Double-check it's pulled and selected in the model picker below, then try again.`;
+  }
+  if (/could not reach|econnrefused|failed to fetch|network|unreachable|disconnected/.test(lower)) {
+    return `I lost the connection to the model server for a moment. Make sure it's running, then send your message again — I'll pick right back up.`;
+  }
+  if (/timed out|timeout/.test(lower)) {
+    return `That one took too long and timed out. It may just have been a big request — try again, or break it into smaller steps and I'll help.`;
+  }
+  if (/cancel/.test(lower)) {
+    return `No problem — I've stopped there. Send another message whenever you're ready.`;
+  }
+  // Fallback: keep the technical detail, but lead with a calm, human framing.
+  return `Sorry, something went wrong on my end: ${message}\n\nYou can try again, and if it keeps happening, checking the model server (Settings) usually sorts it out.`;
+}
+
 function progressStatusText(message: string): string {
   if (/^Thinking/i.test(message)) return "Planning the next step";
   if (/reviewing changes/i.test(message)) return "Reviewing the proposed changes";
@@ -1453,8 +1480,8 @@ export function AgentPage() {
           id: uid(),
           role: "assistant",
           content: repo
-            ? `Connected to **${repo}**. I've cloned the repo and I'm ready to help. What would you like me to do?`
-            : `Hi - I'm ready to chat. Ask me anything, or connect a repository to have me read and edit code.`,
+            ? `Connected to **${repo}**. I've cloned the repo and I'm ready to help — what would you like to work on?`
+            : `Hi — I'm ready to chat. Ask me anything, or connect a repository and I'll read and edit the code with you.`,
         },
       ]);
     } catch (err) {
@@ -1816,7 +1843,7 @@ export function AgentPage() {
           break;
 
         case "error":
-          setMessages((prev) => [...prev, { id: uid(), role: "assistant", content: `Error: ${event.message}` }]);
+          setMessages((prev) => [...prev, { id: uid(), role: "assistant", content: friendlyChatError(event.message) }]);
           setStreaming(false);
           setStatusText("");
           finishProgressRun();
@@ -2585,6 +2612,26 @@ export function AgentPage() {
               )}
             </div>
           ))}
+
+          {connected && !streaming && !messages.some((message) => message.role === "user") && (
+            <div className="ml-10 space-y-2">
+              <p className="text-xs text-muted-foreground">Not sure where to start? Try one of these:</p>
+              <div className="flex flex-wrap gap-2">
+                {(sessionRepo
+                  ? ["Give me a tour of this codebase", "What does this project do?", "Find likely bugs or risky spots", "How do I run the tests?"]
+                  : ["Explain a programming concept", "Help me write a function", "Review some code I'll paste", "Help me debug an error"]
+                ).map((prompt) => (
+                  <button
+                    key={prompt}
+                    onClick={() => handleSend(prompt)}
+                    className="rounded-full border border-border bg-card px-3 py-1.5 text-xs text-foreground transition-colors hover:border-accent/50 hover:bg-accent/10"
+                  >
+                    {prompt}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
 
           {(() => {
             // Show a "working" indicator while streaming, except when an assistant
