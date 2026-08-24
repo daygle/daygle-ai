@@ -7,12 +7,13 @@ import { classifyCommand, isReviewSafeCommand, runTool } from "./tools";
 
 describe("space-separated tool paths", () => {
   const root = mkdtempSync(join(tmpdir(), "daygle-tools-"));
+  const globRoot = mkdtempSync(join(tmpdir(), "daygle-tools-glob-"));
   mkdirSync(join(root, "a"), { recursive: true });
   mkdirSync(join(root, "b"), { recursive: true });
   mkdirSync(join(root, "modules", "src"), { recursive: true });
-  mkdirSync(join(root, "api", "src", "nested"), { recursive: true });
-  writeFileSync(join(root, "api", "src", "one.ts"), "alpha needle\n");
-  writeFileSync(join(root, "api", "src", "nested", "two.ts"), "beta needle\n");
+  mkdirSync(join(globRoot, "api", "src", "nested"), { recursive: true });
+  writeFileSync(join(globRoot, "api", "src", "one.ts"), "alpha needle\n");
+  writeFileSync(join(globRoot, "api", "src", "nested", "two.ts"), "beta needle\n");
   writeFileSync(join(root, "a", "one.txt"), "alpha needle\n");
   writeFileSync(join(root, "b", "two.txt"), "beta needle\n");
   writeFileSync(join(root, "modules", "src", "nested.txt"), "nested needle\n");
@@ -80,11 +81,11 @@ describe("space-separated tool paths", () => {
   });
 
   test("search and list_files expand recursive directory globs", async () => {
-    const searchResult = await runTool(root, "search", { pattern: "needle", path: "api/src/**/*.ts" });
+    const searchResult = await runTool(globRoot, "search", { pattern: "needle", path: "api/src/**/*.ts" });
     expect(searchResult).toContain("api/src/one.ts");
     expect(searchResult).toContain("api/src/nested/two.ts");
 
-    const listing = await runTool(root, "list_files", { path: "api/src/**/*.ts" });
+    const listing = await runTool(globRoot, "list_files", { path: "api/src/**/*.ts" });
     expect(listing).toContain("api/src/one.ts");
     expect(listing).toContain("api/src/nested/two.ts");
   });

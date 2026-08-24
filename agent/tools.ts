@@ -1203,6 +1203,9 @@ async function strReplace(root: string, rel: string, oldStr: string, newStr: str
   const globMatches = expandGlob(root, rel);
   let targets = globMatches;
   if (targets.length === 0 && !hasGlob(rel)) {
+    // Preserve the precise containment error for paths that escape the repo;
+    // only existing in-repo paths may proceed to nested-path recovery.
+    safeResolve(root, rel);
     const target = findExistingTarget(root, rel);
     if (target) {
       targets = fs.statSync(target.abs).isDirectory()

@@ -60,6 +60,87 @@ function toolStatus(name: string): string {
   }
 }
 
+function progressToolText(name: string, args: Record<string, unknown>): string {
+  const target = typeof args.path === "string" ? args.path : "the repository";
+  switch (name) {
+    case "search": return `Searching ${target}`;
+    case "list_files": return `Inspecting ${target}`;
+    case "read_file": return `Reading ${target}`;
+    case "read_headers": return `Checking ${typeof args.paths === "string" ? args.paths : "file headers"}`;
+    case "write_file": return `Preparing changes to ${target}`;
+    case "str_replace": return `Finding text in ${target}`;
+    case "run_command": return "Running a repository command";
+    case "create_pr": return "Preparing the pull request";
+    default: return toolStatus(name);
+  }
+}
+
+function progressStatusText(message: string): string {
+  if (/^Thinking/i.test(message)) return "Planning the next step";
+  if (/reviewing changes/i.test(message)) return "Reviewing the proposed changes";
+  if (/primary model failed/i.test(message)) return "Trying the fallback model";
+  return message.replace(/…/g, "").trim() || "Working";
+}
+
+interface ProgressEntry {
+  id: number;
+  text: string;
+  state: "active" | "done" | "error";
+  toolName?: string;
+  toolCallId?: string;
+}
+
+function ProgressPanel({
+  entries,
+  expanded,
+  onToggle,
+}: {
+  entries: ProgressEntry[];
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  if (entries.length === 0) return null;
+  let active: ProgressEntry | undefined;
+  for (let index = entries.length - 1; index >= 0; index--) {
+    if (entries[index].state === "active") {
+      active = entries[index];
+      break;
+    }
+  }
+
+  return (
+    <div className="mb-4 overflow-hidden rounded-lg border border-border bg-card/70">
+      <button
+        type="button"
+        onClick={onToggle}
+        className="flex w-full items-center gap-2 px-3 py-2 text-left text-[11px] font-medium text-muted-foreground hover:bg-muted/50 hover:text-foreground"
+        aria-expanded={expanded}
+      >
+        {expanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+        <span className="text-foreground">Progress</span>
+        {!expanded && active && <span className="truncate">{active.text}</span>}
+        <span className="ml-auto tabular-nums">{entries.length}</span>
+      </button>
+      {expanded && (
+        <div className="space-y-1 border-t border-border px-3 py-2">
+          {entries.map((entry) => (
+            <div key={entry.id} className="flex items-center gap-2 text-[11px] text-muted-foreground">
+              {entry.state === "active" ? (
+                <Loader2 className="h-3 w-3 shrink-0 animate-spin text-accent" />
+              ) : entry.state === "error" ? (
+                <CircleAlert className="h-3 w-3 shrink-0 text-destructive" />
+              ) : (
+                <Check className="h-3 w-3 shrink-0 text-accent" />
+              )}
+              <span className={entry.state === "active" ? "text-foreground" : ""}>{entry.text}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 interface ChatBubble {
   id: number | string;
   role: "user" | "assistant" | "tool" | "approval" | "clarification" | "qa" | "review";
@@ -1096,6 +1177,8 @@ export function AgentPage() {
   const [loading, setLoading] = useState(false);
   const [streaming, setStreaming] = useState(false);
   const [statusText, setStatusText] = useState("");
+  const [progressEntries, setProgressEntries] = useState<ProgressEntry[]>([]);
+  const [progressExpanded, setProgressExpanded] = useState(true);
   const [connected, setConnected] = useState(false);
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [history, setHistory] = useState<ChatSummary[]>([]);
@@ -1136,6 +1219,32 @@ export function AgentPage() {
   const workspaceRequestRef = useRef(0);
   const streamGenerationRef = useRef(0);
   const modelRequestRef = useRef(0);
+
+  const addProgress = useCallback((text: string, state: ProgressEntry["state"] = "active", toolName?: string, toolCallId?: string) => {
+    setProgressEntries((previous) => {
+      const last = previous[previous.length - 1];
+      if (last?.text === text && last.state === state && last.toolCallId === toolCallId) return previous;
+      return [...previous.slice(-7), { id: uid(), text, state, toolName, toolCallId }];
+    });
+  }, []);
+
+  const finishProgress = useCallback((toolName: string, toolCallId: string | undefined, failed: boolean) => {
+    setProgressEntries((previous) => {
+      for (let index = previous.length - 1; index >= 0; index--) {
+        const entry = previous[index];
+        if (entry.state === "active" && (toolCallId ? entry.toolCallId === toolCallId : entry.toolName === toolName)) {
+          const updated = [...previous];
+          updated[index] = { ...entry, state: failed ? "error" : "done" };
+          return updated;
+        }
+      }
+      return previous;
+    });
+  }, []);
+
+  const finishProgressRun = useCallback(() => {
+    setProgressEntries((previous) => previous.map((entry) => entry.state === "active" ? { ...entry, state: "done" } : entry));
+  }, []);
 
   // Track viewport width so the side panels can switch between inline (desktop)
   // and overlay-drawer (mobile) layouts. Collapse drawers when crossing into
@@ -1585,6 +1694,9 @@ export function AgentPage() {
     }]);
     setStreaming(true);
     setStatusText("Thinking…");
+    setProgressEntries([]);
+    setProgressExpanded(true);
+    addProgress("Preparing the response");
     const streamGeneration = ++streamGenerationRef.current;
     let assistantId = uid();
     let assistantContent = "";
@@ -1593,6 +1705,7 @@ export function AgentPage() {
       switch (event.type) {
         case "status":
           setStatusText(event.message);
+          addProgress(progressStatusText(event.message));
           break;
 
         case "model_delta": {
@@ -1630,6 +1743,8 @@ export function AgentPage() {
           });
           setStreaming(false);
           setStatusText("");
+          finishProgressRun();
+          addProgress("Response ready", "done");
           break;
         }
 
@@ -1644,6 +1759,7 @@ export function AgentPage() {
             return [...finalized, { id: toolId, role: "tool", content: "", toolName: event.name, toolCallId: event.toolCallId, toolArgs: event.args }];
           });
           setStatusText(toolStatus(event.name));
+          addProgress(progressToolText(event.name, event.args), "active", event.name, event.toolCallId);
           // Subsequent model text belongs to a fresh turn (a new bubble after the tool).
           assistantId = uid();
           assistantContent = "";
@@ -1662,6 +1778,7 @@ export function AgentPage() {
             }
             return prev;
           });
+          finishProgress(event.name, event.toolCallId, /^Error:/i.test(event.result));
           setStatusText("Thinking…");
           break;
 
@@ -1678,6 +1795,7 @@ export function AgentPage() {
             }
             return prev;
           });
+          addProgress("Reviewing the proposed changes");
           setStatusText("Reviewing changes…");
           break;
 
@@ -1686,6 +1804,7 @@ export function AgentPage() {
             ...prev,
             { id: `approval-${event.requestId}`, role: "approval", content: "", requestId: event.requestId, command: event.command },
           ]);
+          addProgress("Waiting for your approval");
           break;
 
         case "approval_resolved":
@@ -1696,6 +1815,7 @@ export function AgentPage() {
                 : m,
             ),
           );
+          addProgress(event.decision === "approve" ? "Approval received" : "Approval denied", event.decision === "approve" ? "done" : "error");
           break;
 
         case "clarification_requested":
@@ -1712,18 +1832,22 @@ export function AgentPage() {
           ]);
           setStreaming(false);
           setStatusText("");
+          finishProgressRun();
+          addProgress("Waiting for your answer", "active");
           break;
 
         case "error":
           setMessages((prev) => [...prev, { id: uid(), role: "assistant", content: `Error: ${event.message}` }]);
           setStreaming(false);
           setStatusText("");
+          finishProgressRun();
+          addProgress("The response stopped with an error", "error");
           break;
       }
     }, userImage ?? undefined);
 
     abortRef.current = cancel;
-  }, [imageAttachment, imageAttachmentName, input, sessionId, streaming, agentUrl]);
+  }, [addProgress, finishProgress, finishProgressRun, imageAttachment, imageAttachmentName, input, sessionId, streaming, agentUrl]);
 
   // Once the active response finishes, move the next queued message into the
   // composer and submit it through the same normal send path.
@@ -1753,6 +1877,8 @@ export function AgentPage() {
     stopBusyPoll();
     setStreaming(false);
     setStatusText("");
+    finishProgressRun();
+    addProgress("Response stopped", "done");
     abortRef.current = undefined;
     // Clear the blinking cursor on whatever bubble was mid-stream.
     setMessages((prev) => prev.map((m) => (m.streaming ? { ...m, streaming: false } : m)));
@@ -1770,6 +1896,9 @@ export function AgentPage() {
     if (!sessionId || !sessionRepo || verifying) return;
     setVerifying(true);
     setStatusText("Verifying…");
+    setProgressEntries([]);
+    setProgressExpanded(true);
+    addProgress("Preparing verification");
     setMessages((prev) => [
       ...prev,
       { id: uid(), role: "assistant", content: "Running verification - QA checks and an AI review of the current changes…" },
@@ -1780,6 +1909,8 @@ export function AgentPage() {
       finished = true;
       setVerifying(false);
       setStatusText("");
+      finishProgressRun();
+      addProgress("Verification complete", "done");
       verifyAbortRef.current = undefined;
       void refreshWorkspace();
     };
@@ -1787,12 +1918,14 @@ export function AgentPage() {
       switch (event.type) {
         case "status":
           setStatusText(event.message);
+          addProgress(progressStatusText(event.message));
           break;
         case "tool_start":
           setMessages((prev) => [
             ...prev,
             { id: uid(), role: "tool", content: "", toolName: event.name, toolCallId: event.toolCallId, toolArgs: event.args },
           ]);
+          addProgress(progressToolText(event.name, event.args), "active", event.name, event.toolCallId);
           break;
         case "tool_result":
           setMessages((prev) => {
@@ -1805,6 +1938,7 @@ export function AgentPage() {
             }
             return prev;
           });
+          finishProgress(event.name, event.toolCallId, /^Error:/i.test(event.result));
           break;
         case "qa":
           setMessages((prev) => [
@@ -2345,6 +2479,7 @@ export function AgentPage() {
 
         <div ref={scrollRef} onScroll={handleScroll} className="min-h-0 flex-1 overflow-y-auto px-4 py-6">
         <div className="mx-auto max-w-3xl space-y-6">
+          <ProgressPanel entries={progressEntries} expanded={progressExpanded} onToggle={() => setProgressExpanded((expanded) => !expanded)} />
           {messages.map((msg) => (
             <div key={msg.id}>
               {msg.role === "user" && (
