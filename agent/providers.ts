@@ -179,9 +179,15 @@ class OllamaProvider implements ChatProvider {
           onDelta?.(obj.message.content);
         }
         if (obj.message?.tool_calls) {
-          for (const raw of obj.message.tool_calls) {
+          obj.message.tool_calls.forEach((raw, position) => {
             const call = raw as any;
-            const idx = call.index ?? 0;
+            // Ollama sends each message's tool_calls complete and without an
+            // `index`, so several parallel calls in one message would otherwise
+            // all collapse onto key 0 - dropping every call but the first and
+            // concatenating their arguments into invalid JSON. Fall back to the
+            // array position (matching the direct-Ollama path in chat.ts) so
+            // distinct calls stay separate.
+            const idx = typeof call.index === "number" ? call.index : position;
             if (!toolCallMap.has(idx)) {
               toolCallMap.set(idx, { id: call.id, function: { name: call.function?.name ?? "", arguments: {} } });
               toolArgBuffers.set(idx, "");
@@ -193,7 +199,7 @@ class OllamaProvider implements ChatProvider {
               const argStr = typeof call.function.arguments === "string" ? call.function.arguments : JSON.stringify(call.function.arguments);
               toolArgBuffers.set(idx, (toolArgBuffers.get(idx) ?? "") + argStr);
             }
-          }
+          });
         }
       } catch { /* skip malformed lines */ }
     };

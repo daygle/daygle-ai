@@ -951,7 +951,7 @@ async function executeJob(job: Job): Promise<void> {
       let prUrl: string;
       if (appMode && token) {
         emit({ type: "status", message: "Pushing branch…" });
-        await pushBranch(workDir, branch);
+        await pushBranch(workDir, branch, token);
         emit({ type: "status", message: "Opening pull request via GitHub App…" });
         prUrl = await createPullRequest(token, repoOwner, repoName, { base, head: branch, title, body });
       } else {

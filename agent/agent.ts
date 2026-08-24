@@ -1,6 +1,10 @@
 import { AGENT_TOOL_DEFINITIONS, REVIEW_TOOL_DEFINITIONS, runTool, type CommandApprover, type ToolDefinition } from "./tools";
+import { parseTextToolCalls } from "./chat";
 import type { SandboxRunner } from "./sandbox";
 import type { ChatProvider } from "./providers";
+
+/** Tools the autonomous loop can actually run, used to filter text-recovered calls. */
+const AGENT_TOOL_NAMES = new Set(AGENT_TOOL_DEFINITIONS.map((tool) => tool.function.name));
 
 export interface ToolCall {
   id?: string;
@@ -299,19 +303,29 @@ export async function runAgentLoop(opts: {
     );
     throwIfCancelled();
 
+    // Weaker local models sometimes emit tool calls as plain text instead of
+    // using the structured tool_calls channel. When no structured calls came
+    // back, recover them from the text - but only for tools this loop actually
+    // exposes, so a text-emitted create_pr (or any tool outside AGENT_TOOL_
+    // DEFINITIONS) can't bypass the autonomous agent's no-side-effects surface.
+    let effectiveToolCalls = toolCalls;
+    if (effectiveToolCalls.length === 0 && content) {
+      effectiveToolCalls = parseTextToolCalls(content).filter((call) => AGENT_TOOL_NAMES.has(call.function.name));
+    }
+
     if (content) emit({ type: "model", content });
 
-    if (toolCalls.length === 0) {
+    if (effectiveToolCalls.length === 0) {
       return content.trim() || "Task finished.";
     }
 
-    messages.push({ role: "assistant", content, tool_calls: toolCalls });
+    messages.push({ role: "assistant", content, tool_calls: effectiveToolCalls });
 
-    for (const call of toolCalls) {
+    for (const call of effectiveToolCalls) {
       toolCallsUsed += 1;
       const name = call.function.name;
       const args = call.function.arguments ?? {};
-      const signature = `${name}:${JSON.stringify(args, Object.keys(args).sort())}`;
+      const signature = toolCallSignature(name, args);
       if (signature === previousToolSignature) {
         consecutiveIdenticalToolCalls += 1;
       } else {

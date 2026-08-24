@@ -23,6 +23,33 @@ describe("Ollama provider tool calls", () => {
       globalThis.fetch = originalFetch;
     }
   });
+
+  test("keeps parallel tool calls in one message separate", async () => {
+    const originalFetch = globalThis.fetch;
+    // Ollama emits several complete tool_calls in a single message with no
+    // `index`; each must be preserved as its own call with its own arguments.
+    const chunk = JSON.stringify({
+      message: {
+        tool_calls: [
+          { function: { name: "read_file", arguments: { path: "a.ts" } } },
+          { function: { name: "read_file", arguments: { path: "b.ts" } } },
+        ],
+      },
+    }) + "\n";
+    globalThis.fetch = (async () =>
+      new Response(chunk, { headers: { "content-type": "application/x-ndjson" } })) as unknown as typeof fetch;
+
+    try {
+      const provider = createProvider({ kind: "ollama", baseUrl: "http://127.0.0.1:11434" });
+      const result = await provider.chat("test", [], [], { temperature: 0, numCtx: 4096 });
+      expect(result.toolCalls).toEqual([
+        { id: undefined, function: { name: "read_file", arguments: { path: "a.ts" } } },
+        { id: undefined, function: { name: "read_file", arguments: { path: "b.ts" } } },
+      ]);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
 });
 
 describe("OpenAI-compatible provider responses", () => {
