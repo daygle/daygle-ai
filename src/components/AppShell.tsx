@@ -1,5 +1,5 @@
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
-import { Bot, Box, Moon, Settings, Sun } from "lucide-react";
+import { Bot, Box, MessageCircle, Moon, Settings, Sun } from "lucide-react";
 import { Logo } from "./Logo";
 import { ConnectionStatus } from "./ConnectionStatus";
 import { cn } from "../lib/utils";
@@ -7,6 +7,7 @@ import { useTheme } from "../context/ThemeProvider";
 
 const nav = [
   { to: "/agent", label: "Agent", icon: Bot },
+  { to: "/chat", label: "Chat", icon: MessageCircle },
   { to: "/models", label: "Models", icon: Box },
   { to: "/settings", label: "Settings", icon: Settings },
 ];
@@ -14,7 +15,7 @@ const nav = [
 export function AppShell() {
   const navigate = useNavigate();
   const location = useLocation();
-  const isAgentRoute = location.pathname === "/agent";
+  const isFullHeightRoute = location.pathname === "/agent" || location.pathname === "/chat";
   const { theme, toggleTheme } = useTheme();
 
   return (
@@ -59,7 +60,7 @@ export function AppShell() {
       </header>
 
       <main className="min-h-0 flex-1 overflow-hidden">
-        {isAgentRoute ? (
+        {isFullHeightRoute ? (
           <div className="h-full">
             <Outlet />
           </div>

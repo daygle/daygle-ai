@@ -301,24 +301,71 @@ function stripToolJson(text: string): string {
     .trim();
 }
 
-/** Renders a colored +/- unified diff (lines prefixed with " ", "+", "-"). */
+/** Renders a colored +/- unified diff with line number gutters (lines prefixed with " ", "+", "-"). */
 function DiffView({ diff }: { diff: string }) {
+  // Parse hunk headers to show original (left) / new (right) line numbers
+  const gutter = useMemo(() => {
+    const lines = diff.split("\n");
+    let leftLine = 1;
+    let rightLine = 1;
+    let inHunk = false;
+    let contextStart = 0;
+    return lines.map((line) => {
+      const hunkMatch = line.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+      if (hunkMatch) {
+        rightLine = parseInt(hunkMatch[1], 10);
+        inHunk = true;
+        contextStart = 0;
+        return { type: "hunk" as const };
+      }
+      if (!inHunk) return { type: "hunk" as const };
+      const prefix = line[0];
+      if (prefix === " ") {
+        const result = { type: "context" as const, left: leftLine, right: rightLine };
+        leftLine++;
+        rightLine++;
+        return result;
+      }
+      if (prefix === "-") {
+        const result = { type: "removed" as const, left: leftLine, right: null };
+        leftLine++;
+        return result;
+      }
+      if (prefix === "+") {
+        const result = { type: "added" as const, left: null, right: rightLine };
+        rightLine++;
+        return result;
+      }
+      // hunk header lines like @@ or \ No newline at end of file
+      return { type: "other" as const };
+    });
+  }, [diff]);
+
   return (
-    <pre className="max-h-72 overflow-auto border-t border-border px-3 py-2 font-mono text-[11px] leading-relaxed">
-      {diff.split("\n").map((line, i) => (
-        <div
-          key={i}
-          className={
-            line.startsWith("+")
-              ? "text-accent"
-              : line.startsWith("-")
-                ? "text-destructive/90"
-                : "text-muted-foreground"
-          }
-        >
-          {line || " "}
-        </div>
-      ))}
+    <pre className="max-h-72 overflow-auto border-t border-border font-mono text-[11px] leading-relaxed">
+      {diff.split("\n").map((line, i) => {
+        const g = gutter[i];
+        const isAdd = line.startsWith("+");
+        const isDel = line.startsWith("-");
+        const textClass = isAdd
+          ? "text-accent"
+          : isDel
+            ? "text-destructive/90"
+            : "text-muted-foreground";
+        return (
+          <div key={i} className="flex">
+            <span className="w-16 shrink-0 select-none border-r border-border pr-1.5 text-right text-muted-foreground/50">
+              {g?.type === "context" || g?.type === "removed" ? g.left : ""}
+              {g?.type === "added" ? g.right : ""}
+            </span>
+            <span className="w-16 shrink-0 select-none border-r border-border pr-1.5 text-right text-muted-foreground/50">
+              {g?.type === "context" || g?.type === "added" ? g.right : ""}
+              {g?.type === "removed" ? g.left : ""}
+            </span>
+            <span className={`flex-1 pl-3 ${textClass}`}>{line || " "}</span>
+          </div>
+        );
+      })}
     </pre>
   );
 }
@@ -1185,6 +1232,7 @@ export function AgentPage() {
   const [statusText, setStatusText] = useState("");
   const [progressEntries, setProgressEntries] = useState<ProgressEntry[]>([]);
   const [progressExpanded, setProgressExpanded] = useState(true);
+  const [progressHidden, setProgressHidden] = useState(false);
   const [connected, setConnected] = useState(false);
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [history, setHistory] = useState<ChatSummary[]>([]);
@@ -1192,7 +1240,7 @@ export function AgentPage() {
   const [workspace, setWorkspace] = useState<ChatWorkspace>({ files: [], changedFiles: [], stat: "", diff: "", checkpoints: [] });
   const [selectedCheckpoint, setSelectedCheckpoint] = useState<string>("");
   const [auditEntries, setAuditEntries] = useState<AuditEntry[]>([]);
-  const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>("queue");
+  const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>("" as WorkspaceTab);
   // On small screens the chat list and workspace become overlay drawers (closed
   // by default) so the conversation gets the full width; on desktop they stay
   // inline side panels as before.
@@ -1269,6 +1317,24 @@ export function AgentPage() {
     mq.addEventListener("change", update);
     return () => mq.removeEventListener("change", update);
   }, []);
+
+  // Auto-collapse then auto-hide progress panel when all entries are complete
+  useEffect(() => {
+    if (progressEntries.length === 0) {
+      setProgressHidden(false);
+      return;
+    }
+    const hasActive = progressEntries.some((e) => e.state === "active");
+    if (hasActive) {
+      setProgressExpanded(true);
+      setProgressHidden(false);
+      return;
+    }
+    // All done: collapse immediately, hide after 3 seconds
+    setProgressExpanded(false);
+    const timer = setTimeout(() => setProgressHidden(true), 3000);
+    return () => clearTimeout(timer);
+  }, [progressEntries]);
 
   useEffect(() => {
     const onPointerMove = (event: globalThis.PointerEvent) => {
@@ -1538,6 +1604,9 @@ export function AgentPage() {
     setQueuedMessages([]);
     setAutoSendQueued(false);
     removeImageAttachment();
+    setProgressEntries([]);
+    setProgressExpanded(true);
+    setProgressHidden(false);
     setLoading(true);
     try {
       const chat = await getChatSession(agentUrl, id);
@@ -1617,6 +1686,9 @@ export function AgentPage() {
     setStatusText("");
     setConnectionError(null);
     setAuditEntries([]);
+    setProgressEntries([]);
+    setProgressExpanded(true);
+    setProgressHidden(false);
     rememberSession(null);
     refreshHistory();
   }
@@ -2473,19 +2545,11 @@ export function AgentPage() {
               <Rocket className="mr-1 h-3.5 w-3.5" /> <span className="hidden sm:inline">Run task → PR</span>
             </Button>
           )}
-          <button
-            onClick={() => setWorkspaceOpen((open) => !open)}
-            className="rounded p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground"
-            title={workspaceOpen ? "Close workspace panel" : "Open workspace panel"}
-          >
-            {workspaceOpen ? <PanelRightClose className="h-4 w-4" /> : <PanelRightOpen className="h-4 w-4" />}
-          </button>
         </div>
         </header>
 
         <div ref={scrollRef} onScroll={handleScroll} className="min-h-0 flex-1 overflow-y-auto px-4 py-6">
         <div className="mx-auto max-w-3xl space-y-6">
-          <ProgressPanel entries={progressEntries} expanded={progressExpanded} onToggle={() => setProgressExpanded((expanded) => !expanded)} />
           {messages.map((msg) => (
             <div key={msg.id}>
               {msg.role === "user" && (
@@ -2651,6 +2715,8 @@ export function AgentPage() {
               </div>
             );
           })()}
+
+          {!progressHidden && <ProgressPanel entries={progressEntries} expanded={progressExpanded} onToggle={() => setProgressExpanded((expanded) => !expanded)} />}
 
           <div ref={messagesEndRef} />
         </div>
