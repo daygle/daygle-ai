@@ -588,9 +588,13 @@ const FORBIDDEN_JSON_KEYS = new Set(["stack", "cause", "errors"]);
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, { "Content-Type": "application/json", ...CORS_HEADERS });
-  const json = JSON.stringify(sanitizeJsonValue(body), (key, value) =>
-    FORBIDDEN_JSON_KEYS.has(key) ? undefined : value,
-  );
+  const json = JSON.stringify(sanitizeJsonValue(body), (key, value) => {
+    if (FORBIDDEN_JSON_KEYS.has(key)) return undefined;
+    // Defense-in-depth: convert any Error object that slips through the
+    // pre-sanitizer into a safe message string so its .stack never leaks.
+    if (value instanceof Error) return errMessage(value);
+    return value;
+  });
   res.end(json);
 }
 
