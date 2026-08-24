@@ -578,9 +578,20 @@ function sanitizeJsonValue(value: unknown, seen = new WeakSet<object>()): unknow
   return result;
 }
 
+/**
+ * Keys that must never reach a client, even if a caller accidentally passes a
+ * raw Error or an error-like object. Applied as a JSON.stringify replacer so
+ * the guarantee holds at the serialization sink itself, independent of any
+ * upstream sanitizing.
+ */
+const FORBIDDEN_JSON_KEYS = new Set(["stack", "cause", "errors"]);
+
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, { "Content-Type": "application/json", ...CORS_HEADERS });
-  res.end(JSON.stringify(sanitizeJsonValue(body)));
+  const json = JSON.stringify(sanitizeJsonValue(body), (key, value) =>
+    FORBIDDEN_JSON_KEYS.has(key) ? undefined : value,
+  );
+  res.end(json);
 }
 
 /**
