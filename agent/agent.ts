@@ -93,19 +93,23 @@ function limitModelContext(text: string): string {
 }
 
 // --- Token counting with Ollama tokenize fallback ---
-let tokenizeEndpoint: string | null | undefined; // undefined = not checked yet
+// Cache per endpoint, not globally: tests and multiple local Ollama instances
+// must not inherit the first URL that happened to be queried.
+const tokenizeEndpoints = new Map<string, string | null>();
 
 function getTokenizerEndpoint(ollamaUrl: string): string | null {
-  if (tokenizeEndpoint !== undefined) return tokenizeEndpoint;
+  const key = ollamaUrl.trim();
+  const cached = tokenizeEndpoints.get(key);
+  if (cached !== undefined) return cached;
+  let endpoint: string | null = null;
   try {
-    const url = new URL(ollamaUrl);
+    const url = new URL(key);
     if (url.protocol === "http:" && ["127.0.0.1", "localhost", "::1"].includes(url.hostname)) {
-      tokenizeEndpoint = `${url.origin}/api/tokenize`;
-      return tokenizeEndpoint;
+      endpoint = `${url.origin}/api/tokenize`;
     }
   } catch { /* ignore */ }
-  tokenizeEndpoint = null;
-  return null;
+  tokenizeEndpoints.set(key, endpoint);
+  return endpoint;
 }
 
 /** Count tokens using Ollama's /api/tokenize, or fall back to a heuristic. */
@@ -142,26 +146,41 @@ function estimateTokens(message: AgentMessage): number {
   return Math.ceil(textLen / charsPerToken) + Math.ceil(jsonLen / 3);
 }
 
-function compactAgentMessages(messages: AgentMessage[], maxChars: number): AgentMessage[] {
+function compactAgentMessages(messages: AgentMessage[], maxTokens: number): AgentMessage[] {
   const size = (message: AgentMessage) => estimateTokens(message);
   const total = messages.reduce((sum, message) => sum + size(message), 0);
-  if (total <= maxChars) return messages;
+  if (total <= maxTokens) return messages;
   const system = messages.find((message) => message.role === "system");
   const rest = messages.filter((message) => message !== system);
-  const recent: AgentMessage[] = [];
-  let recentSize = 0;
-  for (let i = rest.length - 1; i >= 0; i--) {
-    const message = rest[i];
-    const messageSize = size(message);
-    if (recentSize + messageSize > Math.floor(maxChars * 0.72) && recent.length > 0) break;
-    recent.unshift(message);
-    recentSize += messageSize;
+
+  // Keep assistant tool requests together with all following tool results. A
+  // raw message-based cutoff can leave an assistant tool call without its
+  // required result, which makes OpenAI-compatible APIs reject the next turn.
+  const groups: AgentMessage[][] = [];
+  for (let index = 0; index < rest.length; index++) {
+    const message = rest[index];
+    const group = [message];
+    if (message.role === "assistant" && message.tool_calls?.length) {
+      while (index + 1 < rest.length && rest[index + 1].role === "tool") group.push(rest[++index]);
+    }
+    groups.push(group);
   }
-  while (recent[0]?.role === "tool") recent.shift();
-  const omitted = rest.slice(0, rest.length - recent.length);
+
+  const recentGroups: AgentMessage[][] = [];
+  let recentSize = 0;
+  for (let index = groups.length - 1; index >= 0; index--) {
+    const group = groups[index];
+    const groupSize = group.reduce((sum, message) => sum + size(message), 0);
+    if (recentSize + groupSize > Math.floor(maxTokens * 0.72) && recentGroups.length > 0) break;
+    recentGroups.unshift(group);
+    recentSize += groupSize;
+  }
+  const recent = recentGroups.flat();
+  const omitted = groups.slice(0, groups.length - recentGroups.length).flat();
   const summary = omitted
     .map((message) => `${message.role}${message.tool_name ? `:${message.tool_name}` : ""}: ${message.content.replace(/\s+/g, " ").slice(0, 600)}`)
-    .join("\n");
+    .join("\n")
+    .slice(0, Math.floor(maxTokens * 2));
   return [
     ...(system ? [system] : []),
     { role: "system", content: `Earlier task context was compacted to fit the model budget.\n${summary}` },

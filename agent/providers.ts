@@ -171,9 +171,12 @@ class OllamaProvider implements ChatProvider {
     let buffer = "";
 
     const handleLine = (line: string) => {
-      if (!line.trim()) return;
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith(":")) return;
+      const payload = trimmed.startsWith("data:") ? trimmed.slice(5).trim() : trimmed;
+      if (!payload || payload === "[DONE]") return;
       try {
-        const obj = JSON.parse(line) as { message?: { content?: string; tool_calls?: unknown[] }; done?: boolean };
+        const obj = JSON.parse(payload) as { message?: { content?: string; tool_calls?: unknown[] }; done?: boolean };
         if (obj.message?.content) {
           content += obj.message.content;
           onDelta?.(obj.message.content);
@@ -212,6 +215,7 @@ class OllamaProvider implements ChatProvider {
       buffer = lines.pop() ?? "";
       for (const line of lines) handleLine(line);
     }
+    buffer += decoder.decode();
     if (buffer.trim()) handleLine(buffer);
 
     const toolCalls: ParsedToolCall[] = [...toolCallMap.entries()].map(([idx, call]) => {
@@ -377,7 +381,7 @@ class OpenAICompatibleProvider implements ChatProvider {
         }
         const delta = obj.choices?.[0]?.delta;
         if (!delta) return;
-        if (delta.content) {
+        if (typeof delta.content === "string" && delta.content) {
           content += delta.content;
           onDelta?.(delta.content);
         }
@@ -413,6 +417,7 @@ class OpenAICompatibleProvider implements ChatProvider {
       buffer = lines.pop() ?? "";
       for (const line of lines) handleLine(line);
     }
+    buffer += decoder.decode();
     if (buffer.trim()) handleLine(buffer);
 
     // Finalize tool call arguments (they arrive as partial JSON strings).

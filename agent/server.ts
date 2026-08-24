@@ -314,10 +314,16 @@ function audit(scope: string, event: unknown): void {
 function readAuditLog(scope?: string, limit = 200): unknown[] {
   try {
     const lines = fs.readFileSync(AUDIT_LOG_PATH, "utf8").split(/\r?\n/).filter(Boolean);
-    return lines
-      .slice(-Math.max(1, Math.min(500, limit)))
-      .map((line) => JSON.parse(line) as Record<string, unknown>)
-      .filter((entry) => !scope || entry.scope === scope);
+    const entries = lines.flatMap((line) => {
+      try {
+        const entry = JSON.parse(line) as Record<string, unknown>;
+        return !scope || entry.scope === scope ? [entry] : [];
+      } catch {
+        // A truncated final line must not hide otherwise valid audit entries.
+        return [];
+      }
+    });
+    return entries.slice(-Math.max(1, Math.min(500, limit)));
   } catch {
     return [];
   }
@@ -438,9 +444,16 @@ function persistChat(session: ChatSession): void {
         ...session.messages.slice(-(MAX_CHAT_HISTORY_MESSAGES - 2)),
       ]
     : session.messages;
-  // Generate AI title if not already set (throttled to first few messages, fire-and-forget)
+  // Provider credentials are intentionally kept in memory only. Persist the
+  // routing information so old chats remain identifiable, but never write an
+  // API key into the transcript files.
+  const providerConfig = session.providerConfig
+    ? { kind: session.providerConfig.kind, baseUrl: session.providerConfig.baseUrl }
+    : undefined;
+
+  // Generate AI title if not already set (throttled to first few messages, fire-and-forget).
   if (!session.title && session.messages.length <= 5) {
-    generateTitle(session.messages, session.ollamaUrl, session.model).then((title) => {
+    generateTitle(session.messages, session.provider ?? providerFor(session.ollamaUrl, session.providerConfig), session.model).then((title) => {
       session.title = title;
       // Re-persist with the updated title
       chatHistoryStore.save({
@@ -453,7 +466,7 @@ function persistChat(session: ChatSession): void {
         createdAt: session.createdAt,
         lastActivity: session.lastActivity,
         options: session.options,
-        providerConfig: session.providerConfig,
+        providerConfig,
       });
     }).catch(() => {}); // Ignore errors
   }
@@ -467,7 +480,7 @@ function persistChat(session: ChatSession): void {
     createdAt: session.createdAt,
     lastActivity: session.lastActivity,
     options: session.options,
-    providerConfig: session.providerConfig,
+    providerConfig,
   });
 }
 

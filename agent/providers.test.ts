@@ -76,4 +76,24 @@ describe("OpenAI-compatible provider responses", () => {
       globalThis.fetch = originalFetch;
     }
   });
+
+  test("accepts SSE without a space after data and preserves SSE comments", async () => {
+    const originalFetch = globalThis.fetch;
+    const stream = [
+      ": keep-alive\n\n",
+      `data:${JSON.stringify({ choices: [{ delta: { content: "Cloud" } }] })}\n`,
+      `data: ${JSON.stringify({ choices: [{ delta: { content: " response" } }] })}\n\n`,
+      "data: [DONE]\n\n",
+    ].join("");
+    globalThis.fetch = (async () =>
+      new Response(stream, { headers: { "content-type": "text/event-stream" } })) as unknown as typeof fetch;
+
+    try {
+      const provider = createProvider({ kind: "openai", baseUrl: "https://api.example.com/v1" });
+      const result = await provider.chat("test", [], [], { temperature: 0, numCtx: 4096 });
+      expect(result.content).toBe("Cloud response");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
 });

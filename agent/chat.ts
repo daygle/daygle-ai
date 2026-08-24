@@ -373,28 +373,40 @@ function estimateChatTokens(message: ChatMessage): number {
   return Math.ceil(textLen / charsPerToken) + Math.ceil(jsonLen / 3) + imageTokens;
 }
 
-function compactMessages(messages: ChatMessage[], maxChars: number): ChatMessage[] {
+function compactMessages(messages: ChatMessage[], maxTokens: number): ChatMessage[] {
   const size = (message: ChatMessage) => estimateChatTokens(message);
   const total = messages.reduce((sum, message) => sum + size(message), 0);
-  if (total <= maxChars) return messages;
+  if (total <= maxTokens) return messages;
 
   const system = messages.find((message) => message.role === "system");
   const rest = messages.filter((message) => message !== system);
-  const recent: ChatMessage[] = [];
-  let recentChars = 0;
-  for (let i = rest.length - 1; i >= 0; i--) {
-    const message = rest[i];
-    const messageSize = size(message);
-    if (recentChars + messageSize > Math.floor(maxChars * 0.72) && recent.length > 0) break;
-    recent.unshift(message);
-    recentChars += messageSize;
+  // Preserve the assistant tool-call + tool-result protocol as one unit. This
+  // prevents compaction from sending an orphaned tool result or tool request.
+  const groups: ChatMessage[][] = [];
+  for (let index = 0; index < rest.length; index++) {
+    const message = rest[index];
+    const group = [message];
+    if (message.role === "assistant" && message.tool_calls?.length) {
+      while (index + 1 < rest.length && rest[index + 1].role === "tool") group.push(rest[++index]);
+    }
+    groups.push(group);
   }
-  while (recent[0]?.role === "tool") recent.shift();
 
-  const omitted = rest.slice(0, rest.length - recent.length);
+  const recentGroups: ChatMessage[][] = [];
+  let recentSize = 0;
+  for (let index = groups.length - 1; index >= 0; index--) {
+    const group = groups[index];
+    const groupSize = group.reduce((sum, message) => sum + size(message), 0);
+    if (recentSize + groupSize > Math.floor(maxTokens * 0.72) && recentGroups.length > 0) break;
+    recentGroups.unshift(group);
+    recentSize += groupSize;
+  }
+  const recent = recentGroups.flat();
+  const omitted = groups.slice(0, groups.length - recentGroups.length).flat();
   const summary = omitted
     .map((message) => `${message.role}${message.tool_name ? `:${message.tool_name}` : ""}: ${message.content.replace(/\s+/g, " ").slice(0, 500)}`)
-    .join("\n");
+    .join("\n")
+    .slice(0, Math.floor(maxTokens * 2));
   const compacted: ChatMessage[] = [];
   if (system) compacted.push(system);
   compacted.push({
@@ -595,6 +607,7 @@ export async function* streamChat(
           }
         }
       }
+      buffer += decoder.decode();
       if (buffer.trim()) {
         try {
           const data = JSON.parse(buffer.trim()) as { message?: { content?: string; tool_calls?: Array<{ id?: string; function?: { name?: string; arguments?: unknown } }> } };

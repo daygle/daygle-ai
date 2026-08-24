@@ -1,6 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { ChatMessage, GenOptions } from "./chat";
+import type { ChatProvider } from "./providers";
+
+export type StoredProviderConfig = { kind: "ollama" | "openai"; baseUrl: string };
 
 export interface StoredChat {
   id: string;
@@ -12,7 +15,15 @@ export interface StoredChat {
   createdAt: number;
   lastActivity: number;
   options?: GenOptions;
-  providerConfig?: { kind: "ollama" | "openai"; baseUrl: string; apiKey?: string };
+  /** Provider routing is retained, but credentials are intentionally not persisted. */
+  providerConfig?: StoredProviderConfig;
+}
+
+const CHAT_ID_PATTERN = /^[a-z0-9-]+$/i;
+
+function chatFile(dir: string, id: string): string {
+  if (!CHAT_ID_PATTERN.test(id)) throw new Error("Invalid chat id.");
+  return path.join(dir, `${id}.json`);
 }
 
 export interface ChatSummary {
@@ -31,8 +42,11 @@ export class ChatHistoryStore {
 
   save(chat: StoredChat): void {
     try {
-      fs.mkdirSync(this.dir, { recursive: true });
-      fs.writeFileSync(path.join(this.dir, `${chat.id}.json`), JSON.stringify(chat), { encoding: "utf8", mode: 0o600 });
+      fs.mkdirSync(this.dir, { recursive: true, mode: 0o700 });
+      fs.chmodSync(this.dir, 0o700);
+      const file = chatFile(this.dir, chat.id);
+      fs.writeFileSync(file, JSON.stringify(chat), { encoding: "utf8", mode: 0o600 });
+      fs.chmodSync(file, 0o600);
     } catch {
       // history is best-effort; never break a chat because of a write failure
     }
@@ -40,7 +54,17 @@ export class ChatHistoryStore {
 
   load(id: string): StoredChat | null {
     try {
-      return JSON.parse(fs.readFileSync(path.join(this.dir, `${id}.json`), "utf8")) as StoredChat;
+      const chat = JSON.parse(fs.readFileSync(chatFile(this.dir, id), "utf8")) as StoredChat & {
+        providerConfig?: { kind?: string; baseUrl?: unknown; apiKey?: unknown };
+      };
+      // Migrate older records without ever returning their persisted API key.
+      if (chat.providerConfig) {
+        chat.providerConfig = {
+          kind: chat.providerConfig.kind === "openai" ? "openai" : "ollama",
+          baseUrl: typeof chat.providerConfig.baseUrl === "string" ? chat.providerConfig.baseUrl : "",
+        };
+      }
+      return chat;
     } catch {
       return null;
     }
@@ -76,7 +100,7 @@ export class ChatHistoryStore {
 
   delete(id: string): void {
     try {
-      fs.rmSync(path.join(this.dir, `${id}.json`), { force: true });
+      fs.rmSync(chatFile(this.dir, id), { force: true });
     } catch {
       // best effort
     }
@@ -97,7 +121,7 @@ export function deriveTitle(messages: ChatMessage[]): string {
  */
 export async function generateTitle(
   messages: ChatMessage[],
-  ollamaUrl: string,
+  provider: ChatProvider,
   model: string,
 ): Promise<string> {
   if (messages.length === 0) return "New chat";
@@ -112,36 +136,27 @@ export async function generateTitle(
 
 ${conversation}`;
 
-    const response = await fetch(`${ollamaUrl}/api/chat`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model,
-        messages: [{ role: "user", content: prompt }],
-        stream: false,
-        options: { temperature: 0.3, num_predict: 20 },
-      }),
-      signal: AbortSignal.timeout(10_000),
-    });
-
-    if (response.ok) {
-      const data: any = await response.json();
-      const raw = data.message?.content?.trim();
-      if (raw) {
-        // Strip common prefixes / suffixes models emit even when told not to
-        const cleaned = raw
-          .replace(/^\s*(?:title|label|heading)[:\s-]+/i, "")
-          .replace(/[""「」'']/g, "")
-          .replace(/^\n+|\n+$/g, "")
-          .replace(/\n.*/s, "") // take only the first line
-          .trim();
-        if (cleaned.length >= 3 && cleaned.length < 80) {
-          return cleaned;
-        }
-        // Even if validation fails, return the cleaned title rather than
-        // falling back to the raw user-message dump.
-        if (cleaned.length > 0) return cleaned;
+    const response = await provider.chat(
+      model,
+      [{ role: "user", content: prompt }],
+      [],
+      { temperature: 0.3, numCtx: 4096, signal: AbortSignal.timeout(10_000) },
+    );
+    const raw = response.content.trim();
+    if (raw) {
+      // Strip common prefixes / suffixes models emit even when told not to
+      const cleaned = raw
+        .replace(/^\s*(?:title|label|heading)[:\s-]+/i, "")
+        .replace(/[""「」'']/g, "")
+        .replace(/^\n+|\n+$/g, "")
+        .replace(/\n.*/s, "") // take only the first line
+        .trim();
+      if (cleaned.length >= 3 && cleaned.length < 80) {
+        return cleaned;
       }
+      // Even if validation fails, return the cleaned title rather than
+      // falling back to the raw user-message dump.
+      if (cleaned.length > 0) return cleaned;
     }
   } catch (err) {
     console.error("generateTitle failed:", err);

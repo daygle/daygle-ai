@@ -1323,7 +1323,7 @@ export function AgentPage() {
     try {
       const [nextWorkspace, nextAudit] = await Promise.all([
         getChatWorkspace(agentUrl, targetSessionId),
-        getAuditLog(agentUrl),
+        getAuditLog(agentUrl, 200, `chat:${targetSessionId}`),
       ]);
       if (requestId !== workspaceRequestRef.current) return;
       setWorkspace(nextWorkspace);

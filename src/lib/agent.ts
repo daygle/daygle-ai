@@ -212,8 +212,10 @@ export interface AuditEntry {
   diff?: string;
 }
 
-export async function getAuditLog(serverUrl: string, limit = 200): Promise<AuditEntry[]> {
-  const res = await fetch(`${strip(serverUrl)}/api/audit?limit=${Math.min(500, Math.max(1, limit))}`);
+export async function getAuditLog(serverUrl: string, limit = 200, scope?: string): Promise<AuditEntry[]> {
+  const params = new URLSearchParams({ limit: String(Math.min(500, Math.max(1, limit))) });
+  if (scope) params.set("scope", scope);
+  const res = await fetch(`${strip(serverUrl)}/api/audit?${params.toString()}`);
   if (!res.ok) throw new Error(`Failed to load audit log (${res.status})`);
   const data = (await res.json()) as { entries: AuditEntry[] };
   return data.entries ?? [];
@@ -453,6 +455,7 @@ export function sendChatMessage(
         buffer += decoder.decode(value, { stream: true });
         buffer = consumeSseBuffer(buffer, onEvent);
       }
+      buffer += decoder.decode();
       consumeSseBuffer(buffer, onEvent, true);
     })
     .catch((err) => {
@@ -526,6 +529,7 @@ export function verifyChat(
         buffer += decoder.decode(value, { stream: true });
         buffer = consumeSseBuffer(buffer, onEvent);
       }
+      buffer += decoder.decode();
       consumeSseBuffer(buffer, onEvent, true);
     })
     .catch((err) => {
