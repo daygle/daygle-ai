@@ -203,7 +203,7 @@ function parseClarificationRequest(text: string): { question: string; options: A
  *   read_headers({paths: "src/main.ts", lines: 20})
  *   create_pr({title: "Fix bug", body: "Details", base: "main"})
  */
-function parseTextToolCalls(text: string): Array<{ function: { name: string; arguments: Record<string, unknown> } }> {
+export function parseTextToolCalls(text: string): Array<{ function: { name: string; arguments: Record<string, unknown> } }> {
   const calls: Array<{ function: { name: string; arguments: Record<string, unknown> } }> = [];
 
   // First: scan balanced JSON objects so nested arguments (for example a PR
