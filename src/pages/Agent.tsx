@@ -309,13 +309,11 @@ function DiffView({ diff }: { diff: string }) {
     let leftLine = 1;
     let rightLine = 1;
     let inHunk = false;
-    let contextStart = 0;
     return lines.map((line) => {
       const hunkMatch = line.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
       if (hunkMatch) {
         rightLine = parseInt(hunkMatch[1], 10);
         inHunk = true;
-        contextStart = 0;
         return { type: "hunk" as const };
       }
       if (!inHunk) return { type: "hunk" as const };

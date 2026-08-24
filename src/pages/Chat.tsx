@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from "react";
-import { Link, useSearchParams } from "react-router-dom";
+import { useSearchParams } from "react-router-dom";
 import { Bot, Loader2, Send, User, X } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -8,8 +8,6 @@ import {
   createChatSession,
   deleteChatSession,
   renameChatSession,
-  listSavedRepos,
-  type SavedRepo,
   type ProviderConfig,
   getChatSession,
   sendChatMessage,
@@ -136,20 +134,8 @@ interface ChatBubble {
   role: "user" | "assistant";
   content: string;
   streaming?: boolean;
-}
-
-interface ChatMessage {
-  id: number;
-  role: "user" | "assistant";
-  content: string;
   imageData?: string;
   imageMimeType?: string;
-}
-
-function messageTitle(messages: ChatBubble[]): string {
-  const userMessage = messages.find((m) => m.role === "user")?.content.trim().replace(/\s+/g, " ");
-  if (!userMessage) return "New chat";
-  return userMessage.length > 48 ? `${userMessage.slice(0, 48)}…` : userMessage;
 }
 
 function bubblesFromMessages(stored: StoredChatMessage[]): ChatBubble[] {
@@ -534,7 +520,7 @@ export function ChatPage() {
           break;
         }
       }
-    }, userImage);
+    }, userImage ?? undefined);
 
     abortRef.current = cancel;
     setInput("");

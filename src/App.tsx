@@ -1,4 +1,4 @@
-import { HashRouter, Navigate, Route, Routes } from "react-router-dom";
+import { HashRouter, Route, Routes } from "react-router-dom";
 import { OllamaProvider } from "./context/OllamaProvider";
 import { CloudProviderProvider } from "./context/CloudProviderContext";
 import { ThemeProvider } from "./context/ThemeProvider";
