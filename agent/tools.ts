@@ -1216,13 +1216,23 @@ async function strReplace(root: string, rel: string, oldStr: string, newStr: str
   if (targets.length === 0) throw new Error(`No files matched path pattern: ${rel}`);
 
   const edits: Array<{ abs: string; path: string; replaced: string; occurrences: number }> = [];
+  // When a pattern matches many files, skip uneditable ones instead of failing
+  // the whole batch; a single explicit target keeps the precise error.
+  const skipUnreadable = targets.length > 1;
+  const skipped: string[] = [];
   for (const target of targets) {
     let stat: fs.Stats;
     try { stat = fs.statSync(target.abs); } catch { continue; }
     if (stat.isDirectory()) continue;
-    if (stat.size > MAX_READ_BYTES) throw new Error(`File too large (${target.path}). Use run_command instead.`);
+    if (stat.size > MAX_READ_BYTES) {
+      if (skipUnreadable) { skipped.push(`${target.path}: too large`); continue; }
+      throw new Error(`File too large (${target.path}). Use run_command instead.`);
+    }
     const raw = fs.readFileSync(target.abs, "utf8");
-    if (raw.includes("\u0000")) throw new Error(`File appears to be binary: ${target.path}.`);
+    if (raw.includes("\u0000")) {
+      if (skipUnreadable) { skipped.push(`${target.path}: binary`); continue; }
+      throw new Error(`File appears to be binary: ${target.path}.`);
+    }
     const occurrences = raw.split(oldStr).length - 1;
     if (occurrences === 0) continue;
     const all = replaceAll === true || replaceAll === "true" || replaceAll === 1 || replaceAll === "1";
@@ -1233,14 +1243,18 @@ async function strReplace(root: string, rel: string, oldStr: string, newStr: str
     if (Buffer.byteLength(replaced, "utf8") > MAX_READ_BYTES) throw new Error(`Replacement would create a file larger than ${MAX_READ_BYTES} bytes in ${target.path}.`);
     edits.push({ abs: target.abs, path: target.path, replaced, occurrences });
   }
-  if (edits.length === 0) throw new Error(`old_string was not found in matched files for ${rel}.`);
+  if (edits.length === 0) {
+    const skipNote = skipped.length > 0 ? ` (skipped: ${skipped.join(", ")})` : "";
+    throw new Error(`old_string was not found in matched files for ${rel}${skipNote}.`);
+  }
   const totalOccurrences = edits.reduce((sum, edit) => sum + edit.occurrences, 0);
   if (edits.length > 1 || totalOccurrences > 10) {
     if (!approve) throw new Error(`Refusing to replace ${totalOccurrences} occurrences across ${edits.length} files without explicit approval.`);
     if (await approve(`str_replace ${rel}: replace ${totalOccurrences} occurrences across ${edits.length} files`) !== "approve") return `Edit denied: ${rel} was not changed.`;
   }
   for (const edit of edits) fs.writeFileSync(edit.abs, edit.replaced, "utf8");
-  return `Replaced ${totalOccurrences} occurrence${totalOccurrences === 1 ? "" : "s"} across ${edits.length} file${edits.length === 1 ? "" : "s"}.`;
+  const skipNote = skipped.length > 0 ? ` Skipped ${skipped.length} uneditable file${skipped.length === 1 ? "" : "s"} (${skipped.join(", ")}).` : "";
+  return `Replaced ${totalOccurrences} occurrence${totalOccurrences === 1 ? "" : "s"} across ${edits.length} file${edits.length === 1 ? "" : "s"}.${skipNote}`;
 }
 
 async function movePath(root: string, fromRel: string, toRel: string, approve?: CommandApprover): Promise<string> {
