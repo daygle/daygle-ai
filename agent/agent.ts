@@ -311,7 +311,7 @@ export async function runAgentLoop(opts: {
       toolCallsUsed += 1;
       const name = call.function.name;
       const args = call.function.arguments ?? {};
-      const signature = `${name}:${JSON.stringify(args, Object.keys(args).sort())}`;
+      const signature = toolCallSignature(name, args);
       if (signature === previousToolSignature) {
         consecutiveIdenticalToolCalls += 1;
       } else {

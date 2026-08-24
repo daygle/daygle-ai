@@ -404,8 +404,15 @@ export async function commitAll(dir: string, message: string): Promise<void> {
   await run("git", ["commit", "-m", message], dir);
 }
 
-export async function pushBranch(dir: string, branch: string): Promise<void> {
-  await run("git", ["push", "-u", "origin", branch], dir);
+export async function pushBranch(dir: string, branch: string, token?: string): Promise<void> {
+  // The origin remote embeds the access token in its URL (see tokenUrl), and git
+  // echoes that URL in push failures. Scrub the token so a failed push can't leak
+  // the credential into job events, the UI, or the audit log.
+  try {
+    await run("git", ["push", "-u", "origin", branch], dir);
+  } catch (err) {
+    throw new Error(redactToken(err instanceof Error ? err.message : String(err), token));
+  }
 }
 
 export async function openPullRequest(

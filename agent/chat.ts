@@ -220,7 +220,7 @@ function parseTextToolCalls(text: string): Array<{ function: { name: string; arg
       const character = text[index];
       if (quoted) {
         if (escaped) escaped = false;
-        else if (character === "\\\\") escaped = true;
+        else if (character === "\\") escaped = true;
         else if (character === '"') quoted = false;
         continue;
       }
