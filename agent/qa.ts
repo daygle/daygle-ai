@@ -90,6 +90,47 @@ function splitCommandLine(input: string): string[] {
   return args;
 }
 
+function allowedQaExecutable(program: string): string | null {
+  switch (program) {
+    case "npm": return "npm";
+    case "pnpm": return "pnpm";
+    case "yarn": return "yarn";
+    case "bun": return "bun";
+    case "node": return "node";
+    case "deno": return "deno";
+    case "bunx": return "bunx";
+    case "npx": return "npx";
+    case "git": return "git";
+    case "make": return "make";
+    case "cargo": return "cargo";
+    case "go": return "go";
+    case "python": return "python";
+    case "python3": return "python3";
+    case "pip": return "pip";
+    case "pip3": return "pip3";
+    case "ls": return "ls";
+    case "cat": return "cat";
+    case "head": return "head";
+    case "tail": return "tail";
+    case "find": return "find";
+    case "grep": return "grep";
+    case "wc": return "wc";
+    case "echo": return "echo";
+    case "mkdir": return "mkdir";
+    case "cp": return "cp";
+    case "mv": return "mv";
+    case "rm": return "rm";
+    case "touch": return "touch";
+    case "chmod": return "chmod";
+    case "chown": return "chown";
+    case "ln": return "ln";
+    case "tsc": return "tsc";
+    case "eslint": return "eslint";
+    case "prettier": return "prettier";
+    default: return null;
+  }
+}
+
 function spawnCapture(
   command: string,
   opts: { cwd: string; timeoutMs: number; signal?: AbortSignal; allowInstall?: boolean },
@@ -102,7 +143,8 @@ function spawnCapture(
     }
     // Validate that the program is in our whitelist to prevent command injection.
     const program = argv[0];
-    if (!ALLOWED_QA_PROGRAMS.has(program)) {
+    const executable = allowedQaExecutable(program);
+    if (!executable || !ALLOWED_QA_PROGRAMS.has(program)) {
       resolve({
         code: 1,
         stdout: "",
@@ -126,10 +168,9 @@ function spawnCapture(
       });
       return;
     }
-    // CodeQL: argv[0] is validated against ALLOWED_QA_PROGRAMS above and
-    // argv[1..] against isReviewSafeCommand; this is not arbitrary user input.
-    // eslint-disable-next-line security/detect-child-process
-    const child = spawn(argv[0], argv.slice(1), {
+    // The executable is selected from a literal allowlist; arguments are passed
+    // directly so no shell can interpret repository-controlled command text.
+    const child = spawn(executable, argv.slice(1), {
       cwd: opts.cwd,
       detached: true,
       stdio: ["ignore", "pipe", "pipe"],

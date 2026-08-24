@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { CheckCircle2, CircleAlert, Cpu, Download, Gauge, Key, PlugZap, RotateCcw, Server, ShieldCheck, SlidersHorizontal } from "lucide-react";
 import { useOllama } from "../context/OllamaProvider";
+import { useCloudProvider } from "../context/CloudProviderContext";
 import { describeError, getVersion } from "../lib/ollama";
 import { DEFAULT_AGENT_URL, agentHealth, checkSandbox, saveGithubToken } from "../lib/agent";
 import { isAllowedOllamaUrl } from "../lib/utils";
@@ -494,30 +495,12 @@ function NumField({
   );
 }
 
-const CLOUD_PROVIDER_STORAGE_KEY = "daygle.cloudProvider";
-
-function loadCloudProvider(): { kind: string; baseUrl: string; apiKey: string } {
-  try {
-    return JSON.parse(localStorage.getItem(CLOUD_PROVIDER_STORAGE_KEY) ?? "{}") as any;
-  } catch {
-    return { kind: "ollama", baseUrl: "", apiKey: "" };
-  }
-}
-
-function saveCloudProvider(config: { kind: string; baseUrl: string; apiKey: string }): void {
-  try {
-    localStorage.setItem(CLOUD_PROVIDER_STORAGE_KEY, JSON.stringify(config));
-  } catch { /* ignore */ }
-}
-
 function CloudProviderSection() {
-  const [kind, setKind] = useState(() => loadCloudProvider().kind || "ollama");
-  const [baseUrl, setBaseUrl] = useState(() => loadCloudProvider().baseUrl || "");
-  const [apiKey, setApiKey] = useState(() => loadCloudProvider().apiKey || "");
+  const { kind, setKind, baseUrl, setBaseUrl, apiKey, setApiKey, save } = useCloudProvider();
   const [saved, setSaved] = useState(false);
 
   function handleSave() {
-    saveCloudProvider({ kind, baseUrl, apiKey });
+    save();
     setSaved(true);
     setTimeout(() => setSaved(false), 1500);
   }
@@ -534,7 +517,7 @@ function CloudProviderSection() {
       <div className="rounded-2xl border border-border bg-card p-5">
         <p className="text-xs text-muted-foreground">
           Use an OpenAI-compatible API (Hugging Face, Together AI, Groq, DeepSeek, etc.) as an alternative to local Ollama.
-          These settings are stored in the browser and used as the default for new chats.
+          The provider type and base URL are stored in the browser; the API key is kept only in memory for this session.
         </p>
 
         <div className="mt-4 flex gap-1 rounded-lg border border-border bg-background p-1">

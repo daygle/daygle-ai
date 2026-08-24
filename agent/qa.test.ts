@@ -13,6 +13,26 @@ describe("QA sandbox policy", () => {
     await expect(runQaGate({ root, command: "bun test" })).rejects.toThrow(/sandbox is unavailable/);
   });
 
+  test("does not treat shell metacharacters as a second command", async () => {
+    const root = mkdtempSync(join(tmpdir(), "daygle-qa-argv-"));
+    mkdirSync(join(root, "node_modules"));
+    writeFileSync(join(root, "package.json"), JSON.stringify({ scripts: { test: "bun test" } }));
+    const commands: string[] = [];
+    const sandbox: SandboxRunner = {
+      name: "test-sandbox",
+      run: async () => "exit code: 0",
+      runCapture: async (_root, command) => {
+        commands.push(command);
+        return { code: 0, stdout: "ok", stderr: "", timedOut: false, overflow: false };
+      },
+    };
+
+    const result = await runQaGate({ root, command: "echo safe && touch should-not-run", sandbox });
+    expect(result.passed).toBe(false);
+    expect(result.output).toContain("rejected by verification policy");
+    expect(commands).toEqual([]);
+  });
+
   test("runs verification through the supplied sandbox", async () => {
     const root = mkdtempSync(join(tmpdir(), "daygle-qa-sandbox-"));
     mkdirSync(join(root, "node_modules"));

@@ -559,9 +559,28 @@ function applyCors(req: IncomingMessage, res: ServerResponse): void {
   }
 }
 
+function sanitizeJsonValue(value: unknown, seen = new WeakSet<object>()): unknown {
+  if (value === null || typeof value !== "object") {
+    return typeof value === "bigint" ? value.toString() : value;
+  }
+  if (value instanceof Error) {
+    return { name: value.name, message: errMessage(value) };
+  }
+  if (seen.has(value)) return "[circular value]";
+  seen.add(value);
+  if (Array.isArray(value)) return value.map((entry) => sanitizeJsonValue(entry, seen));
+
+  const result: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (key === "stack" || key === "cause" || key === "errors") continue;
+    result[key] = sanitizeJsonValue(entry, seen);
+  }
+  return result;
+}
+
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, { "Content-Type": "application/json", ...CORS_HEADERS });
-  res.end(JSON.stringify(body));
+  res.end(JSON.stringify(sanitizeJsonValue(body)));
 }
 
 /**

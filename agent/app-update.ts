@@ -1,11 +1,26 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { execSync, spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 
 const REPO_OWNER = "daygle";
 const REPO_NAME = "daygle-ai";
 const VERSION_STATE = path.join(os.homedir(), ".daygle", "current-version");
+const RESTART_HELPER = `
+const { spawn, spawnSync } = require("node:child_process");
+const pid = Number(process.env.DAYGLE_RESTART_PID);
+const cwd = process.env.DAYGLE_RESTART_DIR;
+setTimeout(() => {
+  if (!cwd || !Number.isInteger(pid) || pid <= 0) process.exit(1);
+  if (process.platform === "win32") {
+    spawnSync("taskkill", ["/pid", String(pid), "/f"], { stdio: "ignore" });
+  } else {
+    try { process.kill(pid, "SIGKILL"); } catch { /* process already exited */ }
+  }
+  const child = spawn("bun", ["run", "agent/server.ts"], { cwd, detached: true, stdio: "ignore" });
+  child.unref();
+}, 2000);
+`;
 
 /**
  * Get the installed version. Prefers the state file written by the updater
@@ -17,7 +32,7 @@ export function getCurrentVersion(): string {
   } catch { /* not yet installed by updater */ }
 
   try {
-    const tag = execSync("git describe --tags --abbrev=0", { stdio: "pipe" }).toString().trim();
+    const tag = execFileSync("git", ["describe", "--tags", "--abbrev=0"], { stdio: "pipe" }).toString().trim();
     return tag.replace(/^v/i, "");
   } catch { /* no git repo or no tags */ }
 
@@ -38,9 +53,22 @@ function writeCurrentVersion(version: string): void {
 }
 
 /** Returns true if bun is available on PATH. */
+function packageManagerExecutable(pm: string): string {
+  switch (pm) {
+    case "bun": return "bun";
+    case "pnpm": return "pnpm";
+    case "yarn": return "yarn";
+    default: return "npm";
+  }
+}
+
+function runPackageManager(pm: string, args: string[], cwd: string): void {
+  execFileSync(packageManagerExecutable(pm), args, { cwd, stdio: "pipe" });
+}
+
 function whichBun(): boolean {
   try {
-    execSync(process.platform === "win32" ? "where bun" : "which bun", { stdio: "pipe" });
+    execFileSync(process.platform === "win32" ? "where" : "which", ["bun"], { stdio: "pipe" });
     return true;
   } catch {
     return false;
@@ -231,7 +259,7 @@ export async function performAppUpdate(
 
     // Stash any local changes
     try {
-      execSync("git stash", { cwd: appDir, stdio: "pipe" });
+      execFileSync("git", ["stash"], { cwd: appDir, stdio: "pipe" });
     } catch {
       // Ignore stash errors (might be nothing to stash)
     }
@@ -239,13 +267,14 @@ export async function performAppUpdate(
     // Detect the default branch (main, master, etc.)
     let defaultBranch = "main";
     try {
-      defaultBranch = execSync("git symbolic-ref refs/remotes/origin/HEAD", { cwd: appDir, stdio: "pipe" })
+      const ref = execFileSync("git", ["symbolic-ref", "refs/remotes/origin/HEAD"], { cwd: appDir, stdio: "pipe" })
         .toString().trim().replace("refs/remotes/origin/", "");
+      if (/^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(ref) && !ref.includes("..")) defaultBranch = ref;
     } catch {
       // Fallback: check common branch names
       for (const candidate of ["main", "master", "develop"]) {
         try {
-          execSync(`git rev-parse --verify origin/${candidate}`, { cwd: appDir, stdio: "pipe" });
+          execFileSync("git", ["rev-parse", "--verify", `origin/${candidate}`], { cwd: appDir, stdio: "pipe" });
           defaultBranch = candidate;
           break;
         } catch { /* try next */ }
@@ -254,7 +283,7 @@ export async function performAppUpdate(
 
     // Pull latest changes including tags
     try {
-      execSync(`git pull origin ${defaultBranch} --tags`, { cwd: appDir, stdio: "pipe" });
+      execFileSync("git", ["pull", "origin", defaultBranch, "--tags"], { cwd: appDir, stdio: "pipe" });
     } catch (err) {
       throw new Error(`git pull failed: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -268,18 +297,16 @@ export async function performAppUpdate(
     const hasYarnLock = fs.existsSync(path.join(appDir, "yarn.lock"));
     const pm = hasBunLock ? "bun" : hasPnpmLock ? "pnpm" : hasYarnLock ? "yarn" : whichBun() ? "bun" : "npm";
 
-    const installCmd = pm === "bun" ? "bun install" : pm === "pnpm" ? "pnpm install" : pm === "yarn" ? "yarn install" : "npm install";
-    execSync(installCmd, { cwd: appDir, stdio: "pipe" });
+    runPackageManager(pm, ["install"], appDir);
 
     updateProgress = { status: "building", message: "Building application...", startedAt: updateProgress?.startedAt ?? Date.now() };
     emit({ type: "update_progress", message: "Building application..." });
 
-    const buildCmd = pm === "bun" ? "bun run build" : pm === "pnpm" ? "pnpm run build" : pm === "yarn" ? "yarn run build" : "npm run build";
-    execSync(buildCmd, { cwd: appDir, stdio: "pipe" });
+    runPackageManager(pm, ["run", "build"], appDir);
 
     // Record the newly installed version after a successful build
     try {
-      const tag = execSync("git describe --tags --abbrev=0", { cwd: appDir, stdio: "pipe" }).toString().trim();
+      const tag = execFileSync("git", ["describe", "--tags", "--abbrev=0"], { cwd: appDir, stdio: "pipe" }).toString().trim();
       writeCurrentVersion(tag.replace(/^v/i, ""));
     } catch { /* best effort */ }
 
@@ -305,50 +332,21 @@ export async function performAppUpdate(
   }
 }
 
-/**
- * Restart the agent server by spawning a background process that:
- * 1. Waits for the current request to complete
- * 2. Kills the current server process
- * 3. Starts a new server process
- */
+/** Restart the server through a shell-free detached Bun helper. */
 async function restartAgentServer(appDir: string): Promise<void> {
-  const isWindows = process.platform === "win32";
-  const pid = process.pid;
-
-  // Sanitize appDir: only allow paths that resolve within the project
-  // to prevent shell injection via crafted directory names.
   const safeDir = path.resolve(appDir);
-  // Validate pid is a finite positive integer
-  const safePid = Number.isFinite(pid) && pid > 0 ? pid : 1;
-
-  // Create a restart script
-  const restartScript = isWindows
-    ? `@echo off\n` +
-      `timeout /t 2 /nobreak > nul\n` +
-      `taskkill /pid ${safePid} /f > nul 2>&1\n` +
-      `cd /d "${safeDir}"\n` +
-      `start /b bun run agent/server.ts\n`
-    : `#!/bin/bash\n` +
-      `sleep 2\n` +
-      `kill -9 ${safePid} 2>/dev/null || true\n` +
-      `cd "${safeDir}"\n` +
-      `nohup bun run agent/server.ts > /dev/null 2>&1 &\n`;
-
-  const scriptPath = path.join(appDir, isWindows ? "restart.bat" : "restart.sh");
-  fs.writeFileSync(scriptPath, restartScript, { encoding: "utf8" });
-
-  if (!isWindows) {
-    fs.chmodSync(scriptPath, 0o755);
-  }
-
-  // Spawn the restart script as a detached process
-  const child = spawn(isWindows ? "cmd" : "bash", [isWindows ? "/c" : scriptPath], {
+  const safePid = Number.isInteger(process.pid) && process.pid > 0 ? process.pid : 1;
+  const child = spawn("bun", ["-e", RESTART_HELPER], {
+    cwd: safeDir,
     detached: true,
     stdio: "ignore",
     windowsHide: true,
+    env: {
+      ...process.env,
+      DAYGLE_RESTART_PID: String(safePid),
+      DAYGLE_RESTART_DIR: safeDir,
+    },
   });
   child.unref();
-
-  // Give the script time to start before we exit
   await new Promise((resolve) => setTimeout(resolve, 1000));
 }

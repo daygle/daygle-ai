@@ -1,5 +1,6 @@
 import { HashRouter, Navigate, Route, Routes } from "react-router-dom";
 import { OllamaProvider } from "./context/OllamaProvider";
+import { CloudProviderProvider } from "./context/CloudProviderContext";
 import { ThemeProvider } from "./context/ThemeProvider";
 import { AppShell } from "./components/AppShell";
 import { Landing } from "./pages/Landing";
@@ -10,8 +11,9 @@ import { AgentPage } from "./pages/Agent";
 export default function App() {
   return (
     <ThemeProvider>
-      <OllamaProvider>
-        <HashRouter>
+      <CloudProviderProvider>
+        <OllamaProvider>
+          <HashRouter>
           <Routes>
             <Route path="/" element={<Landing />} />
             <Route element={<AppShell />}>
@@ -24,8 +26,9 @@ export default function App() {
             </Route>
             <Route path="*" element={<Landing />} />
           </Routes>
-        </HashRouter>
-      </OllamaProvider>
+          </HashRouter>
+        </OllamaProvider>
+      </CloudProviderProvider>
     </ThemeProvider>
   );
 }

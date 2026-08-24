@@ -36,6 +36,7 @@ import {
   type StoredChatMessage,
 } from "../lib/agent";
 import { useOllama } from "../context/OllamaProvider";
+import { useCloudProvider } from "../context/CloudProviderContext";
 import { listModels } from "../lib/ollama";
 import { loadGenOptions, loadModelPreference } from "../lib/genOptions";
 import { Button } from "../components/ui/button";
@@ -206,25 +207,6 @@ function messageTitle(messages: ChatBubble[]): string {
   const userMessage = messages.find((message) => message.role === "user")?.content.trim().replace(/\s+/g, " ");
   if (!userMessage) return "New chat";
   return userMessage.length > 48 ? `${userMessage.slice(0, 48)}…` : userMessage;
-}
-
-interface StoredCloudProvider {
-  kind: "ollama" | "openai";
-  baseUrl: string;
-  apiKey: string;
-}
-
-function loadCloudProvider(): StoredCloudProvider {
-  try {
-    const value = JSON.parse(localStorage.getItem("daygle.cloudProvider") ?? "{}") as Partial<StoredCloudProvider>;
-    return {
-      kind: value.kind === "openai" ? "openai" : "ollama",
-      baseUrl: typeof value.baseUrl === "string" ? value.baseUrl : "",
-      apiKey: typeof value.apiKey === "string" ? value.apiKey : "",
-    };
-  } catch {
-    return { kind: "ollama", baseUrl: "", apiKey: "" };
-  }
 }
 
 /**
@@ -1162,10 +1144,7 @@ export function AgentPage() {
 
   const [repoUrl, setRepoUrl] = useState("");
   const [sessionRepo, setSessionRepo] = useState("");  const [savedRepos, setSavedRepos] = useState<SavedRepo[]>([]);
-  const [cloudProvider] = useState<StoredCloudProvider>(loadCloudProvider);
-  const [providerKind, setProviderKind] = useState<"ollama" | "openai">(cloudProvider.kind);
-  const [cloudBaseUrl, setCloudBaseUrl] = useState(cloudProvider.baseUrl);
-  const [cloudApiKey, setCloudApiKey] = useState(cloudProvider.apiKey);
+  const { kind: providerKind, setKind: setProviderKind, baseUrl: cloudBaseUrl, setBaseUrl: setCloudBaseUrl, apiKey: cloudApiKey, setApiKey: setCloudApiKey } = useCloudProvider();
 
   const [models, setModels] = useState<string[]>([]);
   const [model, setModel] = useState("");
