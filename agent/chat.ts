@@ -141,17 +141,44 @@ function normalizeKeepAlive(value: string | undefined): string | number | undefi
 }
 
 /**
+ * Find a balanced JSON object starting at `start` and return its end index (exclusive),
+ * or -1 if the text ends before the braces are balanced.
+ */
+function findBalancedJson(text: string, start: number): number {
+  if (text[start] !== "{") return -1;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+    if (escaped) { escaped = false; continue; }
+    if (ch === "\\") { escaped = true; continue; }
+    if (ch === '"') { inString = !inString; continue; }
+    if (inString) continue;
+    if (ch === "{") depth++;
+    else if (ch === "}") { depth--; if (depth === 0) return i + 1; }
+  }
+  return -1;
+}
+
+/**
  * Parse a clarification request from model output text.
  * Looks for a JSON object with a "clarification" key containing a question and options.
  * Returns null if no clarification request is found.
  */
 function parseClarificationRequest(text: string): { question: string; options: Array<{ label: string; description?: string }> } | null {
-  // Look for JSON objects with a "clarification" key
-  const regex = /\{\s*"clarification"\s*:\s*\{([^}]+)\}\s*\}/g;
-  let match;
-  while ((match = regex.exec(text)) !== null) {
+  // Find the "clarification" key, then extract the balanced JSON object around it
+  const keyRegex = /"clarification"\s*:/g;
+  let keyMatch;
+  while ((keyMatch = keyRegex.exec(text)) !== null) {
+    // Walk back to find the opening '{' before the key
+    let braceStart = keyMatch.index - 1;
+    while (braceStart >= 0 && /\s/.test(text[braceStart])) braceStart--;
+    if (braceStart < 0 || text[braceStart] !== "{") continue;
+    const end = findBalancedJson(text, braceStart);
+    if (end < 0) continue;
     try {
-      const obj = JSON.parse(`{"clarification": {${match[1]}}}`) as {
+      const obj = JSON.parse(text.slice(braceStart, end)) as {
         clarification: { question: string; options: Array<{ label: string; description?: string }> };
       };
       if (obj.clarification?.question && Array.isArray(obj.clarification?.options) && obj.clarification.options.length > 0) {
