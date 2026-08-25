@@ -10,14 +10,22 @@ const RESTART_HELPER = `
 const { spawn, spawnSync } = require("node:child_process");
 const pid = Number(process.env.DAYGLE_RESTART_PID);
 const cwd = process.env.DAYGLE_RESTART_DIR;
+const executable = process.env.DAYGLE_RESTART_EXECUTABLE;
 setTimeout(() => {
-  if (!cwd || !Number.isInteger(pid) || pid <= 0) process.exit(1);
+  if (!cwd || !executable || !Number.isInteger(pid) || pid <= 0) process.exit(1);
   if (process.platform === "win32") {
     spawnSync("taskkill", ["/pid", String(pid), "/f"], { stdio: "ignore" });
   } else {
     try { process.kill(pid, "SIGKILL"); } catch { /* process already exited */ }
   }
-  const child = spawn("bun", ["run", "agent/server.ts"], { cwd, detached: true, stdio: "ignore" });
+  const child = spawn(executable, ["run", "agent/server.ts"], {
+    cwd,
+    detached: true,
+    stdio: "ignore",
+    windowsHide: true,
+    env: process.env,
+  });
+  child.on("error", () => process.exit(1));
   child.unref();
 }, 2000);
 `;
@@ -335,8 +343,9 @@ export async function performAppUpdate(
 /** Restart the server through a shell-free detached Bun helper. */
 async function restartAgentServer(appDir: string): Promise<void> {
   const safeDir = path.resolve(appDir);
+  const executable = process.execPath;
   const safePid = Number.isInteger(process.pid) && process.pid > 0 ? process.pid : 1;
-  const child = spawn("bun", ["-e", RESTART_HELPER], {
+  const child = spawn(executable, ["-e", RESTART_HELPER], {
     cwd: safeDir,
     detached: true,
     stdio: "ignore",
@@ -345,6 +354,7 @@ async function restartAgentServer(appDir: string): Promise<void> {
       ...process.env,
       DAYGLE_RESTART_PID: String(safePid),
       DAYGLE_RESTART_DIR: safeDir,
+      DAYGLE_RESTART_EXECUTABLE: executable,
     },
   });
   child.unref();

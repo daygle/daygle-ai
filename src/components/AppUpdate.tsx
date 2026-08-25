@@ -52,62 +52,79 @@ export function AppUpdate({ serverUrl }: AppUpdateProps) {
       const result = await applyAppUpdate(serverUrl);
       setUpdateMessage(result.message);
 
-      // Poll for progress updates
+      // Poll for progress updates. The process that reports "complete" is
+      // about to be replaced, so a restarted server may instead return no
+      // in-memory progress and an up-to-date version.
+      const baseUrl = serverUrl.replace(/\/$/, "");
       const pollInterval = setInterval(async () => {
         try {
-          const statusRes = await fetch(`${serverUrl.replace(/\/$/, '')}/api/app-update/status`);
-          if (statusRes.ok) {
-            const statusData = await statusRes.json() as { progress?: AppUpdateProgress | null; updateAvailable?: boolean };
+          const statusRes = await fetch(`${baseUrl}/api/app-update/status`);
+          if (!statusRes.ok) return;
+          const statusData = await statusRes.json() as {
+            progress?: AppUpdateProgress | null;
+            updateAvailable?: boolean;
+          };
 
-            if (statusData.progress) {
-              setProgress(statusData.progress);
+          if (statusData.progress?.status === "complete") {
+            clearInterval(pollInterval);
+            setUpdateMessage("Update complete! Server is restarting...");
+            waitForRestart(baseUrl);
+            return;
+          }
 
-              if (statusData.progress.status === "complete") {
-                clearInterval(pollInterval);
-                setUpdateMessage("Update complete! Server is restarting...");
-                // Start polling for server to come back up
-                const reconnectInterval = setInterval(async () => {
-                  try {
-                    await fetch(`${serverUrl.replace(/\/$/, '')}/api/health`);
-                    // Server is back up, reload the page
-                    clearInterval(reconnectInterval);
-                    window.location.reload();
-                  } catch {
-                    // Server still restarting, keep waiting
-                  }
-                }, 1000);
-                // Stop trying after 30 seconds
-                setTimeout(() => clearInterval(reconnectInterval), 30000);
-              } else if (statusData.progress.status === "failed") {
-                clearInterval(pollInterval);
-                setError(statusData.progress.message);
-                setUpdating(false);
-                setProgress(null);
-              }
-            } else if (!statusData.updateAvailable) {
-              // No progress and no update available means we're already up to date
-              clearInterval(pollInterval);
-              setUpdateMessage("Update complete! Refresh the page to use the new version.");
-              setUpdating(false);
-              setProgress(null);
-            }
+          if (statusData.progress?.status === "failed") {
+            clearInterval(pollInterval);
+            setError(statusData.progress.message);
+            setUpdating(false);
+            setProgress(null);
+            return;
+          }
+
+          if (statusData.progress) {
+            setProgress(statusData.progress);
+          } else if (!statusData.updateAvailable) {
+            // A fresh server loses the old process's in-memory progress. Once
+            // it reports the new version, wait for health and reload the UI.
+            clearInterval(pollInterval);
+            setUpdateMessage("Update complete! Server is restarting...");
+            waitForRestart(baseUrl);
           }
         } catch {
-          // Server is likely restarting, keep polling
+          // Server is likely restarting, keep polling.
         }
-      }, 2000); // Poll every 2 seconds for better responsiveness
+      }, 2000);
 
-      // Stop polling after 10 minutes
+      // Stop polling after 10 minutes and leave the user with a retryable UI.
       setTimeout(() => {
         clearInterval(pollInterval);
-        if (updating) {
-          setProgress(null);
-        }
+        setUpdating(false);
+        setProgress(null);
       }, 10 * 60 * 1000);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to start update");
       setUpdating(false);
     }
+  }
+
+  function waitForRestart(baseUrl: string): void {
+    // Give the detached helper time to stop the old process before accepting a
+    // health response. Otherwise the browser can reload against the old server.
+    const reconnectInterval = setInterval(async () => {
+      try {
+        const healthRes = await fetch(`${baseUrl}/api/health`, { cache: "no-store" });
+        if (!healthRes.ok) return;
+        clearInterval(reconnectInterval);
+        window.location.reload();
+      } catch {
+        // Server still restarting, keep waiting.
+      }
+    }, 2500);
+    setTimeout(() => {
+      clearInterval(reconnectInterval);
+      setError("The agent server did not come back after the update. Start it again and refresh the page.");
+      setUpdating(false);
+      setProgress(null);
+    }, 30000);
   }
 
   return (
