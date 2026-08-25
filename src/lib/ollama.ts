@@ -1,4 +1,6 @@
 export interface OllamaModelDetails {
+  /** Ollama may expose model capabilities such as `vision` and `tools`. */
+  capabilities?: string[];
   format?: string;
   family?: string;
   families?: string[] | null;

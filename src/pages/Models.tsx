@@ -640,6 +640,9 @@ export function ModelsPage() {
               {detailModel.details?.quantization_level && <Badge>{detailModel.details.quantization_level}</Badge>}
               {detailModel.details?.format && <Badge>{detailModel.details.format}</Badge>}
               {detailModel.details?.family && <Badge>{detailModel.details.family}</Badge>}
+              {Array.isArray(detailData?.capabilities) && detailData.capabilities.map((capability) => (
+                <Badge key={String(capability)}>{String(capability)}</Badge>
+              ))}
               <Badge>{formatBytes(detailModel.size)}</Badge>
             </div>
             {typeof detailData?.license === "string" && detailData.license && (

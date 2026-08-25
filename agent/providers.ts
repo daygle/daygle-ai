@@ -14,6 +14,9 @@ import { isLoopbackUrl, isSafeExternalUrl } from "./security";
 export interface ChatMessage {
   role: "system" | "user" | "assistant" | "tool";
   content: string;
+  /** Base64 image payloads supported by vision-capable Ollama models. */
+  images?: string[];
+  imageMimeTypes?: string[];
   tool_calls?: Array<{
     id?: string;
     type?: string;

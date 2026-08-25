@@ -470,6 +470,9 @@ export async function* streamChat(
     yield { type: "status", message: `Thinking… (Step ${step + 1})` };
 
     const compacted = compactMessages(session.messages, Math.max(32_000, Math.min(MAX_CHAT_CONTEXT_CHARS, genOptions.num_ctx * 3)));
+    // Ollama expects image data on the user message's `images` field. Keep the
+    // MIME type only as local metadata; sending it as an extra message field
+    // can make older Ollama builds reject otherwise valid Llama requests.
     const cleanedMessages = compacted.map((message) => {
       const { imageMimeTypes, ...rest } = message;
       void imageMimeTypes;
