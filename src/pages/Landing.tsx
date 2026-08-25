@@ -4,7 +4,6 @@ import { Logo } from "../components/Logo";
 import { useOllama } from "../context/OllamaProvider";
 
 const TILES = [
-  { to: "/chat", icon: MessageCircle, title: "Chat", body: "Talk to your local models - no repository needed." },
   { to: "/models", icon: Box, title: "Models", body: "Pull and manage your local models." },
   { to: "/settings", icon: SettingsIcon, title: "Settings", body: "Server URL and GitHub token." },
 ];
@@ -33,20 +32,34 @@ export function Landing() {
           </div>
         </div>
 
-        {/* Primary: the Agent */}
-        <Link
-          to="/agent"
-          className="group flex items-center gap-4 rounded-2xl border border-accent/40 bg-card p-5 transition-colors hover:border-accent"
-        >
-          <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-accent/15 text-accent">
-            <Bot className="h-6 w-6" />
-          </div>
-          <div className="min-w-0 flex-1">
-            <h2 className="text-base font-semibold">Agent</h2>
-            <p className="text-sm text-muted-foreground">Chat, work in a repository, or hand it a whole task to complete and open a PR.</p>
-          </div>
-          <ArrowRight className="h-5 w-5 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5 group-hover:text-accent" />
-        </Link>
+        {/* Primary: Agent + Chat side by side */}
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Link
+            to="/agent"
+            className="group flex items-center gap-4 rounded-2xl border border-accent/40 bg-card p-5 transition-colors hover:border-accent"
+          >
+            <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-accent/15 text-accent">
+              <Bot className="h-6 w-6" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <h2 className="text-base font-semibold">Agent</h2>
+              <p className="text-sm text-muted-foreground">Chat, work in a repository, or hand it a whole task to complete and open a PR.</p>
+            </div>
+            <ArrowRight className="h-5 w-5 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5 group-hover:text-accent" />
+          </Link>
+          <Link
+            to="/chat"
+            className="group flex items-center gap-4 rounded-2xl border border-border bg-card p-5 transition-colors hover:border-accent/60"
+          >
+            <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-muted text-muted-foreground group-hover:text-foreground">
+              <MessageCircle className="h-6 w-6" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <h2 className="text-base font-semibold">Chat</h2>
+              <p className="text-sm text-muted-foreground">Talk to your local models - no repository needed.</p>
+            </div>
+          </Link>
+        </div>
 
         {/* Secondary tiles */}
         <div className="mt-3 grid gap-3 sm:grid-cols-2">

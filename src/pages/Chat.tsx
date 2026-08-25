@@ -645,13 +645,6 @@ export function ChatPage() {
       <div className="flex min-w-0 flex-1 flex-col">
         {/* Header */}
         <header className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-2.5 sm:px-4 sm:py-3">
-          <button
-            onClick={() => setSidebarOpen((o) => !o)}
-            className="rounded p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground"
-            title={sidebarOpen ? "Hide sidebar" : "Show sidebar"}
-          >
-            {sidebarOpen ? <PanelRightClose className="h-4 w-4" /> : <PanelRightOpen className="h-4 w-4" />}
-          </button>
           <Bot className="h-4 w-4 text-accent" />
           <span className="hidden text-sm font-medium sm:inline">Chat</span>
           <span
