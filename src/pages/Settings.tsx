@@ -4,7 +4,7 @@ import { useOllama } from "../context/OllamaProvider";
 import { useCloudProvider } from "../context/CloudProviderContext";
 import { describeError, getVersion } from "../lib/ollama";
 import { DEFAULT_AGENT_URL, agentHealth, checkSandbox, saveGithubToken } from "../lib/agent";
-import { isAllowedOllamaUrl } from "../lib/utils";
+import { isAllowedOllamaUrl, toBrowserOllamaUrl } from "../lib/utils";
 import { DEFAULT_GEN_OPTIONS, loadGenOptions, loadModelPreference, saveGenOptions, saveModelPreference, type GenOptions } from "../lib/genOptions";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
@@ -104,31 +104,36 @@ export function SettingsPage() {
   }, [defaultModel, models]);
 
   async function handleTest() {
-    const target = url.trim();
-    if (!target) return;
-    if (!isAllowedOllamaUrl(target)) {
+    const entered = url.trim();
+    if (!entered) return;
+    if (!isAllowedOllamaUrl(entered)) {
       setTestResult({ ok: false, text: "Only the local Ollama service or the UI's /api/ollama proxy is allowed." });
       return;
     }
+    // Test the URL the browser actually uses (the same-origin proxy), not a raw
+    // direct loopback URL that a cross-origin pull would fail on.
+    const target = toBrowserOllamaUrl(entered);
     setTesting(true);
     setTestResult(null);
     try {
       const v = await getVersion(target);
       setTestResult({ ok: true, text: `Reachable · Ollama v${v}` });
     } catch (err) {
-      setTestResult({ ok: false, text: describeError(err) });
+      setTestResult({ ok: false, text: describeError(err, target) });
     } finally {
       setTesting(false);
     }
   }
 
   function handleSave() {
-    const target = url.trim();
-    if (!isAllowedOllamaUrl(target)) {
+    const entered = url.trim();
+    if (!isAllowedOllamaUrl(entered)) {
       setTestResult({ ok: false, text: "Only the local Ollama service or the UI's /api/ollama proxy is allowed." });
       return;
     }
-    setBaseUrl(target);
+    setBaseUrl(entered);
+    // Reflect the normalized proxy URL the app will actually use.
+    setUrl(toBrowserOllamaUrl(entered));
     setTestResult(null);
   }
 
@@ -173,6 +178,11 @@ Use the local Ollama server and give the agent a GitHub token.
           <label htmlFor="ollama-url" className="text-xs font-medium text-muted-foreground">
             Ollama Base URL
           </label>
+          <p className="mt-1 text-[11px] text-muted-foreground">
+            The browser reaches Ollama through this UI's same-origin <code className="font-mono">/api/ollama</code> proxy,
+            so a direct <code className="font-mono">127.0.0.1:11434</code> URL is routed through the proxy automatically -
+            this keeps model downloads working without any OLLAMA_ORIGINS/CORS setup.
+          </p>
           <div className="mt-2 flex flex-col gap-2 sm:flex-row">
             <div className="relative flex-1">
               <Server className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />

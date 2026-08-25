@@ -14,12 +14,12 @@ import {
   normalizeBaseUrl,
   type OllamaModel,
 } from "../lib/ollama";
-import { isAllowedOllamaUrl, sameHostUrl } from "../lib/utils";
+import { isAllowedOllamaUrl, ollamaProxyUrl, toBrowserOllamaUrl } from "../lib/utils";
 
 const STORAGE_KEY = "daygle.ollamaUrl";
 // Keep the bundled Ollama on IPv4 loopback. The LAN-facing UI talks to it
 // through the Vite preview proxy, so browsers never connect to Ollama directly.
-const DEFAULT_URL = sameHostUrl(11434, "/api/ollama");
+const DEFAULT_URL = ollamaProxyUrl();
 
 interface OllamaContextValue {
   baseUrl: string;
@@ -40,7 +40,10 @@ export function OllamaProvider({ children }: { children: ReactNode }) {
   const [baseUrl, setBaseUrlState] = useState<string>(() => {
     try {
       const stored = localStorage.getItem(STORAGE_KEY);
-      return stored && isAllowedOllamaUrl(stored) ? stored : DEFAULT_URL;
+      // Migrate a stored direct-loopback URL to the same-origin proxy path so
+      // the browser never connects to Ollama directly (which breaks POST/DELETE
+      // calls like model pulls on a CORS preflight).
+      return stored && isAllowedOllamaUrl(stored) ? toBrowserOllamaUrl(stored) : DEFAULT_URL;
     } catch {
       return DEFAULT_URL;
     }
@@ -58,9 +61,12 @@ export function OllamaProvider({ children }: { children: ReactNode }) {
       setError("Only the local Ollama service or the UI's /api/ollama proxy is allowed.");
       return;
     }
-    setBaseUrlState(normalized);
+    // Always reach Ollama through the same-origin proxy; a direct loopback URL
+    // is migrated so cross-origin pulls never hit a CORS preflight.
+    const browserUrl = toBrowserOllamaUrl(normalized);
+    setBaseUrlState(browserUrl);
     try {
-      localStorage.setItem(STORAGE_KEY, normalized);
+      localStorage.setItem(STORAGE_KEY, browserUrl);
     } catch {
       // localStorage unavailable (private mode etc.) - ignore
     }
@@ -76,7 +82,7 @@ export function OllamaProvider({ children }: { children: ReactNode }) {
     } catch (err) {
       setVersion(null);
       setConnected(false);
-      setError(describeError(err));
+      setError(describeError(err, baseUrl));
     } finally {
       setChecking(false);
     }
@@ -91,7 +97,7 @@ export function OllamaProvider({ children }: { children: ReactNode }) {
       setConnected(true);
     } catch (err) {
       setConnected(false);
-      setError(describeError(err));
+      setError(describeError(err, baseUrl));
     } finally {
       setLoading(false);
     }
