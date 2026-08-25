@@ -163,6 +163,7 @@ function checkpointRelativePath(root: string, relative: string): string {
   return path.join(root, ...normalized.split("/"));
 }
 
+
 function expandIgnoredPath(root: string, relative: string, output: string[]): void {
   const normalized = relative.replaceAll("\\", "/").replace(/\/+$/, "");
   if (!normalized || IGNORED_COPY_EXCLUSIONS.has(normalized.split("/")[0])) return;
@@ -344,7 +345,14 @@ export async function restoreCheckpoint(dir: string, checkpoint: WorkingTreeChec
   // Restore index state - prefer patch-free index-info when available.
   const indexData = checkpoint.indexModifications
     ? { modifications: checkpoint.indexModifications, deletions: checkpoint.indexDeletions ?? [] }
-    : JSON.parse(fs.readFileSync(path.join(checkpoint.directory, "index.json"), "utf8") ?? "null") as { modifications: IndexEntry[]; deletions: string[] } | null;
+    : (() => {
+        try {
+          return JSON.parse(fs.readFileSync(path.join(checkpoint.directory, "index.json"), "utf8")) as { modifications: IndexEntry[]; deletions: string[] } | null;
+        } catch {
+          // Missing or corrupt index.json: fall back to binary patches below.
+          return null;
+        }
+      })();
   if (indexData) {
     for (const filePath of indexData.deletions) {
       await run("git", ["rm", "--cached", "--quiet", "--", filePath], dir).catch(() => {});

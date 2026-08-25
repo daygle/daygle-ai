@@ -254,6 +254,8 @@ export async function performAppUpdate(
 ): Promise<void> {
   const appDir = process.cwd();
   updateProgress = { status: "started", message: "Starting update...", startedAt: Date.now() };
+  // Declared outside the try so the failure handler can restore the stash.
+  let stashed = false;
 
   try {
     updateProgress = { status: "pulling", message: "Pulling latest changes...", startedAt: updateProgress?.startedAt ?? Date.now() };
@@ -265,12 +267,14 @@ export async function performAppUpdate(
       throw new Error("Not a git repository. Cannot auto-update.");
     }
 
-    // Stash any local changes
+    // Stash any local changes so the pull can proceed cleanly. Track the stash
+    // pop state so a mid-update failure (pull, install, or build) restores the
+    // user's working tree instead of stranding their changes in the stash.
     try {
-      execFileSync("git", ["stash"], { cwd: appDir, stdio: "pipe" });
-    } catch {
-      // Ignore stash errors (might be nothing to stash)
-    }
+      const stashOut = execFileSync("git", ["stash"], { cwd: appDir, stdio: "pipe" }).toString().trim();
+      // "No local changes to save" is the only no-op outcome.
+      stashed = stashOut.length > 0 && !stashOut.includes("No local changes");
+    } catch { /* nothing to stash */ }
 
     // Detect the default branch (main, master, etc.)
     let defaultBranch = "main";
@@ -324,12 +328,18 @@ export async function performAppUpdate(
     // Restart the agent server
     await restartAgentServer(appDir);
 
-    updateProgress = { status: "complete", message: "Update complete! Server is restarting.", startedAt: updateProgress?.startedAt ?? Date.now() };
-    emit({
-      type: "update_complete",
-      message: "Update complete! Server is restarting. The page will reload automatically.",
-      success: true,});
+    updateProgress = { status: "complete", message: "Update complete! Server is restarting.", startedAt: updateProgress?.startedAt ?? Date.now() };      emit({
+        type: "update_complete",
+        message: "Update complete! Server is restarting. The page will reload automatically.",
+        success: true,});
   } catch (error) {
+    // Never leave the user's working tree stranded in the stash when the
+    // update fails part-way.
+    if (stashed) {
+      try {
+        execFileSync("git", ["stash", "pop"], { cwd: appDir, stdio: "pipe" });
+      } catch { /* already popped or conflicted; report the original error */ }
+    }
     const message = error instanceof Error ? error.message : String(error);
     updateProgress = { status: "failed", message: `Update failed: ${message}`, startedAt: updateProgress?.startedAt ?? Date.now() };
     emit({

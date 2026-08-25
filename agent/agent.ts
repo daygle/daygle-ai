@@ -548,7 +548,6 @@ export async function runAgenticReview(opts: {
   sandbox?: SandboxRunner;
   signal?: AbortSignal;
   config?: AgentConfig;
-  writePathPolicy?: (path: string) => boolean;
 }): Promise<ReviewResult> {
   const { root, provider, model, task, diff, emit, approve, sandbox, signal } = opts;
   if (!sandbox) {
@@ -626,14 +625,11 @@ export async function runAgenticReview(opts: {
       emit({ type: "tool_start", name, args });
       let result: string;
       try {
-        if (opts.writePathPolicy && (name === "write_file" || name === "str_replace")) {
-          const target = typeof args.path === "string" ? args.path : "";
-          result = opts.writePathPolicy(target)
-            ? await runTool(root, name, args, approve, sandbox, signal, true)
-            : `Denied: this restricted pass may only edit test files; refused ${target || "an unspecified path"}.`;
-        } else {
-          result = await runTool(root, name, args, approve, sandbox, signal, true);
-        }
+        // Defense in depth: the reviewer must never mutate the tree, so every
+        // tool runs in the read-only sandbox (write_file/str_replace were
+        // already denied above). `writePathPolicy` is not applied here - it is
+        // a main-loop concept and this pass has no such policy.
+        result = await runTool(root, name, args, approve, sandbox, signal, true);
         throwIfCancelled();
       } catch (err) {
         if (err instanceof CancelledError) throw err;

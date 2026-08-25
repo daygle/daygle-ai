@@ -376,6 +376,24 @@ interface Job {
 
 const jobs = new Map<string, Job>();
 
+// Job history is persisted on every published event, which re-serializes
+// megabytes of JSON per event on long runs. Debounce the writes; terminal
+// events flush synchronously so a finished job is always durable.
+const PERSIST_DEBOUNCE_MS = 300;
+const persistTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+function schedulePersist(job: Job): void {
+  const existing = persistTimers.get(job.id);
+  if (existing) clearTimeout(existing);
+  // Write on the trailing edge so the latest events are always included.
+  const timer = setTimeout(() => {
+    persistTimers.delete(job.id);
+    persist(job);
+  }, PERSIST_DEBOUNCE_MS);
+  timer.unref?.();
+  persistTimers.set(job.id, timer);
+}
+
 interface PendingApproval {
   jobId?: string;
   resolve: (decision: "approve" | "deny") => void;
@@ -467,6 +485,7 @@ function persistChat(session: ChatSession): void {
         lastActivity: session.lastActivity,
         options: session.options,
         providerConfig,
+        origin: session.origin ?? "agent",
       });
     }).catch(() => {}); // Ignore errors
   }
@@ -481,6 +500,7 @@ function persistChat(session: ChatSession): void {
     lastActivity: session.lastActivity,
     options: session.options,
     providerConfig,
+    origin: session.origin ?? "agent",
   });
 }
 
@@ -515,6 +535,7 @@ async function rehydrateChat(id: string): Promise<ChatSession | null> {
     providerConfig: stored.providerConfig,
     provider: stored.providerConfig ? createProvider(stored.providerConfig) : undefined,
     title: stored.title,
+    origin: stored.origin ?? "agent",
   };
   chatSessions.set(id, session);
   // Restore the latest checkpoint so pending changes survive server restarts.
@@ -618,36 +639,45 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
  * names - so everything after the first line is dropped.
  */
 function errMessage(err: unknown): string {
-  const raw = err instanceof Error ? err.message : String(err);
   const token = loadGithubToken();
-  let text = token ? raw.replaceAll(token, "[credential redacted]") : raw;
-  // Strip stack traces: keep only the first line, drop any "at ..." frames
-  text = text.split(/\r?\n/, 1)[0].trim();
-  // Remove internal file paths that leak source layout
-  text = text.replace(/\s+at\s+.*/g, "");
-  text = text.replace(/\([^)]*\)/g, "()");
+  // Error messages (e.g. child_process failures) can embed full stack traces or
+  // multi-line output; keep only the first line so internal paths and function
+  // names don't leak to clients.
+  let text: string = (err instanceof Error ? err.message : String(err))
+    .split(/\r?\n/, 1)[0]
+    .trim();
+  if (token) text = text.replaceAll(token, "[credential redacted]");
   return text.length > 500 ? `${text.slice(0, 500)}…` : text;
 }
 
 function publish(job: Job, event: AgentEvent): void {
   if (event.type === "tool_start" || event.type === "tool_result" || event.type === "diff") {
     audit(`job:${job.id}`, event);
-  }
-  if (event.type === "model_delta" || event.type === "diff") {
-    // Streaming deltas and diff snapshots are live-only; the full `model` event and
-    // the tool results are what get persisted.
+  }    if (event.type === "model_delta" || event.type === "diff") {
+      // Streaming deltas and diff snapshots are live-only; the full `model` event
+      // and the tool results are what get persisted.
+      for (const listener of job.listeners) listener(event);
+      return;
+    }
+    if (event.type === "done" || event.type === "error" || event.type === "cancelled") {
+      // Flush any pending debounced write synchronously so the final state (and
+      // the recovery checkpoint id) is durable before the job is evicted.
+      const timer = persistTimers.get(job.id);
+      if (timer) {
+        clearTimeout(timer);
+        persistTimers.delete(job.id);
+      }
+      persist(job);
+    }
+    const storedEvent = event.type === "tool_result"
+      ? { ...event, result: event.result.slice(0, 4_000) }
+      : event.type === "model"
+        ? { ...event, content: event.content.slice(0, 12_000) }
+        : event;
+    job.events.push(storedEvent);
+    if (job.events.length > MAX_STORED_JOB_EVENTS) job.events.splice(0, job.events.length - MAX_STORED_JOB_EVENTS);
     for (const listener of job.listeners) listener(event);
-    return;
-  }
-  const storedEvent = event.type === "tool_result"
-    ? { ...event, result: event.result.slice(0, 4_000) }
-    : event.type === "model"
-      ? { ...event, content: event.content.slice(0, 12_000) }
-      : event;
-  job.events.push(storedEvent);
-  if (job.events.length > MAX_STORED_JOB_EVENTS) job.events.splice(0, job.events.length - MAX_STORED_JOB_EVENTS);
-  for (const listener of job.listeners) listener(event);
-  persist(job);
+    schedulePersist(job)
 }
 
 function makeApprover(job: Job): (command: string) => Promise<"approve" | "deny"> {
@@ -1255,7 +1285,11 @@ const server = http.createServer((req, res) => {
 
     // ---- Chat sessions (interactive agent chat) ----
     if (req.method === "GET" && url.pathname === "/api/chat/sessions") {
-      sendJson(res, 200, { sessions: chatHistoryStore.list() });
+      // ?origin=chat|agent keeps the two histories separate; a missing or
+      // invalid value returns everything (pre-split clients).
+      const originParam = url.searchParams.get("origin");
+      const origin = originParam === "chat" || originParam === "agent" ? originParam : undefined;
+      sendJson(res, 200, { sessions: chatHistoryStore.list(origin) });
       return;
     }
 
@@ -1492,6 +1526,7 @@ const server = http.createServer((req, res) => {
             createdAt: live.createdAt,
             lastActivity: live.lastActivity,
             busy: Boolean(live.busy),
+            origin: live.origin ?? "agent",
           }
         : stored
           ? {
@@ -1504,6 +1539,7 @@ const server = http.createServer((req, res) => {
               createdAt: stored.createdAt,
               lastActivity: stored.lastActivity,
               busy: false,
+              origin: stored.origin ?? "agent",
             }
           : null;
       if (!chat) {
@@ -1579,7 +1615,7 @@ const server = http.createServer((req, res) => {
     }
 
     if (req.method === "POST" && url.pathname === "/api/chat/sessions") {
-      let body: { repoUrl?: string; model?: string; ollamaUrl?: string; options?: GenOptions; providerConfig?: ProviderConfig };
+      let body: { repoUrl?: string; model?: string; ollamaUrl?: string; options?: GenOptions; providerConfig?: ProviderConfig; origin?: string };
       try {
         body = JSON.parse(await readBody(req)) as typeof body;
       } catch {
@@ -1592,6 +1628,10 @@ const server = http.createServer((req, res) => {
       }
       const ollamaUrl = localOllamaUrl(body.ollamaUrl) ?? DEFAULT_OLLAMA_URL;
       const repoUrl = body.repoUrl?.trim() ?? "";
+      // Which surface owns this conversation: "chat" (plain Chat page) or
+      // "agent" (repository-driven Agent page). Anything else defaults to
+      // "agent" for backward compatibility with earlier clients.
+      const origin: "chat" | "agent" = body.origin === "chat" ? "chat" : "agent";
       const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
       // A repo is optional: with one, we clone for tool use; without, it's a
       // plain conversation and there's nothing to check out.
@@ -1625,6 +1665,7 @@ const server = http.createServer((req, res) => {
         options: body.options,
         providerConfig: body.providerConfig,
         provider: body.providerConfig ? createProvider(body.providerConfig) : undefined,
+        origin,
       };
       // Detect a fallback model for automatic retry on failure (Ollama only).
       if (!session.provider) {
@@ -1843,7 +1884,10 @@ const server = http.createServer((req, res) => {
     if (req.method === "GET" && url.pathname === "/api/model-updates") {
       // Model-registry requests run from this server; never trust a browser-
       // supplied Ollama destination, even though the UI normally uses a proxy.
-      const ollamaUrl = DEFAULT_OLLAMA_URL;
+      const ollamaUrl = localOllamaUrl(url.searchParams.get("ollamaUrl") ?? undefined) ?? DEFAULT_OLLAMA_URL;
+      // Registry requests are only ever sent to a loopback Ollama; the UI is
+      // allowed to pass its configured URL through, but anything non-loopback
+      // (or absent) falls back to the default local server.
       const names = (url.searchParams.get("names") ?? "")
         .split(",")
         .map((name) => name.trim())

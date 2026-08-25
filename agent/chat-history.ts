@@ -5,6 +5,9 @@ import type { ChatProvider } from "./providers";
 
 export type StoredProviderConfig = { kind: "ollama" | "openai"; baseUrl: string };
 
+/** Which surface created a conversation: the plain Chat page or the Agent page. */
+export type ChatOrigin = "chat" | "agent";
+
 export interface StoredChat {
   id: string;
   repoUrl: string;
@@ -17,6 +20,8 @@ export interface StoredChat {
   options?: GenOptions;
   /** Provider routing is retained, but credentials are intentionally not persisted. */
   providerConfig?: StoredProviderConfig;
+  /** Conversation home page; legacy records without it default to "agent". */
+  origin?: ChatOrigin;
 }
 
 const CHAT_ID_PATTERN = /^[a-z0-9-]+$/i;
@@ -34,6 +39,7 @@ export interface ChatSummary {
   messageCount: number;
   createdAt: number;
   lastActivity: number;
+  origin?: ChatOrigin;
 }
 
 /** Persists chat transcripts to disk so conversations survive restarts. */
@@ -70,8 +76,8 @@ export class ChatHistoryStore {
     }
   }
 
-  /** Conversation summaries, newest activity first. */
-  list(): ChatSummary[] {
+  /** Conversation summaries, newest activity first, optionally for one origin. */
+  list(origin?: ChatOrigin): ChatSummary[] {
     let files: string[] = [];
     try {
       files = fs.readdirSync(this.dir).filter((file) => file.endsWith(".json"));
@@ -82,6 +88,10 @@ export class ChatHistoryStore {
     for (const file of files) {
       try {
         const chat = JSON.parse(fs.readFileSync(path.join(this.dir, file), "utf8")) as StoredChat;
+        // Legacy records predate origin tagging; they were all created by the
+        // agent-style flow, so keep them under "agent".
+        const chatOrigin = chat.origin ?? "agent";
+        if (origin && chatOrigin !== origin) continue;
         chats.push({
           id: chat.id,
           repoUrl: chat.repoUrl,
@@ -90,6 +100,7 @@ export class ChatHistoryStore {
           messageCount: chat.messages.filter((m) => m.role === "user" || m.role === "assistant").length,
           createdAt: chat.createdAt,
           lastActivity: chat.lastActivity,
+          origin: chatOrigin,
         });
       } catch {
         // skip unreadable files

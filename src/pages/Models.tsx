@@ -173,12 +173,10 @@ export function ModelsPage() {
     setHfPullingFile(file.filename);
     setPullError(null);
     setProgress(null);
-    try {
-      await startPull(baseUrl, pullName, refreshModels);
-      setHfPullingFile(null);
-    } catch {
-      setHfPullingFile(null);
-    }
+    // startPull resolves only its own pull completion; failures land in the
+    // pull manager's shared error state, so there's nothing to catch here.
+    await startPull(baseUrl, pullName, refreshModels);
+    setHfPullingFile(null);
   }
 
   async function openDetails(model: OllamaModel) {

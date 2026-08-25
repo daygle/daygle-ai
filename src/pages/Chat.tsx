@@ -1,16 +1,32 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { useSearchParams } from "react-router-dom";
-import { Bot, Loader2, Send, User, X } from "lucide-react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
+import {
+  Bot,
+  Check,
+  ImagePlus,
+  Loader2,
+  MessageSquarePlus,
+  PanelRightClose,
+  PanelRightOpen,
+  Pencil,
+  Send,
+  Square,
+  Trash2,
+  User,
+  X,
+} from "lucide-react";
 import {
   DEFAULT_AGENT_URL,
+  cancelChat,
   createChatSession,
   deleteChatSession,
   renameChatSession,
-  type ProviderConfig,
+  listChatSessions,
   getChatSession,
   sendChatMessage,
+  updateChatModel,
+  listProviderModels,
+  type ProviderConfig,
   type ChatEvent,
   type ChatImage,
   type ChatSummary,
@@ -23,110 +39,20 @@ import { loadGenOptions, loadModelPreference } from "../lib/genOptions";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { LOCAL_OLLAMA_URL } from "../lib/utils";
-
-/** Remove raw tool-call JSON that some models emit as plain text. */
-function stripToolJson(text: string): string {
-  const withoutFences = text.replace(/```(?:json|tool_code)?/gi, "");
-  let result = "";
-  let cursor = 0;
-  const toolPrefix = /\{\s*"name"\s*:/g;
-
-  for (;;) {
-    toolPrefix.lastIndex = cursor;
-    const match = toolPrefix.exec(withoutFences);
-    if (!match) {
-      result += withoutFences.slice(cursor);
-      break;
-    }
-
-    let start = match.index;
-    let depth = 0;
-    let end = -1;
-    for (let i = start; i < withoutFences.length; i++) {
-      if (withoutFences[i] === "{") depth++;
-      if (withoutFences[i] === "}") {
-        depth--;
-        if (depth === 0) {
-          end = i + 1;
-          break;
-        }
-      }
-    }
-
-    if (end < 0) break;
-    try {
-      const candidate = JSON.parse(withoutFences.slice(start, end)) as { name?: unknown; arguments?: unknown };
-      if (typeof candidate.name === "string" && candidate.arguments !== undefined) {
-        cursor = end;
-        continue;
-      }
-    } catch {
-      // Leave malformed assistant text visible.
-    }
-    cursor = start + 1;
-  }
-
-  return result
-    .replace(/\{\s*"file"\s*:\s*"[^"]+"\s*,\s*"line"\s*:\s*\d+\s*\}/g, "")
-    .replace(/(?:bash\s+)?(?:list_files|read_file|search|write_file|str_replace|run_command)\s*\([^)]*\)/gi, "")
-    .replace(/(?:bash\s+)?cd\s+\S+\s+.+/gi, "")
-    .trim();
-}
+import { CopyButton, Markdown, imageMime, stripToolJson } from "../components/chatUi";
 
 let nextId = 0;
 function uid() { return ++nextId; }
 
-/** Lightweight markdown for assistant messages. */
-function Markdown({ children }: { children: string }) {
-  return (
-    <div className="space-y-2 text-sm leading-relaxed [&_a]:text-accent [&_a]:underline [&_h1]:text-base [&_h1]:font-semibold [&_h2]:text-sm [&_h2]:font-semibold [&_h3]:font-semibold [&_li]:ml-4 [&_ol]:list-decimal [&_p]:my-0 [&_ul]:list-disc">
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        components={{
-          code({ className, children, ...props }) {
-            const inline = !className;
-            return inline ? (
-              <code className="rounded bg-muted px-1 py-0.5 font-mono text-[0.85em]" {...props}>
-                {children}
-              </code>
-            ) : (
-              <code className={`${className ?? ""} font-mono`} {...props}>
-                {children}
-              </code>
-            );
-          },
-          pre({ children }) {
-            return (
-              <pre className="max-h-96 overflow-auto rounded-lg border border-border bg-background p-3 font-mono text-[12px] leading-relaxed">
-                {children}
-              </pre>
-            );
-          },
-        }}
-      >
-        {children}
-      </ReactMarkdown>
-    </div>
-  );
-}
-
-/** Copy text to clipboard. */
-function CopyButton({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false);
-  return (
-    <button
-      type="button"
-      onClick={() => {
-        navigator.clipboard.writeText(text);
-        setCopied(true);
-        setTimeout(() => setCopied(false), 1500);
-      }}
-      className="mt-1 text-muted-foreground hover:text-foreground"
-      title="Copy to clipboard"
-    >
-      {copied ? "✓" : "📋"}
-    </button>
-  );
+function relativeTime(ts: number): string {
+  const s = Math.max(0, Math.round((Date.now() - ts) / 1000));
+  if (s < 60) return "just now";
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.round(m / 60);
+  if (h < 24) return `${h}h ago`;
+  const d = Math.round(h / 24);
+  return `${d}d ago`;
 }
 
 interface ChatBubble {
@@ -139,11 +65,15 @@ interface ChatBubble {
 }
 
 function bubblesFromMessages(stored: StoredChatMessage[]): ChatBubble[] {
-  return stored.map((m) => ({
-    id: uid(),
-    role: m.role as "user" | "assistant",
-    content: m.content,
-  }));
+  return stored
+    .filter((m) => m.role === "user" || m.role === "assistant")
+    .map((m) => ({
+      id: uid(),
+      role: m.role as "user" | "assistant",
+      content: m.content,
+      imageData: m.images?.[0],
+      imageMimeType: m.imageMimeTypes?.[0],
+    }));
 }
 
 /** Simple connection screen: model selection only, no repo. */
@@ -256,11 +186,9 @@ export function ChatPage() {
     };
 
     if (providerKind === "openai" && cloudBaseUrl.trim()) {
-      import("../lib/agent").then(({ listProviderModels }) =>
-        listProviderModels(agentUrl, "openai", cloudBaseUrl.trim(), cloudApiKey || undefined)
-          .then(applyModels)
-          .catch(() => requestId === modelRequestRef.current && setModels([]))
-      );
+      listProviderModels(agentUrl, "openai", cloudBaseUrl.trim(), cloudApiKey || undefined)
+        .then(applyModels)
+        .catch(() => requestId === modelRequestRef.current && setModels([]));
     } else if (providerKind === "ollama") {
       listModels(ollamaUrl)
         .then((items) => applyModels(items.map((item) => item.name)))
@@ -269,9 +197,8 @@ export function ChatPage() {
   }, [ollamaUrl, paramModel, providerKind, cloudBaseUrl, cloudApiKey, agentUrl]);
 
   const refreshHistory = useCallback(() => {
-    import("../lib/agent").then(({ listChatSessions }) =>
-      listChatSessions(agentUrl).then(setHistory).catch(() => {})
-    );
+    // This page owns the plain "chat" history; agent sessions live on /agent.
+    listChatSessions(agentUrl, "chat").then(setHistory).catch(() => {});
   }, [agentUrl]);
 
   useEffect(() => {
@@ -321,7 +248,7 @@ export function ChatPage() {
       const providerConfig: ProviderConfig | undefined = providerKind === "openai"
         ? { kind: "openai", baseUrl: cloudBaseUrl.trim(), apiKey: cloudApiKey || undefined }
         : undefined;
-      const session = await createChatSession(agentUrl, "", model, LOCAL_OLLAMA_URL, loadGenOptions(), providerConfig);
+      const session = await createChatSession(agentUrl, "", model, LOCAL_OLLAMA_URL, loadGenOptions(), providerConfig, "chat");
       setSessionId(session.id);
       rememberSession(session.id);
       setConnected(true);
@@ -345,10 +272,21 @@ export function ChatPage() {
     setLoading(true);
     try {
       const chat = await getChatSession(agentUrl, id);
+      // A conversation owned by the Agent page belongs there, not here.
+      if (chat.origin === "agent") {
+        if (!opts?.silent) {
+          setMessages([{ id: uid(), role: "assistant", content: "That conversation lives on the Agent page." }]);
+          setConnected(true);
+        } else {
+          rememberSession(null);
+        }
+        return;
+      }
       setSessionId(chat.id);
       rememberSession(chat.id);
       setMessages(bubblesFromMessages(chat.messages));
       setConnected(true);
+      if (chat.model) setModel(chat.model);
     } catch (err) {
       if (!opts?.silent) {
         setMessages([{ id: uid(), role: "assistant", content: `Failed to open chat: ${err instanceof Error ? err.message : String(err)}` }]);
@@ -397,6 +335,17 @@ export function ChatPage() {
     setRenamingChatId(null);
   }
 
+  async function handleModelChange(next: string) {
+    if (!next || next === model || !sessionId) return;
+    setModel(next);
+    try {
+      await updateChatModel(agentUrl, sessionId, next);
+      setHistory((prev) => prev.map((chat) => (chat.id === sessionId ? { ...chat, model: next } : chat)));
+    } catch (err) {
+      setMessages((prev) => [...prev, { id: uid(), role: "assistant", content: `Failed to update model: ${err instanceof Error ? err.message : String(err)}` }]);
+    }
+  }
+
   function removeImageAttachment() {
     setImageAttachment(null);
     setImageAttachmentName("");
@@ -405,10 +354,19 @@ export function ChatPage() {
   function handleImageUpload(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      setMessages((prev) => [...prev, { id: uid(), role: "assistant", content: "Please choose an image file." }]);
+      return;
+    }
+    if (file.size > 6 * 1024 * 1024) {
+      setMessages((prev) => [...prev, { id: uid(), role: "assistant", content: "That image is too large. Please choose an image under 6 MB." }]);
+      return;
+    }
     const reader = new FileReader();
     reader.onload = () => {
-      const result = reader.result as string;
+      const result = typeof reader.result === "string" ? reader.result : "";
       const comma = result.indexOf(",");
+      if (comma < 0) return;
       setImageAttachment({ data: result.slice(comma + 1), mimeType: file.type });
       setImageAttachmentName(file.name);
     };
@@ -483,25 +441,18 @@ export function ChatPage() {
           break;
         }
 
-        // Ignore tool events in chat-only mode
+        // Tool events don't occur on this page, but keep the state correct in
+        // case a tool-using session is ever resumed here.
         case "tool_start":
-          setStatusText("Thinking…");
-          // Start a new assistant bubble after tool use
-          assistantId = uid();
-          assistantContent = "";
-          break;
-
         case "tool_result":
         case "diff_preview":
           setStatusText("Thinking…");
           break;
 
         case "approval_requested":
-          // Auto-approve or skip — no approval UI in chat-only mode
           break;
 
         case "clarification_requested":
-          // Show as a simple assistant message
           setMessages((prev) => [...prev, {
             id: uid(),
             role: "assistant",
@@ -526,6 +477,16 @@ export function ChatPage() {
     setInput("");
   }, [input, sessionId, streaming, agentUrl, imageAttachment]);
 
+  function handleStop() {
+    streamGenerationRef.current++;
+    abortRef.current?.();
+    abortRef.current = undefined;
+    if (sessionId) void cancelChat(agentUrl, sessionId);
+    setStreaming(false);
+    setStatusText("");
+    setMessages((prev) => prev.map((m) => (m.streaming ? { ...m, streaming: false } : m)));
+  }
+
   // Handle Enter key
   function handleKeyDown(e: React.KeyboardEvent) {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -548,86 +509,161 @@ export function ChatPage() {
     );
   }
 
+  const chatItems: ChatSummary[] = sessionId && !history.some((chat) => chat.id === sessionId)
+    ? [{
+        id: sessionId,
+        repoUrl: "",
+        model,
+        title: messages.find((m) => m.role === "user")?.content.trim().replace(/\s+/g, " ").slice(0, 48) || "New chat",
+        messageCount: messages.filter((m) => m.role === "user" || m.role === "assistant").length,
+        createdAt: Date.now(),
+        lastActivity: Date.now(),
+        origin: "chat",
+      }, ...history]
+    : history;
+
   return (
     <div className="flex h-full">
       {/* Sidebar: chat history */}
       {sidebarOpen && (
-        <div className="flex w-64 shrink-0 flex-col border-r border-border bg-card/50">
-          <div className="flex items-center justify-between border-b border-border px-3 py-2">
-            <span className="text-xs font-medium text-muted-foreground">Chats</span>
-            <Button variant="ghost" size="sm" onClick={startNewChat} className="h-7 px-2 text-xs">
-              + New
-            </Button>
-          </div>
-          <div className="flex-1 overflow-y-auto">
-            {history.map((chat) => (
-              <div
-                key={chat.id}
-                className={`group flex items-center gap-1 border-b border-border/50 px-2 py-2 text-sm transition-colors hover:bg-muted/50 ${
-                  chat.id === sessionId ? "bg-muted" : ""
-                }`}
+        <aside className="flex w-64 shrink-0 flex-col border-r border-border bg-card/40">
+          <div className="flex items-center justify-between border-b border-border px-3 py-3">
+            <span className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+              <MessageSquarePlus className="h-3.5 w-3.5" />
+              Chats
+            </span>
+            <div className="flex items-center gap-0.5">
+              <button
+                onClick={startNewChat}
+                className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+                title="New chat"
               >
-                {renamingChatId === chat.id ? (
-                  <input
-                    autoFocus
-                    value={renameValue}
-                    onChange={(e) => setRenameValue(e.target.value)}
-                    onBlur={() => renameChat(chat.id)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") renameChat(chat.id);
-                      if (e.key === "Escape") setRenamingChatId(null);
-                    }}
-                    className="min-w-0 flex-1 bg-transparent text-sm outline-none"
-                  />
-                ) : (
-                  <button
-                    onClick={() => resumeChat(chat.id)}
-                    className="min-w-0 flex-1 truncate text-left text-sm"
-                  >
-                    {chat.title || "New chat"}
-                  </button>
-                )}
-                <div className="hidden shrink-0 group-hover:flex gap-0.5">
-                  <button
-                    onClick={() => { setRenamingChatId(chat.id); setRenameValue(chat.title || ""); }}
-                    className="rounded p-0.5 text-muted-foreground hover:text-foreground"
-                    title="Rename"
-                  >✏️</button>
-                  {confirmDeleteChat === chat.id ? (
-                    <button
-                      onClick={() => deleteChat(chat.id)}
-                      className="rounded px-1 text-[10px] text-destructive hover:bg-destructive/10"
-                    >Delete?</button>
-                  ) : (
-                    <button
-                      onClick={() => setConfirmDeleteChat(chat.id)}
-                      className="rounded p-0.5 text-muted-foreground hover:text-destructive"
-                      title="Delete"
-                    >🗑</button>
-                  )}
-                </div>
-              </div>
-            ))}
+                <MessageSquarePlus className="h-3.5 w-3.5" />
+              </button>
+              <button
+                onClick={() => setSidebarOpen(false)}
+                className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+                title="Hide chat list"
+              >
+                <PanelRightClose className="h-3.5 w-3.5" />
+              </button>
+            </div>
           </div>
-        </div>
+          <div className="scrollbar-thin min-h-0 flex-1 overflow-y-auto p-2">
+            {chatItems.length === 0 ? (
+              <p className="px-2 py-6 text-center text-xs text-muted-foreground">No chats yet. Start one to begin.</p>
+            ) : (
+              chatItems.map((chat) => {
+                const isActive = chat.id === sessionId;
+                return (
+                  <div
+                    key={chat.id}
+                    className={`group mb-1 flex items-center gap-2 rounded-md border px-2 py-2 transition-colors ${isActive ? "border-accent/50 bg-accent/10" : "border-transparent hover:bg-muted/60"}`}
+                  >
+                    {renamingChatId === chat.id ? (
+                      <form
+                        onSubmit={(e) => { e.preventDefault(); renameChat(chat.id); }}
+                        className="flex min-w-0 flex-1 items-center gap-1"
+                      >
+                        <input
+                          autoFocus
+                          value={renameValue}
+                          onChange={(e) => setRenameValue(e.target.value)}
+                          onBlur={() => renameChat(chat.id)}
+                          onKeyDown={(e) => { if (e.key === "Escape") setRenamingChatId(null); }}
+                          className="min-w-0 flex-1 rounded bg-background px-1.5 py-0.5 text-xs font-medium text-foreground outline-none ring-1 ring-accent"
+                        />
+                      </form>
+                    ) : (
+                      <button
+                        onClick={() => resumeChat(chat.id)}
+                        className="flex min-w-0 flex-1 items-start gap-2 text-left"
+                      >
+                        <MessageSquarePlus className={`mt-0.5 h-3.5 w-3.5 shrink-0 ${isActive ? "text-accent" : "text-muted-foreground"}`} />
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate text-xs font-medium text-foreground">{chat.title || "New chat"}</span>
+                          <span className="block truncate text-[10px] text-muted-foreground">
+                            {chat.model ? `${chat.model} · ` : ""}{relativeTime(chat.lastActivity)}
+                          </span>
+                        </span>
+                        {isActive && <span className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full bg-accent" />}
+                      </button>
+                    )}
+                    {confirmDeleteChat === chat.id ? (
+                      <div className="flex shrink-0 items-center gap-0.5">
+                        <button
+                          onClick={() => { deleteChat(chat.id); }}
+                          className="rounded p-1 text-destructive hover:bg-destructive/10"
+                          title="Confirm delete"
+                        >
+                          <Check className="h-3 w-3" />
+                        </button>
+                        <button
+                          onClick={() => setConfirmDeleteChat(null)}
+                          className="rounded p-1 text-muted-foreground hover:bg-muted"
+                          title="Cancel"
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition group-hover:opacity-100">
+                        <button
+                          onClick={() => { setRenamingChatId(chat.id); setRenameValue(chat.title || ""); }}
+                          className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+                          title="Rename chat"
+                        >
+                          <Pencil className="h-3 w-3" />
+                        </button>
+                        <button
+                          onClick={() => setConfirmDeleteChat(chat.id)}
+                          className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-destructive"
+                          title="Delete chat"
+                        >
+                          <Trash2 className="h-3 w-3" />
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </aside>
+      )}
+      {!sidebarOpen && (
+        <button
+          onClick={() => setSidebarOpen(true)}
+          className="flex w-9 shrink-0 items-center justify-center border-r border-border bg-card text-muted-foreground hover:bg-muted hover:text-foreground"
+          title="Show chat list"
+        >
+          <PanelRightOpen className="h-4 w-4 rotate-180" />
+        </button>
       )}
 
       {/* Main chat area */}
       <div className="flex min-w-0 flex-1 flex-col">
         {/* Header */}
-        <header className="flex shrink-0 items-center gap-2 border-b border-border px-4 py-2">
+        <header className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-2.5 sm:px-4 sm:py-3">
           <button
             onClick={() => setSidebarOpen((o) => !o)}
             className="rounded p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground"
             title={sidebarOpen ? "Hide sidebar" : "Show sidebar"}
           >
-            {sidebarOpen ? "◀" : "▶"}
+            {sidebarOpen ? <PanelRightClose className="h-4 w-4" /> : <PanelRightOpen className="h-4 w-4" />}
           </button>
           <Bot className="h-4 w-4 text-accent" />
-          <span className="text-sm font-medium">Chat</span>
-          {streaming && statusText && (
-            <span className="ml-2 flex items-center gap-1 text-xs text-muted-foreground">
-              <Loader2 className="h-3 w-3 animate-spin" /> {statusText}
+          <span className="hidden text-sm font-medium sm:inline">Chat</span>
+          <span
+            className="hidden rounded-full border border-border px-2 py-0.5 text-[10px] text-muted-foreground sm:inline"
+            title={providerKind === "openai" ? `Cloud: ${cloudBaseUrl || "(no URL set)"}` : "Local Ollama"}
+          >
+            {providerKind === "openai" ? "☁ Cloud" : "◉ Local"}
+          </span>
+          {streaming && (
+            <span className="ml-2 flex items-center gap-1.5 rounded-full bg-accent/10 px-2 py-0.5 text-[11px] font-medium text-accent">
+              <Loader2 className="h-3 w-3 animate-spin" />
+              {statusText || "Working…"}
             </span>
           )}
         </header>
@@ -645,7 +681,7 @@ export function ChatPage() {
                     <div className="min-w-0 flex-1 pt-0.5">
                       {msg.imageData && (
                         <img
-                          src={`data:${msg.imageMimeType};base64,${msg.imageData}`}
+                          src={`data:${imageMime(msg.imageMimeType)};base64,${msg.imageData}`}
                           alt="Uploaded attachment"
                           className="mb-2 max-h-64 max-w-sm rounded-lg border border-border object-contain"
                         />
@@ -673,7 +709,23 @@ export function ChatPage() {
               </div>
             ))}
 
-            {/* Thinking indicator */}
+            {connected && !streaming && !messages.some((m) => m.role === "user") && (
+              <div className="ml-10 space-y-2">
+                <p className="text-xs text-muted-foreground">Not sure where to start? Try one of these:</p>
+                <div className="flex flex-wrap gap-2">
+                  {["Explain a programming concept", "Help me write a function", "Review some code I'll paste", "Help me debug an error"].map((prompt) => (
+                    <button
+                      key={prompt}
+                      onClick={() => handleSend(prompt)}
+                      className="rounded-full border border-border bg-card px-3 py-1.5 text-xs text-foreground transition-colors hover:border-accent/50 hover:bg-accent/10"
+                    >
+                      {prompt}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
             {streaming && !messages.some((m) => m.streaming) && (
               <div className="flex gap-3">
                 <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-accent/20 text-accent">
@@ -696,7 +748,7 @@ export function ChatPage() {
             {imageAttachment && (
               <div className="flex items-center gap-2 rounded-lg border border-border bg-background p-2">
                 <img
-                  src={`data:${imageAttachment.mimeType};base64,${imageAttachment.data}`}
+                  src={`data:${imageMime(imageAttachment.mimeType)};base64,${imageAttachment.data}`}
                   alt="Attachment"
                   className="h-10 w-10 rounded object-cover"
                 />
@@ -715,12 +767,9 @@ export function ChatPage() {
                 onChange={handleImageUpload}
                 className="hidden"
               />
-              <button
-                type="button"
-                onClick={() => imageInputRef.current?.click()}
-                className="shrink-0 rounded-md p-2 text-muted-foreground hover:bg-muted hover:text-foreground"
-                title="Attach image"
-              >🖼️</button>
+              <Button variant="outline" size="icon" onClick={() => imageInputRef.current?.click()} title="Upload image">
+                <ImagePlus className="h-4 w-4" />
+              </Button>
               <Input
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
@@ -730,12 +779,38 @@ export function ChatPage() {
                 className="flex-1"
               />
               <Button
-                size="sm"
+                size="icon"
                 onClick={() => handleSend()}
-                disabled={streaming || !input.trim()}
+                disabled={streaming || !input.trim() && !imageAttachment}
+                title="Send message"
               >
                 <Send className="h-4 w-4" />
               </Button>
+              {streaming && (
+                <Button variant="destructive" size="icon" onClick={handleStop} title="Stop response">
+                  <Square className="h-4 w-4" />
+                </Button>
+              )}
+            </div>
+            <div className="flex items-center gap-2 rounded-md border border-border bg-card px-2.5 py-1.5">
+              <label htmlFor="chat-model-select" className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                Model
+              </label>
+              <select
+                id="chat-model-select"
+                value={model}
+                onChange={(e) => void handleModelChange(e.target.value)}
+                disabled={streaming || models.length === 0}
+                className="flex-1 rounded-md border border-input bg-background px-2 py-1 text-xs disabled:opacity-60"
+              >
+                {models.length === 0 && <option value="">No models detected</option>}
+                {models.map((m) => (
+                  <option key={m} value={m}>{m}</option>
+                ))}
+              </select>
+              <span className="text-[10px] text-muted-foreground">
+                Per-chat. Default in Settings.
+              </span>
             </div>
           </div>
         </div>

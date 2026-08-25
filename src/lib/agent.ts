@@ -264,6 +264,8 @@ export interface ChatSessionInfo {
   repoUrl: string;
 }
 
+export type ChatOrigin = "chat" | "agent";
+
 export interface ChatSummary {
   id: string;
   repoUrl: string;
@@ -272,6 +274,8 @@ export interface ChatSummary {
   messageCount: number;
   createdAt: number;
   lastActivity: number;
+  /** Conversation home page ("chat" or "agent") - keeps the histories separate. */
+  origin?: ChatOrigin;
 }
 
 export interface StoredChatMessage {
@@ -300,6 +304,8 @@ export interface StoredChat {
   lastActivity: number;
   /** True when a generation is still streaming server-side (reconnect to it). */
   busy?: boolean;
+  /** Conversation home page ("chat" or "agent"). */
+  origin?: ChatOrigin;
 }
 
 export interface ChatCheckpoint {
@@ -315,9 +321,13 @@ export interface ChatWorkspace {
   checkpoints: ChatCheckpoint[];
 }
 
-/** Lists past chat conversations (persisted transcripts), newest first. */
-export async function listChatSessions(serverUrl: string): Promise<ChatSummary[]> {
-  const res = await fetch(`${strip(serverUrl)}/api/chat/sessions`);
+/**
+ * Lists past conversations (persisted transcripts), newest first. Pass an
+ * `origin` to get only the Chat page's or only the Agent page's history.
+ */
+export async function listChatSessions(serverUrl: string, origin?: ChatOrigin): Promise<ChatSummary[]> {
+  const params = origin ? `?origin=${encodeURIComponent(origin)}` : "";
+  const res = await fetch(`${strip(serverUrl)}/api/chat/sessions${params}`);
   if (!res.ok) throw new Error(`Failed to list chats (${res.status})`);
   const data = (await res.json()) as { sessions: ChatSummary[] };
   return data.sessions ?? [];
@@ -398,11 +408,12 @@ export async function createChatSession(
   ollamaUrl: string,
   options?: GenOptions,
   providerConfig?: ProviderConfig,
+  origin: ChatOrigin = "agent",
 ): Promise<ChatSessionInfo> {
   const res = await fetch(`${strip(serverUrl)}/api/chat/sessions`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ repoUrl, model, ollamaUrl, options, providerConfig }),
+    body: JSON.stringify({ repoUrl, model, ollamaUrl, options, providerConfig, origin }),
   });
   if (!res.ok) {
     const text = await res.text().catch(() => "");

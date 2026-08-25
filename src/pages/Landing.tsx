@@ -1,9 +1,10 @@
 import { Link } from "react-router-dom";
-import { ArrowRight, Bot, Box, Settings as SettingsIcon } from "lucide-react";
+import { ArrowRight, Bot, Box, MessageCircle, Settings as SettingsIcon } from "lucide-react";
 import { Logo } from "../components/Logo";
 import { useOllama } from "../context/OllamaProvider";
 
 const TILES = [
+  { to: "/chat", icon: MessageCircle, title: "Chat", body: "Talk to your local models - no repository needed." },
   { to: "/models", icon: Box, title: "Models", body: "Pull and manage your local models." },
   { to: "/settings", icon: SettingsIcon, title: "Settings", body: "Server URL and GitHub token." },
 ];

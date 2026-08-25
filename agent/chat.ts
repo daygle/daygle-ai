@@ -53,6 +53,8 @@ export interface ChatSession {
   providerConfig?: { kind: "ollama" | "openai"; baseUrl: string; apiKey?: string };
   /** Timestamp the workspace payload was last computed, for client polling. */
   lastWorkspaceUpdate?: number;
+  /** Conversation home page ("chat" or "agent") - keeps histories separate. */
+  origin?: "chat" | "agent";
 }
 
 export type ChatEvent =
@@ -672,7 +674,12 @@ export async function* streamChat(
         .trim();
     }
 
-    if (content) {
+    // Record the assistant message whenever there is text OR structured tool
+    // calls. Pushing only when `content` is truthy would drop tool-only turns
+    // (model emitted calls with no text, common on OpenAI-compatible APIs) and
+    // leave the following tool results without the assistant tool_call message
+    // the provider requires for the next request.
+    if (content || toolCalls.length > 0) {
       session.messages.push({ role: "assistant", content, tool_calls: toolCalls.length ? toolCalls : undefined });
     }
 
