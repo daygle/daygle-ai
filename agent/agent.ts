@@ -270,6 +270,9 @@ export async function runAgentLoop(opts: {
   writePathPolicy?: (path: string) => boolean;
 }): Promise<string> {
   const { root, task, model, provider, emit, approve, sandbox, signal } = opts;
+  // Semantic search can reuse the runner's local Ollama for embeddings; cloud
+  // providers are skipped because embeddings must stay loopback-only.
+  const ollamaBaseUrl = provider.name === "ollama" ? provider.baseUrl : undefined;
   const temperature = opts.config?.temperature ?? DEFAULT_TEMPERATURE;
   const numCtx = boundedNumCtx(opts.config?.numCtx ?? DEFAULT_NUM_CTX);
   const maxSteps = Math.max(1, Math.min(200, opts.config?.maxSteps ?? DEFAULT_MAX_STEPS));
@@ -368,10 +371,10 @@ export async function runAgentLoop(opts: {
         if (opts.writePathPolicy && (name === "write_file" || name === "str_replace")) {
           const target = typeof args.path === "string" ? args.path : "";
           result = opts.writePathPolicy(target)
-            ? await runTool(root, name, args, approve, sandbox, signal)
+            ? await runTool(root, name, args, approve, sandbox, signal, false, ollamaBaseUrl)
             : `Denied: this restricted pass may only edit test files; refused ${target || "an unspecified path"}.`;
         } else {
-          result = await runTool(root, name, args, approve, sandbox, signal);
+          result = await runTool(root, name, args, approve, sandbox, signal, false, ollamaBaseUrl);
         }
         throwIfCancelled();
       } catch (err) {
@@ -550,6 +553,7 @@ export async function runAgenticReview(opts: {
   config?: AgentConfig;
 }): Promise<ReviewResult> {
   const { root, provider, model, task, diff, emit, approve, sandbox, signal } = opts;
+  const ollamaBaseUrl = provider.name === "ollama" ? provider.baseUrl : undefined;
   if (!sandbox) {
     throw new Error(
       "Agentic review refused: a command sandbox is unavailable. Start Docker/Podman/bubblewrap before running a review that executes repository checks.",
@@ -629,7 +633,7 @@ export async function runAgenticReview(opts: {
         // tool runs in the read-only sandbox (write_file/str_replace were
         // already denied above). `writePathPolicy` is not applied here - it is
         // a main-loop concept and this pass has no such policy.
-        result = await runTool(root, name, args, approve, sandbox, signal, true);
+        result = await runTool(root, name, args, approve, sandbox, signal, true, ollamaBaseUrl);
         throwIfCancelled();
       } catch (err) {
         if (err instanceof CancelledError) throw err;

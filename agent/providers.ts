@@ -50,6 +50,9 @@ export interface ParsedToolCall {
 export interface ChatProvider {
   readonly name: string;
 
+  /** Base URL of the provider endpoint, when one exists (mock providers may omit it; real providers expose it so tooling can reuse it, e.g. Ollama embeddings). */
+  readonly baseUrl?: string;
+
   /** Send a chat completion request and stream the result. */
   chat(
     model: string,
@@ -111,7 +114,7 @@ function parseToolCalls(raw: unknown[] | undefined): ParsedToolCall[] {
 class OllamaProvider implements ChatProvider {
   readonly name = "ollama";
 
-  constructor(private baseUrl: string) {}
+  constructor(public readonly baseUrl: string) {}
 
   private url(path: string): string {
     return `${this.baseUrl.replace(/\/+$/, "")}${path}`;
@@ -256,7 +259,7 @@ class OpenAICompatibleProvider implements ChatProvider {
   readonly name = "openai";
 
   constructor(
-    private baseUrl: string,
+    public readonly baseUrl: string,
     private apiKey: string,
   ) {}
 

@@ -772,7 +772,7 @@ export async function* streamChat(
 
       let result: string;
       try {
-        result = await runTool(session.root, name, args, approve, sandbox, signal);
+        result = await runTool(session.root, name, args, approve, sandbox, signal, false, session.ollamaUrl);
       } catch (err) {
         result = `Error: ${err instanceof Error ? err.message : String(err)}`;
       }

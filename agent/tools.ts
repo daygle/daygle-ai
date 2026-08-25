@@ -798,6 +798,7 @@ const EMBEDDING_CACHE_DIR = path.join(os.homedir(), ".daygle", "embeddings");
 const EMBEDDING_CHUNK_LINES = 80;
 const MAX_EMBEDDING_DOCUMENTS = 512;
 const EMBEDDING_MODEL = process.env.DAYGLE_EMBED_MODEL ?? "nomic-embed-text";
+// Fallback used when no session Ollama URL is available (e.g. headless QA runs).
 const EMBEDDING_URL = process.env.DAYGLE_OLLAMA_URL ?? "http://127.0.0.1:11434";
 
 /** Load a previously-persisted embedding cache for the given root. */
@@ -823,116 +824,6 @@ function saveEmbeddingCache(root: string): void {
   } catch { /* best effort */ }
 }
 
-// --- Symbol index for fast "find the function that does X" search ---
-interface SymbolEntry {
-  name: string;
-  kind: string; // function, class, const, export, etc.
-  file: string;
-  line: number;
-}
-
-// Cached per repo alongside a size+mtime signature of the indexed file set,
-// mirroring the embedding cache, so edits during a long session invalidate
-// stale entries instead of serving them forever.
-const SYMBOL_CACHE = new Map<string, { signature: string; symbols: SymbolEntry[] }>();
-
-/** Cheap staleness fingerprint of the file set (relative path, size, mtime). */
-function fileSetSignature(root: string, files: string[]): string {
-  return files.map((file) => {
-    const rel = path.relative(root, file).replaceAll("\\", "/");
-    try {
-      const stat = fs.statSync(file);
-      return `${rel}:${stat.size}:${stat.mtimeMs}`;
-    } catch {
-      return `${rel}:missing`;
-    }
-  }).join("|");
-}
-
-/** Extract symbols from a file's content. */
-function extractSymbols(filePath: string, content: string): SymbolEntry[] {
-  const symbols: SymbolEntry[] = [];
-  const lines = content.split("\n");
-  // Match common declaration patterns: function, class, const/let/var exports,
-  // interface, type, enum, export default/export async/function/export class.
-  const patterns = [
-    /(?:export\s+)?(?:async\s+)?function\s+([a-zA-Z_$][a-zA-Z0-9_$]*)/,
-    /(?:export\s+)?class\s+([a-zA-Z_$][a-zA-Z0-9_$]*)/,
-    /(?:export\s+)?(?:const|let|var)\s+([a-zA-Z_$][a-zA-Z0-9_$]*)\s*[=:]/,
-    /(?:export\s+)?interface\s+([a-zA-Z_$][a-zA-Z0-9_$]*)/,
-    /(?:export\s+)?type\s+([a-zA-Z_$][a-zA-Z0-9_$]*)/,
-    /(?:export\s+)?enum\s+([a-zA-Z_$][a-zA-Z0-9_$]*)/,
-  ];
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    for (const pattern of patterns) {
-      const match = line.match(pattern);
-      if (match) {
-        const name = match[1];
-        const kind = line.includes("function") ? "function"
-          : line.includes("class") ? "class"
-          : line.includes("interface") ? "interface"
-          : line.includes("type ") ? "type"
-          : line.includes("enum") ? "enum"
-          : "const";
-        symbols.push({ name, kind, file: filePath, line: i + 1 });
-        break;
-      }
-    }
-  }
-  return symbols;
-}
-
-/** Build or update the symbol index for a repository. */
-function buildSymbolIndex(root: string, files: string[]): SymbolEntry[] {
-  const cacheKey = root.replace(/[^a-z0-9]/gi, "_").slice(0, 80);
-  const indexPath = path.join(EMBEDDING_CACHE_DIR, `${cacheKey}-symbols.json`);
-  const signature = fileSetSignature(root, files);
-
-  const cached = SYMBOL_CACHE.get(cacheKey);
-  if (cached?.signature === signature) return cached.symbols;
-
-  // Try loading from disk first. Legacy entries persisted without a signature
-  // are treated as a miss so they are rebuilt with invalidation support.
-  try {
-    const data = JSON.parse(fs.readFileSync(indexPath, "utf8")) as { signature?: string; symbols?: SymbolEntry[] };
-    if (data.signature === signature && Array.isArray(data.symbols)) {
-      SYMBOL_CACHE.set(cacheKey, { signature, symbols: data.symbols });
-      return data.symbols;
-    }
-  } catch { /* cache miss */ }
-
-  const allSymbols: SymbolEntry[] = [];
-  for (const file of files) {
-    try {
-      if (fs.statSync(file).size > MAX_SEARCH_FILE) continue;
-      const content = fs.readFileSync(file, "utf8");
-      if (content.includes("\u0000")) continue;
-      const relPath = path.relative(root, file).replaceAll("\\", "/");
-      allSymbols.push(...extractSymbols(relPath, content));
-    } catch { /* skip */ }
-  }
-
-  SYMBOL_CACHE.set(cacheKey, { signature, symbols: allSymbols });
-  // Persist to disk.
-  try {
-    fs.mkdirSync(EMBEDDING_CACHE_DIR, { recursive: true, mode: 0o700 });
-    fs.writeFileSync(indexPath, JSON.stringify({ signature, symbols: allSymbols }), { encoding: "utf8", mode: 0o600 });
-  } catch { /* best effort */ }
-  return allSymbols;
-}
-
-/** Search the symbol index for names matching a query. */
-export function searchSymbols(root: string, query: string, files: string[]): string[] {
-  const symbols = buildSymbolIndex(root, files);
-  if (symbols.length === 0) return [];
-  const q = query.toLowerCase();
-  return symbols
-    .filter((s) => s.name.toLowerCase().includes(q))
-    .slice(0, 20)
-    .map((s) => `${s.file}:${s.line}: ${s.kind} ${s.name}`);
-}
-
 function cosineSimilarity(a: number[], b: number[]): number {
   let dot = 0;
   let aa = 0;
@@ -945,9 +836,13 @@ function cosineSimilarity(a: number[], b: number[]): number {
   return aa && bb ? dot / (Math.sqrt(aa) * Math.sqrt(bb)) : 0;
 }
 
-function embeddingEndpoint(): string | null {
+function embeddingEndpoint(ollamaUrl?: string): string | null {
+  // Prefer the session's Ollama URL (the user may run Ollama on another
+  // loopback port); fall back to the env override, then the default. The
+  // loopback check below keeps this strictly local either way.
+  const candidate = ollamaUrl?.trim() || EMBEDDING_URL;
   try {
-    const url = new URL(EMBEDDING_URL);
+    const url = new URL(candidate);
     if (url.protocol !== "http:" || !["127.0.0.1", "localhost", "::1"].includes(url.hostname)) return null;
     return `${url.origin}/api/embed`;
   } catch {
@@ -996,8 +891,8 @@ function buildEmbeddingDocuments(root: string, files: string[]): EmbeddingDocume
   return documents;
 }
 
-async function embeddingSearch(root: string, pattern: string, files: string[]): Promise<string[] | null> {
-  const endpoint = embeddingEndpoint();
+async function embeddingSearch(root: string, pattern: string, files: string[], ollamaUrl?: string): Promise<string[] | null> {
+  const endpoint = embeddingEndpoint(ollamaUrl);
   if (!endpoint || files.length === 0) return null;
   const documents = buildEmbeddingDocuments(root, files);
   if (documents.length === 0) return null;
@@ -1035,7 +930,7 @@ async function embeddingSearch(root: string, pattern: string, files: string[]): 
   }
 }
 
-async function searchFiles(root: string, pattern: string, rel?: string, semantic = false): Promise<string> {
+async function searchFiles(root: string, pattern: string, rel?: string, semantic = false, ollamaUrl?: string): Promise<string> {
   if (!pattern.trim()) {
     throw new Error("Missing search pattern.");
   }
@@ -1093,7 +988,7 @@ async function searchFiles(root: string, pattern: string, rel?: string, semantic
   const files: string[] = [...new Set(collected)];
 
   if (semantic) {
-    const embedded = await embeddingSearch(root, pattern, files);
+    const embedded = await embeddingSearch(root, pattern, files, ollamaUrl);
     if (embedded && embedded.length > 0) {
       const note = missing.length > 0 ? `\n(not found: ${missing.join(", ")})` : "";
       return embedded.join("\n") + note;
@@ -1505,6 +1400,7 @@ export async function runTool(
   sandbox?: SandboxRunner,
   signal?: AbortSignal,
   readOnlySandbox = false,
+  ollamaUrl?: string,
 ): Promise<string> {
   switch (name) {
     case "list_files":
@@ -1519,6 +1415,7 @@ export async function runTool(
         String(args.pattern ?? ""),
         typeof args.path === "string" ? args.path : undefined,
         args.semantic === true,
+        ollamaUrl,
       );
     case "write_file":
       return writeFile(root, String(args.path ?? ""), String(args.content ?? ""), approve);
