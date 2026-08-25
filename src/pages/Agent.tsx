@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { Bot, Check, ClipboardList, ChevronDown, ChevronRight, ChevronUp, CircleAlert, Eye, ExternalLink, FileEdit, Files, Folder, GitBranch, GitCompare, GripVertical, ImagePlus, ListTodo, Loader2, MessageSquarePlus, Pencil, PanelRightClose, PanelRightOpen, Plus, RefreshCw, RotateCcw, Search, Send, ShieldCheck, Square, Terminal, Trash2, User, X } from "lucide-react";
+import { Bot, Check, ClipboardList, ChevronDown, ChevronRight, ChevronUp, CircleAlert, Eye, FileEdit, Files, Folder, GitBranch, GitCompare, GripVertical, ImagePlus, ListTodo, Loader2, MessageSquarePlus, Pencil, PanelRightClose, PanelRightOpen, Plus, RefreshCw, RotateCcw, Search, Send, ShieldCheck, Square, Terminal, Trash2, User, X } from "lucide-react";
 
 
 import {
@@ -24,7 +24,6 @@ import {
   sendChatMessage,
   updateChatModel,
   verifyChat,
-  type AgentEvent,
   type AuditEntry,
   type ChatEvent,
   type ChatImage,
@@ -38,8 +37,6 @@ import { listModels } from "../lib/ollama";
 import { loadGenOptions, loadModelPreference } from "../lib/genOptions";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
-import { Textarea } from "../components/ui/textarea";
-import { Modal } from "../components/ui/modal";
 import { LOCAL_OLLAMA_URL } from "../lib/utils";
 import { parseDiff } from "../lib/diff";
 import { CopyButton, Markdown, imageMime, stripToolJson } from "../components/chatUi";

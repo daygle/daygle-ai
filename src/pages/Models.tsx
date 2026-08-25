@@ -88,7 +88,6 @@ export function ModelsPage() {
 
   // Model capabilities (e.g. vision, tools)
   const [capabilities, setCapabilities] = useState<Map<string, string[]>>(new Map());
-  const [capabilitiesLoading, setCapabilitiesLoading] = useState(false);
 
   const sortedModels = useMemo(
     () => [...models].sort((a, b) => b.size - a.size),
@@ -237,14 +236,11 @@ export function ModelsPage() {
     if (!connected || models.length === 0) return;
     let cancelled = false;
     async function fetchCapabilities() {
-      setCapabilitiesLoading(true);
       try {
         const caps = await getAllModelCapabilities(baseUrl, models.map((m) => m.name));
         if (!cancelled) setCapabilities(caps);
       } catch {
         // Silently fail - capabilities are optional
-      } finally {
-        if (!cancelled) setCapabilitiesLoading(false);
       }
     }
     void fetchCapabilities();
