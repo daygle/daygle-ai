@@ -6,6 +6,10 @@ export interface OllamaModelDetails {
   quantization_level?: string;
 }
 
+export interface OllamaModelCapabilities {
+  capabilities?: string[];
+}
+
 export interface OllamaModel {
   name: string;
   model: string;
@@ -89,6 +93,41 @@ export async function showModel(baseUrl: string, name: string): Promise<Record<s
     throw new OllamaError(parseErrorText(await res.text()) || `Failed to load model (${res.status}).`, res.status);
   }
   return (await res.json()) as Record<string, unknown>;
+}
+
+/**
+ * Fetch capabilities for a single model from the /api/show endpoint.
+ * Returns the capabilities array (e.g. ["completion", "vision"]) or empty array.
+ */
+export async function getModelCapabilities(baseUrl: string, name: string): Promise<string[]> {
+  try {
+    const data = await showModel(baseUrl, name);
+    return (data.capabilities as string[]) ?? [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Fetch capabilities for all installed models in parallel.
+ * Returns a map of model name -> capabilities array.
+ */
+export async function getAllModelCapabilities(
+  baseUrl: string,
+  modelNames: string[],
+): Promise<Map<string, string[]>> {
+  const results = await Promise.allSettled(
+    modelNames.map((name) => getModelCapabilities(baseUrl, name)),
+  );
+  const map = new Map<string, string[]>();
+  results.forEach((result, i) => {
+    if (result.status === "fulfilled") {
+      map.set(modelNames[i], result.value);
+    } else {
+      map.set(modelNames[i], []);
+    }
+  });
+  return map;
 }
 
 export async function deleteModel(baseUrl: string, name: string): Promise<void> {

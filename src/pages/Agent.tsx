@@ -1,11 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { Bot, Check, ClipboardList, ChevronDown, ChevronRight, ChevronUp, CircleAlert, Eye, ExternalLink, FileEdit, Files, Folder, GitBranch, GitCompare, GripVertical, ImagePlus, ListTodo, Loader2, MessageSquarePlus, Pencil, PanelRightClose, PanelRightOpen, Plus, RefreshCw, RotateCcw, Rocket, Search, Send, ShieldCheck, Square, Terminal, Trash2, User, X } from "lucide-react";
+import { Bot, Check, ClipboardList, ChevronDown, ChevronRight, ChevronUp, CircleAlert, Eye, ExternalLink, FileEdit, Files, Folder, GitBranch, GitCompare, GripVertical, ImagePlus, ListTodo, Loader2, MessageSquarePlus, Pencil, PanelRightClose, PanelRightOpen, Plus, RefreshCw, RotateCcw, Search, Send, ShieldCheck, Square, Terminal, Trash2, User, X } from "lucide-react";
 
 
 import {
   DEFAULT_AGENT_URL,
-  cancelAgentJob,
   cancelChat,
   createChatSession,
   deleteChatSession,
@@ -20,13 +19,11 @@ import {
   getAuditLog,
   getChatWorkspace,
   listChatSessions,
-  openAgentEvents,
   resolveApproval,
   rollbackChat,
   sendChatMessage,
   updateChatModel,
   verifyChat,
-  startAgentJob,
   type AgentEvent,
   type AuditEntry,
   type ChatEvent,
@@ -1079,7 +1076,6 @@ export function AgentPage() {
   const [workspaceWidth, setWorkspaceWidth] = useState(() => loadPanelWidth("daygle.agent.workspaceWidth", 360, 280, 620));
   const [workspaceRefreshing, setWorkspaceRefreshing] = useState(false);
   const [autoSendQueued, setAutoSendQueued] = useState(false);
-  const [taskOpen, setTaskOpen] = useState(false);
   const [confirmDeleteChat, setConfirmDeleteChat] = useState<string | null>(null);
   const [renamingChatId, setRenamingChatId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
@@ -1950,17 +1946,6 @@ export function AgentPage() {
                 <p className="text-xs text-muted-foreground">Powered by your local Ollama models</p>
               </div>
             </div>
-            <div className="mt-4 flex flex-wrap gap-1.5">
-              <span className="inline-flex items-center gap-1 rounded-full border border-border bg-background px-2.5 py-1 text-[11px] text-muted-foreground">
-                <MessageSquarePlus className="h-3 w-3" /> Chat
-              </span>
-              <span className="inline-flex items-center gap-1 rounded-full border border-border bg-background px-2.5 py-1 text-[11px] text-muted-foreground">
-                <GitBranch className="h-3 w-3" /> Read &amp; edit a repo
-              </span>
-              <span className="inline-flex items-center gap-1 rounded-full border border-border bg-background px-2.5 py-1 text-[11px] text-muted-foreground">
-                <Rocket className="h-3 w-3" /> Run a task → PR
-              </span>
-            </div>
           </div>
 
           {/* Form */}
@@ -2380,11 +2365,6 @@ export function AgentPage() {
                 : (<><ShieldCheck className="mr-1 h-3.5 w-3.5" /> <span className="hidden sm:inline">Verify</span></>)}
             </Button>
           )}
-          {sessionRepo && (
-            <Button variant="outline" size="sm" onClick={() => setTaskOpen(true)} disabled={streaming || verifying}>
-              <Rocket className="mr-1 h-3.5 w-3.5" /> <span className="hidden sm:inline">Run task → PR</span>
-            </Button>
-          )}
         </div>
         </header>
 
@@ -2673,285 +2653,6 @@ export function AgentPage() {
         )
       )}
 
-      <TaskRunnerModal
-        open={taskOpen}
-        onClose={() => setTaskOpen(false)}
-        agentUrl={agentUrl}
-        repoUrl={sessionRepo}
-        model={model}
-        ollamaUrl={LOCAL_OLLAMA_URL}
-      />
     </div>
-  );
-}
-
-const TASK_PRESETS = [
-  "Review the codebase for bugs and fix the most important ones.",
-  "Add unit tests for the core modules.",
-  "Fix any type errors and failing tests.",
-  "Refactor for readability without changing behavior.",
-];
-
-interface JobLine {
-  id: number;
-  kind: AgentEvent["type"];
-  text: string;
-  ok?: boolean;
-  requestId?: string;
-  command?: string;
-  decision?: "approve" | "deny";
-}
-
-/**
- * Kicks off the autonomous agent pipeline (multi-step loop → self-review → QA →
- * commit → open PR) against the connected repo and streams its progress.
- */
-function TaskRunnerModal({
-  open,
-  onClose,
-  agentUrl,
-  repoUrl,
-  model,
-  ollamaUrl,
-}: {
-  open: boolean;
-  onClose: () => void;
-  agentUrl: string;
-  repoUrl: string;
-  model: string;
-  ollamaUrl: string;
-}) {
-  const [task, setTask] = useState(TASK_PRESETS[0]);
-  const [baseBranch, setBaseBranch] = useState("");
-  const [reviewModel, setReviewModel] = useState("");
-  const [qaCommand, setQaCommand] = useState("");
-  const [agenticReview, setAgenticReview] = useState(true);
-  const [generateTests, setGenerateTests] = useState(true);
-  const [advanced, setAdvanced] = useState(false);
-  const [running, setRunning] = useState(false);
-  const [lines, setLines] = useState<JobLine[]>([]);
-  const [prUrl, setPrUrl] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const jobIdRef = useRef<string | null>(null);
-  const closeEventsRef = useRef<(() => void) | undefined>(undefined);
-  const logEndRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    logEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [lines]);
-
-  useEffect(() => () => closeEventsRef.current?.(), []);
-
-  // Fresh form each time the modal opens (unless a run is still in flight).
-  useEffect(() => {
-    if (open && !running) {
-      setLines([]);
-      setPrUrl(null);
-      setError(null);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open]);
-
-  function push(line: Omit<JobLine, "id">) {
-    setLines((prev) => [...prev, { id: uid(), ...line }]);
-  }
-
-  async function start() {
-    if (!task.trim() || running) return;
-    setRunning(true);
-    setLines([]);
-    setPrUrl(null);
-    setError(null);
-    try {
-      const { id } = await startAgentJob(agentUrl, {
-        repoUrl,
-        task: task.trim(),
-        model,
-        baseBranch: baseBranch.trim(),
-        ollamaUrl,
-        config: {
-          reviewModel: reviewModel.trim() || undefined,
-          qaCommand: qaCommand.trim() || undefined,
-          agenticReview,
-          generateTests,
-        },
-      });
-      jobIdRef.current = id;
-      closeEventsRef.current = openAgentEvents(agentUrl, id, (event) => {
-        switch (event.type) {
-          case "status":
-            push({ kind: event.type, text: event.message });
-            break;
-          case "tool_start":
-            push({ kind: event.type, text: `${event.name}(${Object.values(event.args).join(", ").slice(0, 80)})` });
-            break;
-          case "review":
-            push({ kind: event.type, text: `Review: ${event.verdict === "approved" ? "approved" : "changes requested"} - ${event.text.slice(0, 200)}`, ok: event.verdict === "approved" });
-            break;
-          case "qa":
-            push({ kind: event.type, text: `QA: ${event.command}${event.skipped ? " (skipped)" : event.passed ? " ✓" : " ✕"}`, ok: event.passed });
-            break;
-          case "approval_requested":
-            push({ kind: event.type, text: "Approval requested", requestId: event.requestId, command: event.command });
-            break;
-          case "error":
-            setError(event.message);
-            setRunning(false);
-            break;
-          case "cancelled":
-            push({ kind: event.type, text: event.message });
-            setRunning(false);
-            break;
-          case "done":
-            if (event.prUrl) setPrUrl(event.prUrl);
-            push({ kind: event.type, text: event.prUrl ? "Done - pull request opened." : (event.summary || "Done."), ok: true });
-            setRunning(false);
-            break;
-          // model / model_delta / tool_result / diff are noisy; the summary lines above suffice
-          default:
-            break;
-        }
-      });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-      setRunning(false);
-    }
-  }
-
-  function cancel() {
-    if (jobIdRef.current) cancelAgentJob(agentUrl, jobIdRef.current).catch(() => {});
-  }
-
-  function decide(line: JobLine, decision: "approve" | "deny") {
-    if (!line.requestId) return;
-    setLines((prev) => prev.map((l) => (l.id === line.id ? { ...l, decision } : l)));
-    resolveApproval(agentUrl, line.requestId, decision).catch(() => {});
-  }
-
-  const started = running || lines.length > 0 || prUrl !== null || error !== null;
-
-  return (
-    <Modal open={open} onClose={onClose} title="Run Autonomous Task">
-      <div className="space-y-4">
-        <p className="text-sm text-muted-foreground">
-          The agent will work through this task on its own, review its own changes, run your QA
-          command, and open a pull request on <span className="font-mono">{repoUrl.replace(/^https?:\/\/(www\.)?github\.com\//, "")}</span>.
-        </p>
-
-        {!started && (
-          <>
-            <div className="space-y-2">
-              <Textarea value={task} onChange={(e) => setTask(e.target.value)} rows={3} placeholder="Describe the task…" />
-              <div className="flex flex-wrap gap-1.5">
-                {TASK_PRESETS.map((p) => (
-                  <button
-                    key={p}
-                    onClick={() => setTask(p)}
-                    className="rounded-full border border-border px-2.5 py-1 text-[11px] text-muted-foreground hover:border-accent/50 hover:text-foreground"
-                  >
-                    {p.length > 34 ? `${p.slice(0, 34)}…` : p}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <button onClick={() => setAdvanced((v) => !v)} className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground">
-              {advanced ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />} Advanced Options
-            </button>
-            {advanced && (
-              <div className="space-y-2">
-                <Input value={baseBranch} onChange={(e) => setBaseBranch(e.target.value)} placeholder="Base branch (default: repo default)" className="font-mono text-xs" />
-                <Input value={reviewModel} onChange={(e) => setReviewModel(e.target.value)} placeholder="Review model (default: same model)" className="font-mono text-xs" />
-                <Input value={qaCommand} onChange={(e) => setQaCommand(e.target.value)} placeholder="QA command, e.g. npm test" className="font-mono text-xs" />
-                <label className="flex cursor-pointer items-start gap-2 rounded-md border border-border bg-background px-3 py-2 text-xs">
-                  <input
-                    type="checkbox"
-                    checked={agenticReview}
-                    onChange={(e) => setAgenticReview(e.target.checked)}
-                    className="mt-0.5 h-3.5 w-3.5 accent-accent"
-                  />
-                  <span>
-                    <span className="flex items-center gap-1.5 font-medium text-foreground">
-                      <ShieldCheck className="h-3.5 w-3.5 text-accent" /> Agentic Review
-                    </span>
-                    <span className="mt-0.5 block text-[11px] text-muted-foreground">
-                      The reviewer reads the surrounding code and runs the project’s tests before deciding - slower, but catches issues a diff-only review misses. Enabled by default.
-                    </span>
-                  </span>
-                </label>
-                <label className="flex cursor-pointer items-start gap-2 rounded-md border border-border bg-background px-3 py-2 text-xs">
-                  <input
-                    type="checkbox"
-                    checked={generateTests}
-                    onChange={(e) => setGenerateTests(e.target.checked)}
-                    className="mt-0.5 h-3.5 w-3.5 accent-accent"
-                  />
-                  <span>
-                    <span className="flex items-center gap-1.5 font-medium text-foreground">
-                      <ListTodo className="h-3.5 w-3.5 text-accent" /> Generate Tests
-                    </span>
-                    <span className="mt-0.5 block text-[11px] text-muted-foreground">
-                      After the change, write and run tests covering it (using the project’s existing test framework) before QA and review. Enabled by default; skipped if the repo has no test setup.
-                    </span>
-                  </span>
-                </label>
-              </div>
-            )}
-
-            <div className="flex justify-end">
-              <Button onClick={start} disabled={!task.trim()}>
-                <Rocket className="mr-1 h-4 w-4" /> Start task
-              </Button>
-            </div>
-          </>
-        )}
-
-        {started && (
-          <div className="space-y-3">
-            <div className="max-h-72 space-y-1 overflow-y-auto rounded-lg border border-border bg-background p-3 text-xs">
-              {lines.map((line) => (
-                <div key={line.id}>
-                  {line.kind === "approval_requested" ? (
-                    <div className="rounded border border-amber-500/40 bg-amber-500/5 p-2">
-                      <p className="mb-1 font-medium text-foreground">Approve command?</p>
-                      <pre className="mb-2 overflow-auto rounded bg-background px-2 py-1 font-mono text-[11px] text-muted-foreground">{line.command}</pre>
-                      {line.decision ? (
-                        <p className="text-muted-foreground">{line.decision === "approve" ? "✓ Approved" : "✕ Denied"}</p>
-                      ) : (
-                        <div className="flex gap-2">
-                          <Button size="sm" onClick={() => decide(line, "approve")}><Check className="mr-1 h-3.5 w-3.5" /> Approve</Button>
-                          <Button size="sm" variant="outline" onClick={() => decide(line, "deny")}><X className="mr-1 h-3.5 w-3.5" /> Deny</Button>
-                        </div>
-                      )}
-                    </div>
-                  ) : (
-                    <p className={line.ok === true ? "text-accent" : line.ok === false ? "text-destructive/90" : "text-muted-foreground"}>
-                      {line.kind === "tool_start" ? "▸ " : ""}{line.text}
-                    </p>
-                  )}
-                </div>
-              ))}
-              <div ref={logEndRef} />
-            </div>
-
-            {error && <p className="text-sm text-destructive">{error}</p>}
-
-            {prUrl && (
-              <a href={prUrl} target="_blank" rel="noreferrer" className="flex items-center gap-2 rounded-lg border border-accent/40 bg-accent/5 px-3 py-2 text-sm text-accent hover:bg-accent/10">
-                <ExternalLink className="h-4 w-4" /> View pull request
-              </a>
-            )}
-
-            <div className="flex justify-end gap-2">
-              {running ? (
-                <Button variant="destructive" onClick={cancel}>Stop</Button>
-              ) : (
-                <Button variant="outline" onClick={onClose}>Close</Button>
-              )}
-            </div>
-          </div>
-        )}
-      </div>
-    </Modal>
   );
 }

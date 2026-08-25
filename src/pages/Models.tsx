@@ -29,6 +29,7 @@ import { useOllama } from "../context/OllamaProvider";
 import {
   deleteModel,
   describeError,
+  getAllModelCapabilities,
   showModel,
   type OllamaModel,
   type PullProgress,
@@ -84,6 +85,10 @@ export function ModelsPage() {
   const [updates, setUpdates] = useState<Record<string, ModelUpdateInfo> | null>(null);
   const [checkingUpdates, setCheckingUpdates] = useState(false);
   const [updatesError, setUpdatesError] = useState<string | null>(null);
+
+  // Model capabilities (e.g. vision, tools)
+  const [capabilities, setCapabilities] = useState<Map<string, string[]>>(new Map());
+  const [capabilitiesLoading, setCapabilitiesLoading] = useState(false);
 
   const sortedModels = useMemo(
     () => [...models].sort((a, b) => b.size - a.size),
@@ -226,6 +231,25 @@ export function ModelsPage() {
     void runUpdateCheck();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connected, models, baseUrl, agentUrl]);
+
+  // Fetch model capabilities (vision, tools, etc.) when models load
+  useEffect(() => {
+    if (!connected || models.length === 0) return;
+    let cancelled = false;
+    async function fetchCapabilities() {
+      setCapabilitiesLoading(true);
+      try {
+        const caps = await getAllModelCapabilities(baseUrl, models.map((m) => m.name));
+        if (!cancelled) setCapabilities(caps);
+      } catch {
+        // Silently fail - capabilities are optional
+      } finally {
+        if (!cancelled) setCapabilitiesLoading(false);
+      }
+    }
+    void fetchCapabilities();
+    return () => { cancelled = true; };
+  }, [connected, models, baseUrl]);
 
   const isPulling = pulling || progress?.status === "done";
 
@@ -521,6 +545,11 @@ export function ModelsPage() {
                       )}
                       {model.details?.quantization_level && <Badge>{model.details.quantization_level}</Badge>}
                       {model.details?.family && <Badge>{model.details.family}</Badge>}
+                      {capabilities.get(model.name)?.filter((c) => c !== "completion").map((cap) => (
+                        <Badge key={cap} className="border-blue-600/40 bg-blue-400/10 text-blue-800 dark:border-blue-400/40 dark:text-blue-300">
+                          {cap}
+                        </Badge>
+                      ))}
                       {updates?.[model.name]?.updateAvailable && (
                         <Badge className="border-amber-600/40 bg-amber-400/10 text-amber-800 dark:border-amber-400/40 dark:text-amber-300">
                           Update available

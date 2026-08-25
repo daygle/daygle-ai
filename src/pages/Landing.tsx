@@ -4,8 +4,8 @@ import { Logo } from "../components/Logo";
 import { useOllama } from "../context/OllamaProvider";
 
 const TILES = [
-  { to: "/models", icon: Box, title: "Models", body: "Pull and manage your local models." },
-  { to: "/settings", icon: SettingsIcon, title: "Settings", body: "Server URL and GitHub token." },
+  { to: "/models", icon: Box, title: "Models", body: "Download and manage your local models." },
+  { to: "/settings", icon: SettingsIcon, title: "Settings", body: "Configure your Ollama server and API keys." },
 ];
 
 export function Landing() {
@@ -24,7 +24,7 @@ export function Landing() {
         <div className="mb-8 flex flex-col items-center text-center">
           <Logo />
           <p className="mt-4 text-sm text-muted-foreground">
-            Your private AI coding agent, on models you run yourself.
+            Your AI coding assistant, running locally on your own hardware.
           </p>
           <div className="mt-3 inline-flex items-center gap-2 rounded-full border border-border bg-card px-3 py-1 text-xs">
             <span className={`h-1.5 w-1.5 rounded-full ${status.dot}`} />
@@ -43,20 +43,20 @@ export function Landing() {
             </div>
             <div className="min-w-0 flex-1">
               <h2 className="text-base font-semibold">Agent</h2>
-              <p className="text-sm text-muted-foreground">Chat, work in a repository, or hand it a whole task to complete and open a PR.</p>
+              <p className="text-sm text-muted-foreground">AI pair programmer that reads and edits your code.</p>
             </div>
             <ArrowRight className="h-5 w-5 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5 group-hover:text-accent" />
           </Link>
           <Link
             to="/chat"
-            className="group flex items-center gap-4 rounded-2xl border border-border bg-card p-5 transition-colors hover:border-accent/60"
+            className="group flex items-center gap-4 rounded-2xl border border-accent/40 bg-card p-5 transition-colors hover:border-accent"
           >
-            <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-muted text-muted-foreground group-hover:text-foreground">
+            <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-accent/15 text-accent">
               <MessageCircle className="h-6 w-6" />
             </div>
             <div className="min-w-0 flex-1">
               <h2 className="text-base font-semibold">Chat</h2>
-              <p className="text-sm text-muted-foreground">Talk to your local models - no repository needed.</p>
+              <p className="text-sm text-muted-foreground">Direct conversation with your local AI models.</p>
             </div>
           </Link>
         </div>
