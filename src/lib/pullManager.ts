@@ -59,6 +59,6 @@ export async function startPull(
       }
     }, 1200);
   } catch (err) {
-    set({ name: null, progress: null, pulling: false, error: describeError(err) });
+    set({ name: null, progress: null, pulling: false, error: describeError(err, baseUrl) });
   }
 }

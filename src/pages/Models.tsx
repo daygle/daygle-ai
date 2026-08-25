@@ -190,7 +190,7 @@ export function ModelsPage() {
     try {
       setDetailData(await showModel(baseUrl, model.name));
     } catch (err) {
-      setDetailData({ error: describeError(err) });
+      setDetailData({ error: describeError(err, baseUrl) });
     } finally {
       setDetailLoading(false);
     }
@@ -203,7 +203,7 @@ export function ModelsPage() {
       setConfirmDelete(null);
       await refreshModels();
     } catch (err) {
-      setPullError(describeError(err));
+      setPullError(describeError(err, baseUrl));
     } finally {
       setDeleting(null);
     }

@@ -49,7 +49,7 @@ function parseErrorText(text: string): string {
   }
 }
 
-export function describeError(err: unknown): string {
+export function describeError(err: unknown, baseUrl?: string): string {
   if (err instanceof OllamaError) {
     return err.message;
   }
@@ -57,7 +57,15 @@ export function describeError(err: unknown): string {
     return "Request cancelled.";
   }
   if (err instanceof TypeError) {
-    return "Could not reach the Ollama server. Check the URL, make sure `ollama serve` is running, and allow this app's origin with OLLAMA_ORIGINS (see Settings).";
+    // The browser reaches Ollama through the UI's same-origin `/api/ollama`
+    // proxy, which strips the Origin header - so a reachability failure here is
+    // the app server not being able to talk to Ollama, not a CORS/OLLAMA_ORIGINS
+    // problem. Only a direct loopback base URL depends on OLLAMA_ORIGINS.
+    const direct = baseUrl ? !baseUrl.includes("/api/ollama") : false;
+    if (direct) {
+      return "Could not reach the Ollama server. Make sure `ollama serve` is running and allow this app's origin with OLLAMA_ORIGINS (see Settings).";
+    }
+    return "Could not reach the Ollama server. Make sure `ollama serve` is running on 127.0.0.1:11434 so the app can proxy to it.";
   }
   if (err instanceof Error) {
     return err.message;
