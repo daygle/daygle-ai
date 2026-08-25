@@ -620,16 +620,24 @@ function sanitizeJsonValue(value: unknown, seen = new WeakSet<object>()): unknow
  */
 const FORBIDDEN_JSON_KEYS = new Set(["stack", "cause", "errors"]);
 
-function sendJson(res: ServerResponse, status: number, body: unknown): void {
-  res.writeHead(status, { "Content-Type": "application/json", ...CORS_HEADERS });
-  const json = JSON.stringify(sanitizeJsonValue(body), (key, value) => {
+/**
+ * Serialize any response payload so error internals (stack traces, cause
+ * chains, nested error lists) can never reach a client, whatever shape the
+ * value takes. Every wire-format JSON body must go through this sink.
+ */
+function safeJsonString(value: unknown): string {
+  return JSON.stringify(sanitizeJsonValue(value), (key, entry) => {
     if (FORBIDDEN_JSON_KEYS.has(key)) return undefined;
     // Defense-in-depth: convert any Error object that slips through the
     // pre-sanitizer into a safe message string so its .stack never leaks.
-    if (value instanceof Error) return errMessage(value);
-    return value;
+    if (entry instanceof Error) return errMessage(entry);
+    return entry;
   });
-  res.end(json);
+}
+
+function sendJson(res: ServerResponse, status: number, body: unknown): void {
+  res.writeHead(status, { "Content-Type": "application/json", ...CORS_HEADERS });
+  res.end(safeJsonString(body));
 }
 
 /**
@@ -1038,7 +1046,13 @@ function handleEvents(req: IncomingMessage, res: ServerResponse, job: Job): void
   });
 
   const send = (event: AgentEvent) => {
-    res.write(`data: ${JSON.stringify(event)}\n\n`);
+    // The SSE channel bypasses sendJson, so run events through the same
+    // sanitizer; otherwise an error event built from a raw err.message could
+    // leak a multi-line stack trace to the browser.
+    const safeEvent = event.type === "error" && typeof (event as { message?: unknown }).message === "string"
+      ? { ...event, message: errMessage((event as { message: string }).message) }
+      : event;
+    res.write(`data: ${safeJsonString(safeEvent)}\n\n`);
     if (event.type === "done" || event.type === "error" || event.type === "cancelled") {
       job.listeners.delete(send);
       res.end();

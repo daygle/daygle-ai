@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { isLoopbackUrl } from "./security";
 
 const REGISTRY = "https://registry.ollama.ai";
 const MANIFEST_ACCEPT = "application/vnd.docker.distribution.manifest.v2+json";
@@ -19,18 +20,6 @@ function isSafeModelRef(namespace: string, tag: string): boolean {
  * loopback addresses - never to arbitrary hosts supplied by a client
  * (which would let the server be used as an SSRF proxy).
  */
-function isLoopbackUrl(raw: string): boolean {
-  let url: URL;
-  try {
-    url = new URL(raw);
-  } catch {
-    return false;
-  }
-  if (url.protocol !== "http:" && url.protocol !== "https:") return false;
-  if (url.username || url.password) return false;
-  const host = url.hostname.toLowerCase();
-  return host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "[::1]";
-}
 
 export interface ModelUpdateCheck {
   name: string;
@@ -96,7 +85,10 @@ export async function checkModelUpdate(ollamaUrl: string, name: string): Promise
       return { name, updateAvailable: false, error: "Invalid model name" };
     }
 
-    const tagsRes = await fetch(`${base}/api/tags`);
+    // Never follow redirects: a (possibly compromised) local service answering
+    // on the loopback address must not be able to point this server at another
+    // host (SSRF). The response is also bounded in time.
+    const tagsRes = await fetch(`${base}/api/tags`, { redirect: "error", signal: AbortSignal.timeout(8_000) });
     if (!tagsRes.ok) throw new Error(`Ollama /api/tags failed (${tagsRes.status})`);
     const tags = (await tagsRes.json()) as { models?: { name: string; digest: string }[] };
     const local = (tags.models ?? []).find((m) => m.name === name);
