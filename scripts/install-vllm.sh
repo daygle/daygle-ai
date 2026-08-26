@@ -2,6 +2,8 @@
 # Installs vLLM into this project (./.venv-vllm) for running Hugging Face
 # models locally with an OpenAI-compatible API server. The environment is
 # intentionally project-local so it cannot modify another application's venv.
+# Tesla P4 systems are rejected because the pip vLLM wheels require compute
+# capability 7.5+; use the bundled Ollama path on that GPU.
 #
 # Usage:
 #   sh scripts/install-vllm.sh                         # install only
@@ -53,6 +55,19 @@ while [ "$#" -gt 0 ]; do
   esac
   shift
 done
+
+# --- GPU compatibility ------------------------------------------------------
+# The pip vLLM wheels require NVIDIA compute capability 7.5+. Tesla P4 is
+# compute capability 6.1, so fail closed before creating a venv or downloading
+# packages. The bundled Ollama path is the supported runtime for a P4.
+if command -v nvidia-smi >/dev/null 2>&1; then
+  GPU_NAMES="$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null || true)"
+  if printf '%s\n' "$GPU_NAMES" | grep -Eqi 'Tesla P4'; then
+    echo "Error: Tesla P4 detected; this vLLM installation requires compute capability 7.5+ (the P4 is 6.1)." >&2
+    echo "Use the bundled Ollama server instead. vLLM installation was not started." >&2
+    exit 1
+  fi
+fi
 
 # --- Check Python -----------------------------------------------------------
 if ! command -v python3 >/dev/null 2>&1 && ! command -v python >/dev/null 2>&1; then

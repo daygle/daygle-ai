@@ -38,6 +38,8 @@ curl -fsSL https://raw.githubusercontent.com/daygle/daygle-ai/main/scripts/insta
 Available variables: `DAYGLE_DIR`, `DAYGLE_REPO`, `DAYGLE_REF`, `DAYGLE_MODEL`
 (set to `""` to skip pulling), `DAYGLE_SERVICES` (`0` to skip systemd), and
 `DAYGLE_VLLM` (`1` to install optional vLLM in the project-local `.venv-vllm`).
+The installer automatically refuses `DAYGLE_VLLM=1` when it detects a Tesla P4,
+before creating the venv or downloading vLLM; use bundled Ollama on that GPU.
 Open the UI
 at `http://<server-ip>:5173` from the server itself or another trusted LAN machine.
 Only the UI is LAN-facing; Ollama and the agent remain loopback-only behind its proxy.
@@ -108,7 +110,9 @@ bun run setup --model qwen2.5-coder:7b
 The main application does not use Python: the UI and agent run on Bun, and
 Ollama is a bundled native binary. The optional Hugging Face/vLLM path is the
 only Python component and is installed into the project-local `.venv-vllm`, so
-it will not touch another application's venv. To opt into it explicitly:
+it will not touch another application's venv. The vLLM installer also refuses
+to run when it detects a Tesla P4, because the pip wheels require compute
+capability 7.5+ while the P4 is 6.1. To opt into vLLM on a compatible GPU:
 
 ```bash
 sudo apt install python3 python3-venv

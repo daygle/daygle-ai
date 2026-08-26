@@ -16,7 +16,8 @@
 #   DAYGLE_REF       branch/tag/commit to check   (default: main)
 #   DAYGLE_MODEL     model to pull on install     (default: qwen2.5-coder:7b; "" to skip)
 #   DAYGLE_SERVICES  install systemd services     (default: 1; 0 to skip)
-#   DAYGLE_VLLM      install optional vLLM into .venv-vllm (default: 0; 1 to install)
+#   DAYGLE_VLLM      install optional vLLM into .venv-vllm (default: 0; 1 to install;
+#                    refused automatically on Tesla P4)
 #
 set -euo pipefail
 
@@ -39,6 +40,16 @@ warn() { printf "${c_warn}  !${c_off} %s\n" "$*" >&2; }
 die()  { printf "${c_err}  ✗${c_off} %s\n" "$*" >&2; exit 1; }
 
 [ "$(id -u)" -eq 0 ] || die "Please run as root (pipe to 'sudo bash')."
+
+# Fail before changing the host if vLLM was explicitly requested on a Tesla P4.
+# Its pip wheels require compute capability 7.5+, while the P4 is 6.1; Ollama
+# is the supported GPU runtime for this machine.
+if [ "$INSTALL_VLLM" = "1" ] && command -v nvidia-smi >/dev/null 2>&1; then
+  GPU_NAMES="$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null || true)"
+  if printf '%s\n' "$GPU_NAMES" | grep -Eqi 'Tesla P4'; then
+    die "Tesla P4 detected: vLLM requires compute capability 7.5+ (the P4 is 6.1). Use bundled Ollama; no changes were made."
+  fi
+fi
 
 if [ -r /etc/os-release ]; then
   . /etc/os-release
