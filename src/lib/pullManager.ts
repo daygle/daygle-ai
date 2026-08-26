@@ -1,4 +1,18 @@
-import { describeError, pullModel, type PullProgress } from "./ollama";
+import {
+  describeError,
+  OllamaConnectionInterrupted,
+  pullModel,
+  type PullProgress,
+} from "./ollama";
+
+/** Re-pull attempts after a mid-download connection drop (Ollama resumes). */
+const MAX_RESUME_ATTEMPTS = 8;
+
+function resumeDelayMs(attempt: number): number {
+  return Math.min(8000, 1000 * 2 ** (attempt - 1));
+}
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
  * Module-level manager for an in-flight model download. It owns the pull stream
@@ -49,7 +63,28 @@ export async function startPull(
   if (clearTimer) clearTimeout(clearTimer);
   set({ name: target, pulling: true, progress: null, error: null });
   try {
-    await pullModel(baseUrl, target, (progress) => set({ progress }));
+    // A slow or flaky connection - or a phone locking/backgrounding the tab -
+    // can cut a long download's stream mid-transfer. Ollama keeps the partial
+    // blobs, so on an interrupted connection we reconnect and re-issue the pull;
+    // it resumes rather than restarting. Only genuinely interrupted streams are
+    // retried - a real Ollama error (bad model name, etc.) fails immediately.
+    for (let attempt = 1; ; attempt++) {
+      try {
+        await pullModel(baseUrl, target, (progress) => set({ progress }));
+        break;
+      } catch (err) {
+        const resumable = err instanceof OllamaConnectionInterrupted;
+        if (!resumable || attempt >= MAX_RESUME_ATTEMPTS) throw err;
+        set({
+          progress: {
+            status: `connection dropped - reconnecting (attempt ${attempt + 1})…`,
+            percent: state.progress?.percent,
+          },
+        });
+        await sleep(resumeDelayMs(attempt));
+        if (state.name !== target) return; // superseded by another pull
+      }
+    }
     set({ progress: { status: "done" }, pulling: false });
     await onComplete?.();
     // Briefly show "done", then clear - unless another pull has started since.
