@@ -6,8 +6,8 @@ import {
   ImagePlus,
   Loader2,
   MessageSquarePlus,
-  PanelRightClose,
-  PanelRightOpen,
+  PanelLeftClose,
+  PanelLeftOpen,
   Pencil,
   Send,
   Square,
@@ -550,7 +550,7 @@ export function ChatPage() {
                 className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
                 title="Hide chat list"
               >
-                <PanelRightClose className="h-3.5 w-3.5" />
+                <PanelLeftClose className="h-3.5 w-3.5" />
               </button>
             </div>
           </div>
@@ -643,7 +643,7 @@ export function ChatPage() {
           className="flex w-9 shrink-0 items-center justify-center border-r border-border bg-card text-muted-foreground hover:bg-muted hover:text-foreground"
           title="Show chat list"
         >
-          <PanelRightOpen className="h-4 w-4 rotate-180" />
+          <PanelLeftOpen className="h-4 w-4" />
         </button>
       )}
 

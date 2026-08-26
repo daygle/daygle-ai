@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { Bot, Check, ClipboardList, ChevronDown, ChevronRight, ChevronUp, CircleAlert, Eye, FileEdit, Files, Folder, GitBranch, GitCompare, GripVertical, ImagePlus, ListTodo, Loader2, MessageSquarePlus, Pencil, PanelRightClose, PanelRightOpen, Plus, RefreshCw, RotateCcw, Search, Send, ShieldCheck, Square, Terminal, Trash2, User, X } from "lucide-react";
+import { Bot, Check, ClipboardList, ChevronDown, ChevronRight, ChevronUp, CircleAlert, Eye, FileEdit, Files, Folder, GitBranch, GitCompare, GripVertical, ImagePlus, ListTodo, Loader2, MessageSquarePlus, Pencil, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Plus, RefreshCw, RotateCcw, Search, Send, ShieldCheck, Square, Terminal, Trash2, User, X } from "lucide-react";
 
 
 import {
@@ -2204,7 +2204,7 @@ export function AgentPage() {
                 className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
                 title="Hide chat list"
               >
-                <PanelRightClose className="h-3.5 w-3.5" />
+                <PanelLeftClose className="h-3.5 w-3.5" />
               </button>
             </div>
           </div>
@@ -2309,7 +2309,7 @@ export function AgentPage() {
           className="flex w-9 shrink-0 items-center justify-center border-r border-border bg-card text-muted-foreground hover:bg-muted hover:text-foreground"
           title="Show chat list"
         >
-          <PanelRightOpen className="h-4 w-4 rotate-180" />
+          <PanelLeftOpen className="h-4 w-4" />
         </button>
       )}
       <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
