@@ -254,9 +254,6 @@ export async function performAppUpdate(
 ): Promise<void> {
   const appDir = process.cwd();
   updateProgress = { status: "started", message: "Starting update...", startedAt: Date.now() };
-  // Declared outside the try so the failure handler can restore the stash.
-  let stashed = false;
-
   try {
     updateProgress = { status: "pulling", message: "Pulling latest changes...", startedAt: updateProgress?.startedAt ?? Date.now() };
     emit({ type: "update_progress", message: "Pulling latest changes..." });
@@ -267,14 +264,12 @@ export async function performAppUpdate(
       throw new Error("Not a git repository. Cannot auto-update.");
     }
 
-    // Stash any local changes so the pull can proceed cleanly. Track the stash
-    // pop state so a mid-update failure (pull, install, or build) restores the
-    // user's working tree instead of stranding their changes in the stash.
-    try {
-      const stashOut = execFileSync("git", ["stash"], { cwd: appDir, stdio: "pipe" }).toString().trim();
-      // "No local changes to save" is the only no-op outcome.
-      stashed = stashOut.length > 0 && !stashOut.includes("No local changes");
-    } catch { /* nothing to stash */ }
+    // Never update over a dirty checkout. This keeps local edits and untracked
+    // files safe, and avoids resolving a hidden stash after a partial update.
+    const localStatus = execFileSync("git", ["status", "--porcelain"], { cwd: appDir, stdio: "pipe" }).toString().trim();
+    if (localStatus) {
+      throw new Error("The application checkout has local changes. Commit or move them before updating.");
+    }
 
     // Detect the default branch (main, master, etc.)
     let defaultBranch = "main";
@@ -293,9 +288,25 @@ export async function performAppUpdate(
       }
     }
 
-    // Pull latest changes including tags
+    // The Debian installer normally leaves the checkout on its branch, but
+    // older installs may be detached at FETCH_HEAD. Reattach to the default
+    // branch before pulling so the updater works on those installations too.
+    let currentBranch = "";
     try {
-      execFileSync("git", ["pull", "origin", defaultBranch, "--tags"], { cwd: appDir, stdio: "pipe" });
+      currentBranch = execFileSync("git", ["branch", "--show-current"], { cwd: appDir, stdio: "pipe" }).toString().trim();
+    } catch { /* the pull below will report a useful error */ }
+    if (currentBranch !== defaultBranch) {
+      try {
+        execFileSync("git", ["switch", defaultBranch], { cwd: appDir, stdio: "pipe" });
+      } catch {
+        execFileSync("git", ["switch", "--create", defaultBranch, `origin/${defaultBranch}`], { cwd: appDir, stdio: "pipe" });
+      }
+    }
+
+    // Pull latest changes including tags, without creating an implicit merge
+    // commit in the production checkout.
+    try {
+      execFileSync("git", ["pull", "--ff-only", "origin", defaultBranch, "--tags"], { cwd: appDir, stdio: "pipe" });
     } catch (err) {
       throw new Error(`git pull failed: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -333,13 +344,6 @@ export async function performAppUpdate(
         message: "Update complete! Server is restarting. The page will reload automatically.",
         success: true,});
   } catch (error) {
-    // Never leave the user's working tree stranded in the stash when the
-    // update fails part-way.
-    if (stashed) {
-      try {
-        execFileSync("git", ["stash", "pop"], { cwd: appDir, stdio: "pipe" });
-      } catch { /* already popped or conflicted; report the original error */ }
-    }
     const message = error instanceof Error ? error.message : String(error);
     updateProgress = { status: "failed", message: `Update failed: ${message}`, startedAt: updateProgress?.startedAt ?? Date.now() };
     emit({
@@ -350,8 +354,15 @@ export async function performAppUpdate(
   }
 }
 
-/** Restart the server through a shell-free detached Bun helper. */
+/** Restart the server through systemd when available, or a detached Bun helper. */
 async function restartAgentServer(appDir: string): Promise<void> {
+  // Under systemd, exiting cleanly lets Restart=always start exactly one new
+  // agent. Spawning a second detached agent here would race for port 8787.
+  if (process.env.INVOCATION_ID || process.env.SYSTEMD_EXEC_PID) {
+    setTimeout(() => process.exit(0), 250);
+    return;
+  }
+
   const safeDir = path.resolve(appDir);
   const executable = process.execPath;
   const safePid = Number.isInteger(process.pid) && process.pid > 0 ? process.pid : 1;

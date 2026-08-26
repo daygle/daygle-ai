@@ -17,12 +17,12 @@ ERRORS=0
 WARNINGS=0
 
 if [ -t 1 ]; then
-  BOLD='\033[1m'
-  CYAN='\033[1;36m'
-  GREEN='\033[1;32m'
-  YELLOW='\033[1;33m'
-  RED='\033[1;31m'
-  RESET='\033[0m'
+  BOLD=$'\033[1m'
+  CYAN=$'\033[1;36m'
+  GREEN=$'\033[1;32m'
+  YELLOW=$'\033[1;33m'
+  RED=$'\033[1;31m'
+  RESET=$'\033[0m'
 else
   BOLD=''; CYAN=''; GREEN=''; YELLOW=''; RED=''; RESET=''
 fi
@@ -164,7 +164,25 @@ if have nvidia-smi; then
 $GPU_INFO
 EOF
     if printf '%s\n' "$GPU_INFO" | grep -qi 'Tesla P4'; then
-      info "Tesla P4 detected: use bundled Ollama; current vLLM GPU wheels require compute capability 7.5+"
+      P4_DRIVER_VERSION="$(printf '%s\n' "$GPU_INFO" | awk -F',' 'tolower($1) ~ /tesla p4/ {gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2); print $2; exit}')"
+      P4_DRIVER_MAJOR="${P4_DRIVER_VERSION%%.*}"
+      P4_TOTAL_MEMORY="$(printf '%s\n' "$GPU_INFO" | awk -F',' 'tolower($1) ~ /tesla p4/ {gsub(/^[[:space:]]+|[[:space:]]+$/, "", $3); gsub(/[^0-9.]/, "", $3); print $3; exit}')"
+      P4_USED_MEMORY="$(nvidia-smi --query-compute-apps=pid,name,used_memory --format=csv,noheader 2>/dev/null | awk -F',' '{gsub(/^[[:space:]]+|[[:space:]]+$/, "", $1); gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2); gsub(/^[[:space:]]+|[[:space:]]+$/, "", $3); gsub(/[^0-9.]/, "", $3); if ($3+0 > 0) {total += $3; printf "- %s (PID %s): %s\n", $2, $1, $3}} END {printf "%.1f", total}')"
+      info "Tesla P4 detected: compute capability 6.1; use bundled Ollama"
+      if [ -n "$P4_DRIVER_VERSION" ] && [ "$P4_DRIVER_MAJOR" -ge 570 ] 2>/dev/null; then
+        ok "Tesla P4 NVIDIA driver ${P4_DRIVER_VERSION} meets Ollama's 570+ requirement"
+      else
+        warn "Tesla P4 supports Ollama with NVIDIA driver 570+ (detected ${P4_DRIVER_VERSION:-unknown})"
+      fi
+      if [ -n "$P4_TOTAL_MEMORY" ] && [ -n "$P4_USED_MEMORY" ] && [ "$(awk -v used=\"$P4_USED_MEMORY\" -v total=\"$P4_TOTAL_MEMORY\" 'BEGIN {print ((used/total)*100) >= 50}')" = '1' ]; then
+        warn "Tesla P4 has significant GPU memory in use (${P4_USED_MEMORY:-0} MiB / ${P4_TOTAL_MEMORY:-0} MiB); Ollama GPU performance may be limited or out-of-memory errors may occur while another GPU process is active"
+        while IFS= read -r process_line; do
+          [ -n "$process_line" ] && info "$process_line"
+        done <<EOF
+$(nvidia-smi --query-compute-apps=pid,name,used_memory --format=csv,noheader 2>/dev/null | awk -F',' '{gsub(/^[[:space:]]+|[[:space:]]+$/, "", $1); gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2); gsub(/^[[:space:]]+|[[:space:]]+$/, "", $3); if ($3+0 > 0) printf "- %s (PID %s): %s\n", $2, $1, $3}')
+EOF
+      fi
+      info "vLLM remains unsupported on the P4; its current GPU wheels require compute capability 7.5+"
     fi
   else
     fail "nvidia-smi is installed but cannot query the GPU/driver"

@@ -41,13 +41,29 @@ die()  { printf "${c_err}  ✗${c_off} %s\n" "$*" >&2; exit 1; }
 
 [ "$(id -u)" -eq 0 ] || die "Please run as root (pipe to 'sudo bash')."
 
-# Fail before changing the host if vLLM was explicitly requested on a Tesla P4.
-# Its pip wheels require compute capability 7.5+, while the P4 is 6.1; Ollama
-# is the supported GPU runtime for this machine.
-if [ "$INSTALL_VLLM" = "1" ] && command -v nvidia-smi >/dev/null 2>&1; then
-  GPU_NAMES="$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null || true)"
-  if printf '%s\n' "$GPU_NAMES" | grep -Eqi 'Tesla P4'; then
-    die "Tesla P4 detected: vLLM requires compute capability 7.5+ (the P4 is 6.1). Use bundled Ollama; no changes were made."
+# Fail before changing the host if the detected Tesla P4 cannot use the
+# current Ollama GPU runtime, or if vLLM was explicitly requested. Ollama
+# supports the P4's compute capability 6.1 with NVIDIA driver 570+; vLLM's
+# current pip wheels require compute capability 7.5+ and are not compatible.
+if command -v nvidia-smi >/dev/null 2>&1; then
+  GPU_INFO="$(nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader 2>/dev/null || true)"
+  P4_DRIVER_VERSION="$(printf '%s\n' "$GPU_INFO" | awk -F',' 'tolower($1) ~ /tesla p4/ {gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2); print $2; exit}')"
+  P4_TOTAL_MEMORY="$(printf '%s\n' "$GPU_INFO" | awk -F',' 'tolower($1) ~ /tesla p4/ {gsub(/^[[:space:]]+|[[:space:]]+$/, "", $3); gsub(/[^0-9.]/, "", $3); print $3; exit}')"
+  P4_USED_MEMORY="$(nvidia-smi --query-compute-apps=used_memory --format=csv,noheader 2>/dev/null | awk -F',' '{gsub(/^[[:space:]]+|[[:space:]]+$/, "", $1); gsub(/[^0-9.]/, "", $1); total += $1} END {printf "%.1f", total}')"
+  if [ -n "$P4_DRIVER_VERSION" ]; then
+    P4_DRIVER_MAJOR="${P4_DRIVER_VERSION%%.*}"
+    if [ -n "$P4_DRIVER_MAJOR" ] && [ "$P4_DRIVER_MAJOR" -ge 570 ] 2>/dev/null; then
+      ok "Tesla P4 NVIDIA driver ${P4_DRIVER_VERSION} meets Ollama's 570+ requirement"
+    else
+      warn "Tesla P4 supports Ollama with NVIDIA driver 570+ (detected ${P4_DRIVER_VERSION})"
+    fi
+    if [ -n "$P4_TOTAL_MEMORY" ] && [ -n "$P4_USED_MEMORY" ] && [ "$(awk -v used=\"$P4_USED_MEMORY\" -v total=\"$P4_TOTAL_MEMORY\" 'BEGIN {print ((used/total)*100) >= 50}')" = '1' ]; then
+      warn "Tesla P4 has significant GPU memory in use (${P4_USED_MEMORY:-0} MiB / ${P4_TOTAL_MEMORY:-0} MiB); Ollama GPU performance may be limited or out-of-memory errors may occur while another GPU process is active"
+      nvidia-smi --query-compute-apps=pid,name,used_memory --format=csv,noheader 2>/dev/null | awk -F',' '{gsub(/^[[:space:]]+|[[:space:]]+$/, "", $1); gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2); gsub(/^[[:space:]]+|[[:space:]]+$/, "", $3); if ($3+0 > 0) printf "  - %s (PID %s): %s\n", $2, $1, $3}' || true
+    fi
+    if [ "$INSTALL_VLLM" = "1" ]; then
+      die "Tesla P4 detected: vLLM requires compute capability 7.5+ (the P4 is 6.1). Use bundled Ollama; no changes were made."
+    fi
   fi
 fi
 
@@ -116,8 +132,17 @@ ln -sf "$BUN_BIN" /usr/local/bin/bun
 # --- 3. Clone / update the app ---------------------------------------------
 if [ -d "$DIR/.git" ]; then
   log "Updating existing checkout at $DIR…"
+  LOCAL_STATUS="$(git -C "$DIR" status --porcelain)"
+  [ -z "$LOCAL_STATUS" ] || die "Existing checkout at $DIR has local changes; commit or move them before updating. No source files were changed."
   git -C "$DIR" fetch --depth 1 origin "$REF"
-  git -C "$DIR" checkout -f FETCH_HEAD
+  # Keep normal branch-based installs on a branch so the in-app updater can
+  # use git pull later. Tags/commit refs remain detached intentionally.
+  if git -C "$DIR" check-ref-format --branch "$REF" >/dev/null 2>&1 && \
+     git -C "$DIR" show-ref --verify --quiet "refs/remotes/origin/$REF"; then
+    git -C "$DIR" checkout -B "$REF" FETCH_HEAD
+  else
+    git -C "$DIR" checkout --detach FETCH_HEAD
+  fi
 else
   log "Cloning $REPO ($REF) into $DIR…"
   install -d -m 0755 "$(dirname "$DIR")"

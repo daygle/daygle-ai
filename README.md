@@ -38,8 +38,9 @@ curl -fsSL https://raw.githubusercontent.com/daygle/daygle-ai/main/scripts/insta
 Available variables: `DAYGLE_DIR`, `DAYGLE_REPO`, `DAYGLE_REF`, `DAYGLE_MODEL`
 (set to `""` to skip pulling), `DAYGLE_SERVICES` (`0` to skip systemd), and
 `DAYGLE_VLLM` (`1` to install optional vLLM in the project-local `.venv-vllm`).
-The installer automatically refuses `DAYGLE_VLLM=1` when it detects a Tesla P4,
-before creating the venv or downloading vLLM; use bundled Ollama on that GPU.
+The installer warns if a detected Tesla P4 has an NVIDIA driver
+older than 570 and refuses `DAYGLE_VLLM=1` on any P4 before creating the
+venv or downloading vLLM; use bundled Ollama on that GPU.
 Open the UI
 at `http://<server-ip>:5173` from the server itself or another trusted LAN machine.
 Only the UI is LAN-facing; Ollama and the agent remain loopback-only behind its proxy.
@@ -64,10 +65,13 @@ bash scripts/check-debian.sh
 
 After Bun is installed, `bun run preflight` is an equivalent shortcut. It checks Debian/architecture, RAM, free disk space, required tools, network
 access to the download hosts, ports `5173`, `8787`, and `11434`, whether
-`/opt/daygle-ai` already exists, and NVIDIA driver/GPU visibility. Missing
-packages are reported as warnings because the Debian installer can install
-them. Errors should be resolved before proceeding. A Tesla P4 with a working
-`nvidia-smi` is suitable for the Ollama path; do not enable optional vLLM on it.
+`/opt/daygle-ai` already exists, NVIDIA driver/GPU visibility, and whether a
+Tesla P4 has significant GPU memory already in use. Missing packages are
+reported as warnings because the Debian installer can install them. Errors
+should be resolved before proceeding. A Tesla P4 is supported by Ollama when
+its NVIDIA driver is **570 or newer**; do not enable optional vLLM on it. The
+installer now warns instead of refusing to continue on an older driver, and it
+warns if GPU memory is significantly occupied by another process.
 
 ### Prerequisites (manual install)
 
@@ -112,7 +116,8 @@ Ollama is a bundled native binary. The optional Hugging Face/vLLM path is the
 only Python component and is installed into the project-local `.venv-vllm`, so
 it will not touch another application's venv. The vLLM installer also refuses
 to run when it detects a Tesla P4, because the pip wheels require compute
-capability 7.5+ while the P4 is 6.1. To opt into vLLM on a compatible GPU:
+capability 7.5+ while the P4 is 6.1. The current Ollama runtime supports the
+P4 with NVIDIA driver 570+. To opt into vLLM on a compatible GPU:
 
 ```bash
 sudo apt install python3 python3-venv
@@ -122,9 +127,9 @@ curl -fsSL https://raw.githubusercontent.com/daygle/daygle-ai/main/scripts/insta
 ```
 
 **Tesla P4 note:** the current vLLM GPU wheels require NVIDIA compute
-capability 7.5 or newer; a Tesla P4 is compute capability 6.1. Use the bundled
-Ollama server for the P4 instead of vLLM unless you intentionally build and
-maintain a compatible vLLM-from-source setup.
+capability 7.5 or newer; a Tesla P4 is compute capability 6.1. Current Ollama
+supports the P4 with NVIDIA driver 570 or newer. Use the bundled Ollama server
+for the P4 instead of vLLM; the installers refuse the incompatible vLLM path.
 
 ### GitHub authentication (for the Agent)
 
