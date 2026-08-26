@@ -58,6 +58,7 @@ export function Landing() {
               <h2 className="text-base font-semibold">Chat</h2>
               <p className="text-sm text-muted-foreground">Direct conversation with your local AI models.</p>
             </div>
+            <ArrowRight className="h-5 w-5 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5 group-hover:text-accent" />
           </Link>
         </div>
 

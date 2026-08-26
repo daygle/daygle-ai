@@ -45,12 +45,14 @@ export function SettingsPage() {
   }
   useEffect(() => () => window.clearTimeout(savedTimer.current), []);
 
+  // Sync gen options to localStorage whenever they change. Keeps the save out
+  // of the setGen updater so React never calls it during a discarded render.
+  useEffect(() => {
+    saveGenOptions(gen);
+  }, [gen]);
+
   function updateGen(patch: Partial<GenOptions>) {
-    setGen((prev) => {
-      const next = { ...prev, ...patch };
-      saveGenOptions(next);
-      return next;
-    });
+    setGen((prev) => ({ ...prev, ...patch }));
     markSaved();
   }
   // Reset only the sampling params, leaving the CPU/performance fields alone.

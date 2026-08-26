@@ -153,7 +153,7 @@ export function ChatPage() {
   const [connected, setConnected] = useState(false);
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [history, setHistory] = useState<ChatSummary[]>([]);
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [sidebarOpen, setSidebarOpen] = useState(() => typeof window !== "undefined" && window.innerWidth >= 640);
   const [renamingChatId, setRenamingChatId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [confirmDeleteChat, setConfirmDeleteChat] = useState<string | null>(null);
@@ -310,6 +310,7 @@ export function ChatPage() {
     removeImageAttachment();
     rememberSession(null);
     refreshHistory();
+    if (window.innerWidth < 640) setSidebarOpen(false);
   }
 
   async function deleteChat(id: string) {
@@ -526,7 +527,10 @@ export function ChatPage() {
     <div className="flex h-full">
       {/* Sidebar: chat history */}
       {sidebarOpen && (
-        <aside className="flex w-64 shrink-0 flex-col border-r border-border bg-card/40">
+        <>
+        {/* Mobile backdrop */}
+        <div className="fixed inset-0 z-30 bg-black/50 sm:hidden" onClick={() => setSidebarOpen(false)} />
+        <aside className="fixed inset-y-0 left-0 z-40 flex w-64 shrink-0 flex-col border-r border-border bg-card shadow-xl sm:relative sm:z-auto sm:shadow-none">
           <div className="flex items-center justify-between border-b border-border px-3 py-3">
             <span className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
               <MessageSquarePlus className="h-3.5 w-3.5" />
@@ -576,7 +580,7 @@ export function ChatPage() {
                       </form>
                     ) : (
                       <button
-                        onClick={() => resumeChat(chat.id)}
+                        onClick={() => { resumeChat(chat.id); if (window.innerWidth < 640) setSidebarOpen(false); }}
                         className="flex min-w-0 flex-1 items-start gap-2 text-left"
                       >
                         <MessageSquarePlus className={`mt-0.5 h-3.5 w-3.5 shrink-0 ${isActive ? "text-accent" : "text-muted-foreground"}`} />
@@ -630,6 +634,7 @@ export function ChatPage() {
             )}
           </div>
         </aside>
+        </>
       )}
       {!sidebarOpen && (
         <button
@@ -662,12 +667,10 @@ export function ChatPage() {
         </header>
 
         {/* Messages */}
-        <div ref={scrollRef} onScroll={handleScroll} className="min-h-0 flex-1 overflow-y-auto px-4 py-6">
-          <div className="mx-auto max-w-3xl space-y-6">
+        <div ref={scrollRef} onScroll={handleScroll} className="min-h-0 flex-1 overflow-y-auto px-3 py-4 sm:px-4 sm:py-6">              <div className="mx-auto max-w-3xl space-y-4 sm:space-y-6">
             {messages.map((msg) => (
               <div key={msg.id}>
-                {msg.role === "user" && (
-                  <div className="flex gap-3">
+                {msg.role === "user" && (                    <div className="flex gap-2 sm:gap-3">
                     <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-accent/20 text-accent">
                       <User className="h-3.5 w-3.5" />
                     </div>
@@ -685,8 +688,7 @@ export function ChatPage() {
                   </div>
                 )}
 
-                {msg.role === "assistant" && (
-                  <div className="flex gap-3">
+                {msg.role === "assistant" && (                    <div className="flex gap-2 sm:gap-3">
                     <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-accent/20 text-accent">
                       <Bot className="h-3.5 w-3.5" />
                     </div>
@@ -736,7 +738,7 @@ export function ChatPage() {
         </div>
 
         {/* Input area */}
-        <div className="sticky bottom-0 z-20 border-t border-border bg-background/95 px-4 py-3 backdrop-blur">
+        <div className="sticky bottom-0 z-20 border-t border-border bg-background/95 px-3 py-2 sm:px-4 sm:py-3 backdrop-blur">
           <div className="mx-auto max-w-3xl space-y-2">
             {imageAttachment && (
               <div className="flex items-center gap-2 rounded-lg border border-border bg-background p-2">
@@ -752,7 +754,7 @@ export function ChatPage() {
               </div>
             )}
 
-            <div className="flex gap-2">
+            <div className="flex gap-1.5 sm:gap-2">
               <input
                 ref={imageInputRef}
                 type="file"
@@ -794,14 +796,14 @@ export function ChatPage() {
                 value={model}
                 onChange={(e) => void handleModelChange(e.target.value)}
                 disabled={streaming || models.length === 0}
-                className="flex-1 rounded-md border border-input bg-background px-2 py-1 text-xs disabled:opacity-60"
+                className="flex-1 min-w-0 rounded-md border border-input bg-background px-2 py-1 text-xs disabled:opacity-60"
               >
                 {models.length === 0 && <option value="">No models detected</option>}
                 {models.map((m) => (
                   <option key={m} value={m}>{m}</option>
                 ))}
               </select>
-              <span className="text-[10px] text-muted-foreground">
+              <span className="hidden text-[10px] text-muted-foreground sm:inline">
                 Per-chat. Default in Settings.
               </span>
             </div>
