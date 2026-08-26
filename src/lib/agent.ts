@@ -1,4 +1,5 @@
 import type { GenOptions } from "./genOptions";
+import type { PullProgress } from "./ollama";
 import { sameHostUrl } from "./utils";
 
 export type AgentEvent =
@@ -256,6 +257,89 @@ export function openAgentEvents(
     source.close();
     onEvent({ type: "error", message: "Agent event stream disconnected." });
   };
+  return () => source.close();
+}
+
+// ---- Server-side model pulls ----
+// The agent runs the download so it survives a browser disconnect or restart.
+
+export type PullStatus = "running" | "done" | "error";
+
+export interface ModelPullState {
+  name: string;
+  status: PullStatus;
+  progress: PullProgress | null;
+  error?: string;
+}
+
+export type ModelPullEvent =
+  | { type: "progress"; progress: PullProgress }
+  | { type: "done" }
+  | { type: "error"; message: string };
+
+/** Ask the agent to start (or attach to) a server-side pull. Throws if the agent
+ * is unreachable, so callers can fall back to a browser-driven pull. */
+export async function startModelPull(
+  serverUrl: string,
+  name: string,
+  ollamaUrl: string,
+): Promise<ModelPullState> {
+  const res = await fetch(`${strip(serverUrl)}/api/pull`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, ollamaUrl }),
+  });
+  if (!res.ok) {
+    const data = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(data.error || `Failed to start download (${res.status}).`);
+  }
+  const data = (await res.json()) as { pull: ModelPullState };
+  return data.pull;
+}
+
+/** List the pulls the agent currently knows about (running or recently finished). */
+export async function listModelPulls(serverUrl: string): Promise<ModelPullState[]> {
+  const res = await fetch(`${strip(serverUrl)}/api/pulls`);
+  if (!res.ok) throw new Error(`Failed to list downloads (${res.status}).`);
+  const data = (await res.json()) as { pulls: ModelPullState[] };
+  return data.pulls ?? [];
+}
+
+/** Ask the agent to cancel a running server-side pull. */
+export async function cancelModelPull(serverUrl: string, name: string): Promise<void> {
+  await fetch(`${strip(serverUrl)}/api/pull/cancel`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+}
+
+/**
+ * Stream a server-side pull's progress over SSE. EventSource auto-reconnects if
+ * the browser's connection drops, re-reading the current snapshot each time,
+ * while the download keeps running on the agent. The subscription closes itself
+ * on a terminal event; the returned function unsubscribes early.
+ */
+export function openModelPullEvents(
+  serverUrl: string,
+  name: string,
+  onEvent: (event: ModelPullEvent) => void,
+): () => void {
+  const source = new EventSource(
+    `${strip(serverUrl)}/api/pull/events?name=${encodeURIComponent(name)}`,
+  );
+  source.onmessage = (event) => {
+    let parsed: ModelPullEvent;
+    try {
+      parsed = JSON.parse(event.data) as ModelPullEvent;
+    } catch {
+      return;
+    }
+    onEvent(parsed);
+    if (parsed.type === "done" || parsed.type === "error") source.close();
+  };
+  // Deliberately no onerror handler that closes: a transient drop should let
+  // EventSource reconnect on its own. A terminal event is what ends the stream.
   return () => source.close();
 }
 
