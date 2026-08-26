@@ -38,6 +38,21 @@ export class OllamaError extends Error {
   }
 }
 
+/**
+ * The pull request reached Ollama and started streaming, but the connection was
+ * cut off mid-transfer (a flaky/slow network, a phone locking or backgrounding
+ * the tab, etc.). Ollama keeps partially downloaded blobs, so re-issuing the
+ * same pull resumes rather than restarts - callers can retry on this.
+ */
+export class OllamaConnectionInterrupted extends OllamaError {
+  constructor(
+    message = "The connection to Ollama was interrupted mid-download.",
+  ) {
+    super(message);
+    this.name = "OllamaConnectionInterrupted";
+  }
+}
+
 export function normalizeBaseUrl(url: string): string {
   return url.trim().replace(/\/+$/, "");
 }
@@ -171,6 +186,7 @@ export async function pullModel(
   const completedByDigest = new Map<string, number>();
   const totalByDigest = new Map<string, number>();
   let buffer = "";
+  let receivedAny = false;
 
   const emit = (line: string) => {
     if (!line.trim()) return;
@@ -202,13 +218,29 @@ export async function pullModel(
     });
   };
 
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split("\n");
-    buffer = lines.pop() ?? "";
-    for (const line of lines) emit(line);
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      receivedAny = true;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+      for (const line of lines) emit(line);
+    }
+  } catch (err) {
+    // An in-band `{"error": ...}` line (thrown by emit) already carries Ollama's
+    // own message - surface it as-is.
+    if (err instanceof OllamaError) throw err;
+    // Otherwise the streaming connection dropped mid-transfer (a network
+    // TypeError from reader.read). The request reached Ollama and the download
+    // was in progress, so this is resumable: re-issuing the pull continues from
+    // the partial blobs Ollama already has. Signal that to the caller so it can
+    // reconnect instead of failing outright.
+    if (receivedAny) {
+      throw new OllamaConnectionInterrupted();
+    }
+    throw err;
   }
   if (buffer.trim()) emit(buffer);
 }
