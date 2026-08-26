@@ -34,7 +34,7 @@ import {
   type OllamaModel,
   type PullProgress,
 } from "../lib/ollama";
-import { startPull, subscribePull } from "../lib/pullManager";
+import { reattachServerPull, startPull, subscribePull } from "../lib/pullManager";
 import { formatBytes, shortDigest, timeAgo } from "../lib/utils";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
@@ -60,6 +60,7 @@ export function ModelsPage() {
   const [pulling, setPulling] = useState(false);
   const [progress, setProgress] = useState<PullProgress | null>(null);
   const [pullError, setPullError] = useState<string | null>(null);
+  const [pullServerSide, setPullServerSide] = useState(false);
 
   const [detailModel, setDetailModel] = useState<OllamaModel | null>(null);
   const [detailData, setDetailData] = useState<Record<string, unknown> | null>(null);
@@ -101,7 +102,15 @@ export function ModelsPage() {
       setPulling(state.pulling);
       setProgress(state.progress);
       setPullError(state.error);
+      setPullServerSide(state.serverSide);
     });
+  }, []);
+
+  // Reattach to a download still running on the agent server - e.g. after the
+  // browser was closed mid-pull. No-ops if nothing is running there.
+  useEffect(() => {
+    void reattachServerPull(agentUrl, refreshModels);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   function handlePull(name: string) {
@@ -330,6 +339,11 @@ export function ModelsPage() {
               )}
             </div>
             <Progress value={progress.percent ?? 0} />
+            {pullServerSide && (
+              <p className="text-[11px] text-muted-foreground">
+                Downloading on the server - this continues even if you close this tab.
+              </p>
+            )}
           </div>
         )}
         {progress?.status === "done" && (

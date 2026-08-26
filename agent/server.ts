@@ -33,6 +33,13 @@ import { reviewApproverForRoot, runTool, type CommandApprover } from "./tools";
 import { HistoryStore, type StoredJob } from "./history";
 import { runQaGate, type QaResult } from "./qa";
 import { checkModelUpdate } from "./updates";
+import {
+  cancelPull as cancelModelPull,
+  listPulls as listModelPulls,
+  startPull as startModelPull,
+  subscribePull as subscribeModelPull,
+  type PullEvent,
+} from "./pulls";
 import { checkForAppUpdate, checkForAppUpdateCached, getUpdateProgress, performAppUpdate } from "./app-update";
 import { getAllowedUiOrigins, isAllowedUiOrigin, isLoopbackUrl, LOOPBACK_HOST } from "./security";
 
@@ -1066,6 +1073,29 @@ function handleEvents(req: IncomingMessage, res: ServerResponse, job: Job): void
   }
 }
 
+/** SSE stream of a server-side pull's progress. Ends on a terminal event; the
+ * browser closes the EventSource on done/error, and auto-reconnects (re-reading
+ * the current snapshot) if the stream drops before then. */
+function handlePullEvents(req: IncomingMessage, res: ServerResponse, name: string): void {
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+    ...CORS_HEADERS,
+  });
+
+  let unsubscribe: (() => void) | undefined;
+  const send = (event: PullEvent) => {
+    res.write(`data: ${safeJsonString(event)}\n\n`);
+    if (event.type === "done" || event.type === "error") {
+      unsubscribe?.();
+      res.end();
+    }
+  };
+  unsubscribe = subscribeModelPull(name, send);
+  req.on("close", () => unsubscribe?.());
+}
+
 const server = http.createServer((req, res) => {
   applyCors(req, res);
   void (async () => {
@@ -1294,6 +1324,60 @@ const server = http.createServer((req, res) => {
       } catch (err) {
         sendJson(res, 200, { models: [], error: errMessage(err) });
       }
+      return;
+    }
+
+    // ---- Server-side model pulls ----
+    // The download runs here and continues even if the browser disconnects; the
+    // UI attaches to progress over SSE and can reattach after a restart.
+    if (req.method === "GET" && url.pathname === "/api/pulls") {
+      sendJson(res, 200, { pulls: listModelPulls() });
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/pull") {
+      let body: { name?: string; ollamaUrl?: string };
+      try {
+        body = JSON.parse(await readBody(req)) as typeof body;
+      } catch {
+        sendJson(res, 400, { error: "Invalid JSON body." });
+        return;
+      }
+      const name = body.name?.trim();
+      if (!name) {
+        sendJson(res, 400, { error: "A model name is required." });
+        return;
+      }
+      const ollamaUrl = localOllamaUrl(body.ollamaUrl) ?? DEFAULT_OLLAMA_URL;
+      const state = startModelPull(ollamaUrl, name);
+      sendJson(res, 202, { pull: state });
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/pull/cancel") {
+      let body: { name?: string };
+      try {
+        body = JSON.parse(await readBody(req)) as typeof body;
+      } catch {
+        sendJson(res, 400, { error: "Invalid JSON body." });
+        return;
+      }
+      const name = body.name?.trim();
+      if (!name) {
+        sendJson(res, 400, { error: "A model name is required." });
+        return;
+      }
+      sendJson(res, 200, { cancelled: cancelModelPull(name) });
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/pull/events") {
+      const name = url.searchParams.get("name")?.trim();
+      if (!name) {
+        sendJson(res, 400, { error: "A model name is required." });
+        return;
+      }
+      handlePullEvents(req, res, name);
       return;
     }
 
