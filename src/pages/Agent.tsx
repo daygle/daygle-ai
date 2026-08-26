@@ -34,7 +34,7 @@ import {
 import { useOllama } from "../context/OllamaProvider";
 import { useCloudProvider } from "../context/CloudProviderContext";
 import { listModels } from "../lib/ollama";
-import { loadGenOptions, loadModelPreference, saveModelPreference } from "../lib/genOptions";
+import { loadGenOptions, loadModelPreference } from "../lib/genOptions";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { LOCAL_OLLAMA_URL } from "../lib/utils";

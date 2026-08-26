@@ -178,7 +178,7 @@ export function ChatPage() {
       setModels(names);
       setModel((current) => {
         if (current && names.includes(current)) return current;
-        const preferredModel = loadModelPreference();
+        const preferredModel = loadModelPreference("chat");
         if (paramModel && names.includes(paramModel)) return paramModel;
         if (preferredModel && names.includes(preferredModel)) return preferredModel;
         return names.length > 0 ? names[0] : "";
