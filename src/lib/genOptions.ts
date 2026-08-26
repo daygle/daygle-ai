@@ -18,7 +18,13 @@ export const DEFAULT_GEN_OPTIONS: GenOptions = {
 };
 
 const STORAGE_KEY = "daygle.genOptions";
-const MODEL_STORAGE_KEY = "daygle.model";
+
+// Per-surface default models. Both fall back to the legacy single-model key so
+// existing installs keep their saved choice until they pick per-surface ones.
+export type ModelScope = "chat" | "agent";
+const CHAT_MODEL_STORAGE_KEY = "daygle.model.chat";
+const AGENT_MODEL_STORAGE_KEY = "daygle.model.agent";
+const LEGACY_MODEL_STORAGE_KEY = "daygle.model";
 
 export function loadGenOptions(): GenOptions {
   try {
@@ -38,18 +44,22 @@ export function saveGenOptions(options: GenOptions): void {
   }
 }
 
-export function loadModelPreference(): string {
+function modelStorageKey(scope: ModelScope): string {
+  return scope === "chat" ? CHAT_MODEL_STORAGE_KEY : AGENT_MODEL_STORAGE_KEY;
+}
+
+export function loadModelPreference(scope: ModelScope): string {
   try {
-    return localStorage.getItem(MODEL_STORAGE_KEY) ?? "";
+    return localStorage.getItem(modelStorageKey(scope)) ?? localStorage.getItem(LEGACY_MODEL_STORAGE_KEY) ?? "";
   } catch {
     return "";
   }
 }
 
-export function saveModelPreference(model: string): void {
+export function saveModelPreference(model: string, scope: ModelScope): void {
   try {
-    if (model) localStorage.setItem(MODEL_STORAGE_KEY, model);
-    else localStorage.removeItem(MODEL_STORAGE_KEY);
+    if (model) localStorage.setItem(modelStorageKey(scope), model);
+    else localStorage.removeItem(modelStorageKey(scope));
   } catch {
     // localStorage unavailable - ignore
   }

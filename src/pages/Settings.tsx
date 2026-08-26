@@ -31,7 +31,8 @@ export function SettingsPage() {
   const [ghTokenResult, setGhTokenResult] = useState<{ ok: boolean; text: string } | null>(null);
 
   const [gen, setGen] = useState<GenOptions>(() => loadGenOptions());
-  const [defaultModel, setDefaultModel] = useState(() => loadModelPreference());
+  const [chatModel, setChatModel] = useState(() => loadModelPreference("chat"));
+  const [agentModel, setAgentModel] = useState(() => loadModelPreference("agent"));
 
   // These options autosave to the browser as you type (no Save button). A brief
   // "Saved" flash makes that obvious and keeps the cards consistent.
@@ -97,11 +98,17 @@ export function SettingsPage() {
   }
 
   useEffect(() => {
-    if (models.length === 0 || (defaultModel && models.some((model) => model.name === defaultModel))) return;
-    const next = models[0].name;
-    setDefaultModel(next);
-    saveModelPreference(next);
-  }, [defaultModel, models]);
+    if (models.length === 0) return;
+    const isValid = (value: string) => value !== "" && models.some((model) => model.name === value);
+    if (!isValid(chatModel)) {
+      setChatModel(models[0].name);
+      saveModelPreference(models[0].name, "chat");
+    }
+    if (!isValid(agentModel)) {
+      setAgentModel(models[0].name);
+      saveModelPreference(models[0].name, "agent");
+    }
+  }, [chatModel, agentModel, models]);
 
   async function handleTest() {
     const entered = url.trim();
@@ -250,25 +257,44 @@ Use the local Ollama server and give the agent a GitHub token.
         </div>
 
         <div className="rounded-2xl border border-border bg-card p-5">
-          <div className="space-y-1">
-            <label htmlFor="default-agent-model" className="text-xs font-medium text-muted-foreground">Default Agent Model</label>
-            <select
-              id="default-agent-model"
-              value={defaultModel}
-              onChange={(event) => {
-                setDefaultModel(event.target.value);
-                saveModelPreference(event.target.value);
-              }}
-              disabled={models.length === 0}
-              className="mt-2 h-10 w-full rounded-md border border-input bg-card px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring/60 disabled:opacity-50"
-            >
-              {models.length === 0 && <option value="">No models detected</option>}
-              {models.map((model) => <option key={model.name} value={model.name}>{model.name}</option>)}
-            </select>
-            <p className="text-[11px] text-muted-foreground">Used when starting a new Agent chat. Existing chats keep their selected model.</p>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div className="space-y-1">
+              <label htmlFor="default-chat-model" className="text-xs font-medium text-muted-foreground">Default Chat Model</label>
+              <select
+                id="default-chat-model"
+                value={chatModel}
+                onChange={(event) => {
+                  setChatModel(event.target.value);
+                  saveModelPreference(event.target.value, "chat");
+                }}
+                disabled={models.length === 0}
+                className="mt-2 h-10 w-full rounded-md border border-input bg-card px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring/60 disabled:opacity-50"
+              >
+                {models.length === 0 && <option value="">No models detected</option>}
+                {models.map((model) => <option key={model.name} value={model.name}>{model.name}</option>)}
+              </select>
+              <p className="text-[11px] text-muted-foreground">Preselected when starting a new chat. Existing chats keep their selected model.</p>
+            </div>
+            <div className="space-y-1">
+              <label htmlFor="default-agent-model" className="text-xs font-medium text-muted-foreground">Default Agent Model</label>
+              <select
+                id="default-agent-model"
+                value={agentModel}
+                onChange={(event) => {
+                  setAgentModel(event.target.value);
+                  saveModelPreference(event.target.value, "agent");
+                }}
+                disabled={models.length === 0}
+                className="mt-2 h-10 w-full rounded-md border border-input bg-card px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring/60 disabled:opacity-50"
+              >
+                {models.length === 0 && <option value="">No models detected</option>}
+                {models.map((model) => <option key={model.name} value={model.name}>{model.name}</option>)}
+              </select>
+              <p className="text-[11px] text-muted-foreground">Used by autonomous tasks (Run Task). Independent of the chat model.</p>
+            </div>
           </div>
           <p className="mt-5 border-t border-border pt-4 text-xs text-muted-foreground">
-            Ollama parameters applied to new Agent chats. Leave optional fields blank to use the model's own defaults.
+            Ollama parameters applied to new chats and autonomous tasks. Leave optional fields blank to use the model's own defaults.
           </p>
           <div className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             <NumField label="Temperature" hint="0 = focused, higher = more creative" value={gen.temperature} step="0.1" min={0} max={2} onChange={(v) => updateGen({ temperature: v })} />
