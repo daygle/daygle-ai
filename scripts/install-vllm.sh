@@ -1,6 +1,7 @@
 #!/bin/sh
 # Installs vLLM into this project (./.venv-vllm) for running Hugging Face
-# models locally with an OpenAI-compatible API server.
+# models locally with an OpenAI-compatible API server. The environment is
+# intentionally project-local so it cannot modify another application's venv.
 #
 # Usage:
 #   sh scripts/install-vllm.sh                         # install only
@@ -80,15 +81,19 @@ if "$VENV/bin/python" -c "import vllm" 2>/dev/null; then
 else
   echo ""
   echo "Installing vLLM (this may take a few minutes)…"
-  "$VENV/bin/pip" install --upgrade pip
-  "$VENV/bin/pip" install vllm
+  # Always invoke pip through the venv's interpreter. This avoids accidentally
+  # using a system pip or the venv belonging to another application.
+  "$VENV/bin/python" -m pip install --upgrade pip
+  "$VENV/bin/python" -m pip install vllm
 
   # Also install huggingface_hub for model downloads
-  "$VENV/bin/pip" install huggingface_hub
+  "$VENV/bin/python" -m pip install huggingface_hub
 fi
 
 echo ""
 echo "✓ vLLM installed to $VENV"
+echo "  Python: $VENV/bin/python"
+echo "  Pip:    $VENV/bin/python -m pip"
 
 # --- Optionally serve a model -----------------------------------------------
 if [ -n "$SERVE_MODEL" ]; then

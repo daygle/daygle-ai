@@ -16,6 +16,7 @@
 #   DAYGLE_REF       branch/tag/commit to check   (default: main)
 #   DAYGLE_MODEL     model to pull on install     (default: qwen2.5-coder:7b; "" to skip)
 #   DAYGLE_SERVICES  install systemd services     (default: 1; 0 to skip)
+#   DAYGLE_VLLM      install optional vLLM into .venv-vllm (default: 0; 1 to install)
 #
 set -euo pipefail
 
@@ -24,6 +25,7 @@ REF="${DAYGLE_REF:-main}"
 DIR="${DAYGLE_DIR:-/opt/daygle-ai}"
 MODEL="${DAYGLE_MODEL:-qwen2.5-coder:7b}"
 INSTALL_SERVICES="${DAYGLE_SERVICES:-1}"
+INSTALL_VLLM="${DAYGLE_VLLM:-0}"
 
 # Run bun/ollama as this user (root here, matching the systemd units).
 RUN_USER="root"
@@ -48,7 +50,8 @@ log "Installing system packages…"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get install -y -qq \
-  ca-certificates curl git unzip zstd tar xz-utils build-essential procps
+  ca-certificates curl git unzip zstd tar xz-utils build-essential procps iproute2 \
+  python3 python3-venv
 ok "base packages installed"
 
 # --- Sandbox backend (bubblewrap) ------------------------------------------
@@ -116,6 +119,16 @@ ok "source ready at $DIR"
 log "Installing JS dependencies…"
 ( cd "$DIR" && HOME="$RUN_HOME" "$BUN_BIN" install )
 ok "dependencies installed"
+
+# --- Optional vLLM environment ---------------------------------------------
+# vLLM is intentionally opt-in: the main app uses Bun and bundled Ollama, and
+# merely finding Python on the host must never install a large second model
+# runtime or modify another application's virtual environment.
+if [ "$INSTALL_VLLM" = "1" ]; then
+  log "Installing optional vLLM into $DIR/.venv-vllm…"
+  ( cd "$DIR" && sh scripts/install-vllm.sh )
+  ok "vLLM installed in the project-local Python venv"
+fi
 
 log "Building the web app…"
 ( cd "$DIR" && HOME="$RUN_HOME" "$BUN_BIN" run build )
@@ -244,4 +257,10 @@ Note: only the UI is LAN-facing. Ollama and the agent are loopback-only and are
 proxied through the UI; open the UI from another machine at the server IP above.
 To open PRs from the Agent page, authenticate once with:  gh auth login   (or
 set a token in Settings).
+
+Python isolation:
+  Optional vLLM uses $DIR/.venv-vllm and never uses another application's venv.
+  Enable it during installation with: DAYGLE_VLLM=1
+  On a Tesla P4, prefer the bundled Ollama path; current vLLM wheels require
+  NVIDIA compute capability 7.5 or newer, while the P4 is compute capability 6.1.
 EOF

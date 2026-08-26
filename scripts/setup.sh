@@ -121,15 +121,12 @@ if [ -n "$MODEL" ]; then
 fi
 
 # --- Optional vLLM (Hugging Face models) ----------------------------------
+# Do not infer this from Python being installed: another application may own
+# the system Python or its own venv. vLLM is installed only when explicitly
+# requested with --vllm.
 if [ -n "$VLLM_MODEL" ]; then
   echo ""
   sh scripts/install-vllm.sh --serve "$VLLM_MODEL"
-elif command -v python3 >/dev/null 2>&1 || command -v python >/dev/null 2>&1; then
-  if [ ! -x "$ROOT/.venv-vllm/bin/python" ]; then
-    echo ""
-    echo "Installing vLLM (for Hugging Face models)…"
-    sh scripts/install-vllm.sh
-  fi
 fi
 
 # --- Next steps ------------------------------------------------------------
@@ -140,8 +137,8 @@ echo " 1. bun run ollama    # start the Ollama server (models in .ollama/models/
 echo " 2. bun run dev       # start Daygle AI, then pull a model from the Models page"
 echo " 3. bun run agent     # optional: start the coding agent server for the Agent page"
 if [ -x "$ROOT/.venv-vllm/bin/python" ]; then
-echo " 4. vllm serve MODEL  # start a Hugging Face model (e.g. vllm serve Qwen/Qwen2.5-Coder-7B-Instruct)"
-echo "    Then in Settings → Cloud Provider, set Base URL to http://127.0.0.1:8000/v1"
+  echo " 4. .venv-vllm/bin/python -m vllm.entrypoints.openai.api_server MODEL"
+  echo "    Then in Settings → Cloud Provider, set Base URL to http://127.0.0.1:8000/v1"
 fi
 echo ""
 echo "Agent page authentication (pick one):"

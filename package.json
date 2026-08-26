@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite --host 0.0.0.0",
     "setup": "sh scripts/setup.sh",
+    "preflight": "bash scripts/check-debian.sh",
     "ollama:install": "sh scripts/install-ollama.sh",
     "ollama": "sh scripts/run-ollama.sh",
     "vllm:install": "sh scripts/install-vllm.sh",

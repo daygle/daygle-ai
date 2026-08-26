@@ -36,9 +36,36 @@ curl -fsSL https://raw.githubusercontent.com/daygle/daygle-ai/main/scripts/insta
 ```
 
 Available variables: `DAYGLE_DIR`, `DAYGLE_REPO`, `DAYGLE_REF`, `DAYGLE_MODEL`
-(set to `""` to skip pulling), `DAYGLE_SERVICES` (`0` to skip systemd). Open the UI
+(set to `""` to skip pulling), `DAYGLE_SERVICES` (`0` to skip systemd), and
+`DAYGLE_VLLM` (`1` to install optional vLLM in the project-local `.venv-vllm`).
+Open the UI
 at `http://<server-ip>:5173` from the server itself or another trusted LAN machine.
 Only the UI is LAN-facing; Ollama and the agent remain loopback-only behind its proxy.
+
+### Preflight check
+
+Before installing on an existing server, run the read-only preflight check. It
+does not install packages, create files, change services, or alter GPU/network
+configuration:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/daygle/daygle-ai/main/scripts/check-debian.sh | bash
+```
+
+If the repository is already cloned but Bun is not installed yet, run it
+without Bun:
+
+```bash
+cd /opt/daygle-ai
+bash scripts/check-debian.sh
+```
+
+After Bun is installed, `bun run preflight` is an equivalent shortcut. It checks Debian/architecture, RAM, free disk space, required tools, network
+access to the download hosts, ports `5173`, `8787`, and `11434`, whether
+`/opt/daygle-ai` already exists, and NVIDIA driver/GPU visibility. Missing
+packages are reported as warnings because the Debian installer can install
+them. Errors should be resolved before proceeding. A Tesla P4 with a working
+`nvidia-smi` is suitable for the Ollama path; do not enable optional vLLM on it.
 
 ### Prerequisites (manual install)
 
@@ -49,6 +76,7 @@ Only the UI is LAN-facing; Ollama and the agent remain loopback-only behind its 
 | **curl** | Downloads the bundled Ollama binary            | `sudo apt-get install curl` / `brew install curl`            |
 | **zstd** | Extracts Ollama on **Linux** only              | `sudo apt-get install zstd` / `brew install zstd`            |
 | **gh**   | GitHub CLI for cloning repos and opening PRs   | See below                                                    |
+| **python3-venv** | Isolated venv for optional vLLM             | `sudo apt install python3 python3-venv`                    |
 
 **Linux (Ubuntu/Debian):**
 
@@ -76,6 +104,23 @@ sudo git clone https://github.com/daygle/daygle-ai.git /opt/daygle-ai
 cd /opt/daygle-ai
 bun run setup --model qwen2.5-coder:7b
 ```
+
+The main application does not use Python: the UI and agent run on Bun, and
+Ollama is a bundled native binary. The optional Hugging Face/vLLM path is the
+only Python component and is installed into the project-local `.venv-vllm`, so
+it will not touch another application's venv. To opt into it explicitly:
+
+```bash
+sudo apt install python3 python3-venv
+sh scripts/install-vllm.sh
+# or install it during the Debian one-line install:
+curl -fsSL https://raw.githubusercontent.com/daygle/daygle-ai/main/scripts/install-debian.sh | sudo DAYGLE_VLLM=1 bash
+```
+
+**Tesla P4 note:** the current vLLM GPU wheels require NVIDIA compute
+capability 7.5 or newer; a Tesla P4 is compute capability 6.1. Use the bundled
+Ollama server for the P4 instead of vLLM unless you intentionally build and
+maintain a compatible vLLM-from-source setup.
 
 ### GitHub authentication (for the Agent)
 
@@ -116,7 +161,10 @@ bun run setup                                  # checks prereqs, installs deps +
 bun run setup --model qwen2.5-coder:7b         # …and pulls a model right away
 ```
 
-The setup script is idempotent - re-running it only installs what's missing. The equivalent manual flow is:
+The setup script is idempotent - re-running it only installs what's missing.
+It does not install vLLM just because Python happens to be installed on the
+machine; request that separately with `sh scripts/install-vllm.sh` or
+`bun run setup --vllm MODEL`. The equivalent manual flow is:
 
 ```bash
 bun install
@@ -266,11 +314,14 @@ Set `DAYGLE_SANDBOX_NETWORK=1` to allow network access inside the sandbox (off b
 | ----------------------- | ------------------------------------- |
 | `bun run dev`           | Start the Vite dev server             |
 | `bun run setup`         | One-command install (deps + Ollama)   |
+| `bun run preflight`     | Read-only Debian server check         |
 | `bun run ollama:install`| Download Ollama into `.ollama/`       |
 | `bun run ollama`        | Start the bundled Ollama server       |
 | `bun run agent`         | Start the local agent server          |
 | `bun run build`         | Typecheck and build static output      |
 | `bun run preview`       | Preview the production build           |
+| `bun run vllm:install`  | Install optional vLLM into `.venv-vllm` |
+| `bun run vllm`          | Install/start the optional vLLM server |
 | `bun run typecheck`     | `tsc -b --noEmit`                     |
 
 ## Structure
