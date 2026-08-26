@@ -34,7 +34,7 @@ import {
 import { useOllama } from "../context/OllamaProvider";
 import { useCloudProvider } from "../context/CloudProviderContext";
 import { listModels } from "../lib/ollama";
-import { loadGenOptions, loadModelPreference } from "../lib/genOptions";
+import { loadGenOptions, loadModelPreference, saveModelPreference } from "../lib/genOptions";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { LOCAL_OLLAMA_URL } from "../lib/utils";
@@ -1297,7 +1297,7 @@ export function AgentPage() {
       setModels(names);
       setModel((current) => {
         if (current && names.includes(current)) return current;
-        const preferredModel = loadModelPreference("chat");
+        const preferredModel = loadModelPreference("agent");
         if (paramModel && names.includes(paramModel)) return paramModel;
         if (preferredModel && names.includes(preferredModel)) return preferredModel;
         return names.length > 0 ? names[0] : "";
@@ -1508,6 +1508,7 @@ export function AgentPage() {
   async function handleModelChange(next: string) {
     if (!next || next === model) return;
     setModel(next);
+    saveModelPreference(next, "agent");
     if (!sessionId) return; // connect screen handles its own picker
     try {
       await updateChatModel(agentUrl, sessionId, next);

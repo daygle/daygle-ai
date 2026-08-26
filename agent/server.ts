@@ -661,6 +661,9 @@ function errMessage(err: unknown): string {
   let text: string = (err instanceof Error ? err.message : String(err))
     .split(/\r?\n/, 1)[0]
     .trim();
+  // Strip any stack-frame fragments that appear on the same line
+  // (e.g. Node internals concatenated without a newline).
+  text = text.replace(/\s+at\s+.+$/, "");
   if (token) text = text.replaceAll(token, "[credential redacted]");
   return text.length > 500 ? `${text.slice(0, 500)}…` : text;
 }

@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import { isLoopbackUrl } from "./security";
 
 const REGISTRY = "https://registry.ollama.ai";
 const MANIFEST_ACCEPT = "application/vnd.docker.distribution.manifest.v2+json";
@@ -72,11 +71,20 @@ export async function fetchRemoteDigest(
  * headers, so the browser can't query it directly).
  */
 export async function checkModelUpdate(ollamaUrl: string, name: string): Promise<ModelUpdateCheck> {
-  const base = ollamaUrl.replace(/\/+$/, "");
+  let base: string;
   try {
-    if (!isLoopbackUrl(base)) {
+    const parsed = new URL(ollamaUrl.replace(/\/+$/, ""));
+    if (
+      parsed.protocol !== "http:" ||
+      (parsed.hostname !== "127.0.0.1" && parsed.hostname !== "localhost")
+    ) {
       return { name, updateAvailable: false, error: "ollamaUrl must be a loopback address (localhost)" };
     }
+    base = parsed.origin;
+  } catch {
+    return { name, updateAvailable: false, error: "Invalid ollamaUrl" };
+  }
+  try {
     const ref = parseModelRef(name);
     if (!ref) {
       return { name, updateAvailable: false, error: `Unsupported model reference: ${name}` };

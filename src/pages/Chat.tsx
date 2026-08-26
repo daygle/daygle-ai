@@ -35,7 +35,7 @@ import {
 import { useOllama } from "../context/OllamaProvider";
 import { useCloudProvider } from "../context/CloudProviderContext";
 import { listModels } from "../lib/ollama";
-import { loadGenOptions, loadModelPreference } from "../lib/genOptions";
+import { loadGenOptions, loadModelPreference, saveModelPreference } from "../lib/genOptions";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { LOCAL_OLLAMA_URL } from "../lib/utils";
@@ -339,6 +339,7 @@ export function ChatPage() {
   async function handleModelChange(next: string) {
     if (!next || next === model || !sessionId) return;
     setModel(next);
+    saveModelPreference(next, "chat");
     try {
       await updateChatModel(agentUrl, sessionId, next);
       setHistory((prev) => prev.map((chat) => (chat.id === sessionId ? { ...chat, model: next } : chat)));
@@ -803,9 +804,6 @@ export function ChatPage() {
                   <option key={m} value={m}>{m}</option>
                 ))}
               </select>
-              <span className="hidden text-[10px] text-muted-foreground sm:inline">
-                Per-chat. Default in Settings.
-              </span>
             </div>
           </div>
         </div>
