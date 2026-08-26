@@ -111,16 +111,20 @@ interface ProgressEntry {
   state: "active" | "done" | "error";
   toolName?: string;
   toolCallId?: string;
+  /** Error detail for failed entries, shown as a tooltip. */
+  detail?: string;
 }
 
 function ProgressPanel({
   entries,
   expanded,
   onToggle,
+  onClose,
 }: {
   entries: ProgressEntry[];
   expanded: boolean;
   onToggle: () => void;
+  onClose: () => void;
 }) {
   if (entries.length === 0) return null;
   let active: ProgressEntry | undefined;
@@ -132,22 +136,37 @@ function ProgressPanel({
   }
 
   return (
-    <div className="mb-4 overflow-hidden rounded-lg border border-border bg-card/70">
-      <button
-        type="button"
-        onClick={onToggle}
-        className="flex w-full items-center gap-2 px-3 py-2 text-left text-[11px] font-medium text-muted-foreground hover:bg-muted/50 hover:text-foreground"
-        aria-expanded={expanded}
-      >
-        {expanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
-        <span className="text-foreground">Progress</span>
-        {!expanded && active && <span className="truncate">{active.text}</span>}
-        <span className="ml-auto tabular-nums">{entries.length}</span>
-      </button>
+    <div className="overflow-hidden rounded-lg border border-border bg-card/70">
+      <div className="flex items-center">
+        <button
+          type="button"
+          onClick={onToggle}
+          className="flex min-w-0 flex-1 items-center gap-2 px-3 py-2 text-left text-[11px] font-medium text-muted-foreground hover:bg-muted/50 hover:text-foreground"
+          aria-expanded={expanded}
+        >
+          {expanded ? <ChevronDown className="h-3.5 w-3.5 shrink-0" /> : <ChevronRight className="h-3.5 w-3.5 shrink-0" />}
+          <span className="text-foreground">Progress</span>
+          {!expanded && active && <span className="truncate">{active.text}</span>}
+          <span className="ml-auto tabular-nums">{entries.length}</span>
+        </button>
+        <button
+          type="button"
+          onClick={onClose}
+          className="mr-1.5 rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+          title="Hide progress"
+          aria-label="Hide progress"
+        >
+          <X className="h-3 w-3" />
+        </button>
+      </div>
       {expanded && (
         <div className="space-y-1 border-t border-border px-3 py-2">
           {entries.map((entry) => (
-            <div key={entry.id} className="flex items-center gap-2 text-[11px] text-muted-foreground">
+            <div
+              key={entry.id}
+              className="flex items-center gap-2 text-[11px] text-muted-foreground"
+              title={entry.detail || undefined}
+            >
               {entry.state === "active" ? (
                 <Loader2 className="h-3 w-3 shrink-0 animate-spin text-accent" />
               ) : entry.state === "error" ? (
@@ -1053,6 +1072,9 @@ export function AgentPage() {
   const [progressEntries, setProgressEntries] = useState<ProgressEntry[]>([]);
   const [progressExpanded, setProgressExpanded] = useState(true);
   const [progressHidden, setProgressHidden] = useState(false);
+  // Set when the user closes the panel manually, so the auto-show logic keeps
+  // it hidden for the rest of the run; cleared when a new message is sent.
+  const [progressDismissed, setProgressDismissed] = useState(false);
   const [connected, setConnected] = useState(false);
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [history, setHistory] = useState<ChatSummary[]>([]);
@@ -1101,13 +1123,13 @@ export function AgentPage() {
     });
   }, []);
 
-  const finishProgress = useCallback((toolName: string, toolCallId: string | undefined, failed: boolean) => {
+  const finishProgress = useCallback((toolName: string, toolCallId: string | undefined, failed: boolean, detail?: string) => {
     setProgressEntries((previous) => {
       for (let index = previous.length - 1; index >= 0; index--) {
         const entry = previous[index];
         if (entry.state === "active" && (toolCallId ? entry.toolCallId === toolCallId : entry.toolName === toolName)) {
           const updated = [...previous];
-          updated[index] = { ...entry, state: failed ? "error" : "done" };
+          updated[index] = { ...entry, state: failed ? "error" : "done", detail: failed ? detail : undefined };
           return updated;
         }
       }
@@ -1145,15 +1167,18 @@ export function AgentPage() {
     }
     const hasActive = progressEntries.some((e) => e.state === "active");
     if (hasActive) {
-      setProgressExpanded(true);
-      setProgressHidden(false);
+      // Respect a manual close until the next run starts.
+      if (!progressDismissed) {
+        setProgressExpanded(true);
+        setProgressHidden(false);
+      }
       return;
     }
     // All done: collapse immediately, hide after 3 seconds
     setProgressExpanded(false);
     const timer = setTimeout(() => setProgressHidden(true), 3000);
     return () => clearTimeout(timer);
-  }, [progressEntries]);
+  }, [progressEntries, progressDismissed]);
 
   useEffect(() => {
     const onPointerMove = (event: globalThis.PointerEvent) => {
@@ -1607,6 +1632,7 @@ export function AgentPage() {
     setStatusText("Thinking…");
     setProgressEntries([]);
     setProgressExpanded(true);
+    setProgressDismissed(false);
     addProgress("Preparing the response");
     const streamGeneration = ++streamGenerationRef.current;
     let assistantId = uid();
@@ -1689,7 +1715,7 @@ export function AgentPage() {
             }
             return prev;
           });
-          finishProgress(event.name, event.toolCallId, /^Error:/i.test(event.result));
+          finishProgress(event.name, event.toolCallId, /^Error:/i.test(event.result), event.result);
           setStatusText("Thinking…");
           break;
 
@@ -1849,7 +1875,7 @@ export function AgentPage() {
             }
             return prev;
           });
-          finishProgress(event.name, event.toolCallId, /^Error:/i.test(event.result));
+          finishProgress(event.name, event.toolCallId, /^Error:/i.test(event.result), event.result);
           break;
         case "qa":
           setMessages((prev) => [
@@ -2533,11 +2559,25 @@ export function AgentPage() {
             );
           })()}
 
-          {!progressHidden && <ProgressPanel entries={progressEntries} expanded={progressExpanded} onToggle={() => setProgressExpanded((expanded) => !expanded)} />}
-
           <div ref={messagesEndRef} />
         </div>
       </div>
+
+        {!progressHidden && (
+          <div className="px-4 pb-2">
+            <div className="mx-auto max-w-3xl">
+              <ProgressPanel
+                entries={progressEntries}
+                expanded={progressExpanded}
+                onToggle={() => setProgressExpanded((expanded) => !expanded)}
+                onClose={() => {
+                  setProgressHidden(true);
+                  setProgressDismissed(true);
+                }}
+              />
+            </div>
+          </div>
+        )}
 
         <div className="sticky bottom-0 z-20 border-t border-border bg-background/95 px-4 py-3 backdrop-blur">
           <div className="mx-auto max-w-3xl space-y-2">
@@ -2591,9 +2631,6 @@ export function AgentPage() {
                   <option key={m} value={m}>{m}</option>
                 ))}
               </select>
-              <span className="text-[10px] text-muted-foreground">
-                Per-chat. Default in Settings.
-              </span>
             </div>
           </div>
         </div>

@@ -4,6 +4,31 @@ import { TOOL_DEFINITIONS, runTool, type CommandApprover } from "./tools";
 import type { SandboxRunner } from "./sandbox";
 import type { ChatProvider } from "./providers";
 
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Bun/Node fetch throws these when the TCP connection to Ollama (or a cloud
+ * provider) drops before or mid-response - e.g. Ollama restarting or reloading
+ * a model under memory pressure. Unlike a real HTTP error, a short retry
+ * usually succeeds, so they are retried instead of surfaced as chat errors.
+ */
+function isTransientNetworkError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return /socket connection was closed|ECONNRESET|EPIPE|network error|terminated/i.test(message);
+}
+
+/** Turn a raw fetch failure into something a user can act on. */
+function describeNetworkError(err: unknown): string {
+  const message = err instanceof Error ? err.message : String(err);
+  if (/socket connection was closed|ECONNRESET|EPIPE/i.test(message)) {
+    return "Ollama closed the connection unexpectedly. It may have crashed or run out of memory while loading the model - check `ollama ps` and the Ollama logs, then try again.";
+  }
+  if (/ECONNREFUSED|fetch failed/i.test(message)) {
+    return "Could not reach Ollama. Make sure it is running (`ollama serve`) and that the Ollama URL is correct.";
+  }
+  return message;
+}
+
 export interface ChatMessage {
   role: "system" | "user" | "assistant" | "tool";
   content: string;
@@ -483,27 +508,41 @@ export async function* streamChat(
 
     if (session.provider) {
       // Use the provider abstraction (cloud or Ollama-via-provider).
+      const provider = session.provider;
+      const deltas: string[] = [];
+      const request = () => {
+        deltas.length = 0;
+        return provider.chat(session.model, cleanedMessages as any, hasRepo ? TOOL_DEFINITIONS : [], {
+          temperature: genOptions.temperature,
+          numCtx: genOptions.num_ctx,
+          signal,
+          onDelta: (delta) => deltas.push(delta),
+        });
+      };
+      let result;
       try {
-        const deltas: string[] = [];
-        const result = await session.provider.chat(
-          session.model,
-          cleanedMessages as any,
-          hasRepo ? TOOL_DEFINITIONS : [],
-          {
-            temperature: genOptions.temperature,
-            numCtx: genOptions.num_ctx,
-            signal,
-            onDelta: (delta) => deltas.push(delta),
-          },
-        );
-        content = result.content;
-        toolCalls = hasRepo ? (result.toolCalls as any[]) : [];
-        for (const delta of deltas) yield { type: "model_delta" as const, content: delta };
+        result = await request();
       } catch (err) {
         if (signal?.aborted) return;
-        yield { type: "error", message: `Provider failed: ${err instanceof Error ? err.message : String(err)}` };
-        return;
+        // A dropped connection is usually momentary (model reload, restart);
+        // retry once before giving up.
+        if (!isTransientNetworkError(err)) {
+          yield { type: "error", message: `Provider failed: ${err instanceof Error ? err.message : String(err)}` };
+          return;
+        }
+        yield { type: "status", message: "Connection dropped, retrying…" };
+        await sleep(1_000);
+        try {
+          result = await request();
+        } catch (retryErr) {
+          if (signal?.aborted) return;
+          yield { type: "error", message: `Provider failed: ${describeNetworkError(retryErr)}` };
+          return;
+        }
       }
+      content = result.content;
+      toolCalls = hasRepo ? (result.toolCalls as any[]) : [];
+      for (const delta of deltas) yield { type: "model_delta" as const, content: delta };
     } else {
       // Fallback: direct Ollama fetch (legacy path).
       const modelsToTry = [session.model, session.fallbackModel].filter(Boolean) as string[];
@@ -515,21 +554,40 @@ export async function* streamChat(
           // the response is delayed rather than a notice after the fact.
           yield { type: "status", message: `Primary model failed, trying ${tryModel}…` };
         }
-        const attempt = await fetch(`${session.ollamaUrl.replace(/\/+$/, "")}/api/chat`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            model: tryModel,
-            messages: cleanedMessages,
-            tools: hasRepo ? TOOL_DEFINITIONS : undefined,
-            stream: true,
-            keep_alive: normalizeKeepAlive(opts.keep_alive),
-            options: genOptions,
-          }),
-          signal,
-        });
-        if (attempt.ok) { res = attempt; break; }
-        lastError = await attempt.text().catch(() => "");
+        // A dropped connection used to throw straight out of the generator and
+        // surface Bun's raw "socket connection was closed" error. Treat it like
+        // any other failed attempt: retry once, then fall through to the next model.
+        const MAX_FETCH_ATTEMPTS = 2;
+        for (let fetchAttempt = 1; fetchAttempt <= MAX_FETCH_ATTEMPTS && !res; fetchAttempt++) {
+          let response: Response;
+          try {
+            response = await fetch(`${session.ollamaUrl.replace(/\/+$/, "")}/api/chat`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                model: tryModel,
+                messages: cleanedMessages,
+                tools: hasRepo ? TOOL_DEFINITIONS : undefined,
+                stream: true,
+                keep_alive: normalizeKeepAlive(opts.keep_alive),
+                options: genOptions,
+              }),
+              signal,
+            });
+          } catch (err) {
+            if (signal?.aborted) return;
+            lastError = describeNetworkError(err);
+            if (fetchAttempt < MAX_FETCH_ATTEMPTS && isTransientNetworkError(err)) {
+              yield { type: "status", message: "Connection to Ollama dropped, retrying…" };
+              await sleep(1_000);
+              continue;
+            }
+            break; // give this model up; the loop tries the fallback model next
+          }
+          if (response.ok) { res = response; break; }
+          lastError = await response.text().catch(() => "");
+          break; // a real HTTP error: don't retry this model, try the fallback
+        }
       }
       if (!res) {
         yield { type: "error", message: `Ollama failed: ${lastError.slice(0, 300)}` };

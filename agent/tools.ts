@@ -473,6 +473,23 @@ function hasGlob(value: string): boolean {
   return /[*?\[\]]/.test(value);
 }
 
+/** Drop a trailing grep-style ":line" suffix ("src/lib.ts:42" -> "src/lib.ts").
+ * Repo-relative tool paths never legitimately end in ":digits", so this only
+ * rescues the search-result format models paste back, never breaks real paths. */
+function stripLineSuffix(value: string): string {
+  return value.replace(/:\d+$/, "");
+}
+
+/** Models sometimes answer the "path" argument with a comma-separated list of
+ * search results ("a.ts:12,b.ts:40") instead of one path. Split it into
+ * individual path patterns so the tool can act on all of them instead of
+ * failing to match the whole string as a single filename. */
+function expandPathArgument(rel: string): string[] {
+  const trimmed = rel.trim();
+  if (!trimmed.includes(",")) return [stripLineSuffix(trimmed)].filter(Boolean);
+  return trimmed.split(",").map((part) => stripLineSuffix(part.trim())).filter(Boolean);
+}
+
 function globToRegExp(pattern: string): RegExp {
   let source = "^";
   for (let index = 0; index < pattern.length; index++) {
@@ -1091,26 +1108,87 @@ async function writeFile(root: string, rel: string, content: string, approve?: C
   return `Wrote ${Buffer.byteLength(content, "utf8")} bytes to ${rel}.${note}`;
 }
 
+/** Character classes models commonly transcribe differently than the file
+ * (dashes, quotes, apostrophes, spaces). Used only to *diagnose* a failed
+ * match - the edit itself always uses the model's exact bytes. */
+const CONFUSABLE_CHARS: string[][] = [
+  ["-", "\u2014", "\u2013", "\u2212", "\u2010"], // hyphen, em/en dash, minus, hyphen bullet
+  ["'", "\u2019", "\u2018", "`"],
+  ["\"", "\u201C", "\u201D"],
+  [" ", "\u00A0"],
+];
+
+function describeCharacter(char: string): string {
+  switch (char) {
+    case "-": return '"-" (hyphen)';
+    case "\u2014": return '"\u2014" (em dash)';
+    case "\u2013": return '"\u2013" (en dash)';
+    case "\u2212": return '"\u2212" (minus sign)';
+    case "\u2010": return '"\u2010" (hyphen bullet)';
+    case "'": return "\"'\" (straight apostrophe)";
+    case "\u2019": return '"\u2019" (right single quote)';
+    case "\u2018": return '"\u2018" (left single quote)';
+    case "`": return '"`" (backtick)';
+    case "\"": return '"\\"" (straight double quote)';
+    case "\u201C": return '"\u201C" (left double quote)';
+    case "\u201D": return '"\u201D" (right double quote)';
+    case " ": return 'a regular space';
+    case "\u00A0": return 'a non-breaking space';
+    default: return `"${char}"`;
+  }
+}
+
+/** When old_string matches nothing, check whether a variant that differs only
+ * in confusable characters (em vs en dash, curly vs straight quotes, ...) does
+ * exist in the file, so the model can fix its text in one round-trip instead
+ * of retrying blindly. */
+function findNearMatch(fileContent: string, oldStr: string): string | null {
+  for (const group of CONFUSABLE_CHARS) {
+    const present = group.filter((char) => oldStr.includes(char));
+    if (present.length === 0) continue;
+    for (const from of present) {
+      for (const to of group) {
+        if (to === from) continue;
+        const index = fileContent.indexOf(oldStr.split(from).join(to));
+        if (index !== -1) {
+          const line = fileContent.slice(0, index).split("\n").length;
+          return `A near match exists at line ${line}: the file uses ${describeCharacter(to)} where your old_string uses ${describeCharacter(from)}. Read the exact text with read_file and copy it verbatim.`;
+        }
+      }
+    }
+  }
+  return null;
+}
+
 async function strReplace(root: string, rel: string, oldStr: string, newStr: string, replaceAll: unknown, approve?: CommandApprover): Promise<string> {
   if (!oldStr) {
     throw new Error("str_replace: old_string must not be empty.");
   }
-  const globMatches = expandGlob(root, rel);
-  let targets = globMatches;
-  if (targets.length === 0 && !hasGlob(rel)) {
+  // Resolve every requested path (the model may pass a comma-separated list of
+  // grep-style results) and merge the matches, deduplicating overlaps.
+  let targets: Array<{ abs: string; path: string }> = [];
+  for (const request of expandPathArgument(rel)) {
+    const globMatches = expandGlob(root, request);
+    if (globMatches.length > 0) {
+      targets.push(...globMatches);
+      continue;
+    }
+    if (hasGlob(request)) continue;
     // Preserve the precise containment error for paths that escape the repo;
     // only existing in-repo paths may proceed to nested-path recovery.
-    safeResolve(root, rel);
-    const target = findExistingTarget(root, rel);
+    safeResolve(root, request);
+    const target = findExistingTarget(root, request);
     if (target) {
-      targets = fs.statSync(target.abs).isDirectory()
+      targets.push(...(fs.statSync(target.abs).isDirectory()
         ? expandGlob(root, `${target.path}/**/*`)
-        : [{ abs: target.abs, path: target.path }];
+        : [{ abs: target.abs, path: target.path }]));
     }
   }
+  targets = [...new Map(targets.map((target) => [target.path, target])).values()];
   if (targets.length === 0) throw new Error(`No files matched path pattern: ${rel}`);
 
   const edits: Array<{ abs: string; path: string; replaced: string; occurrences: number }> = [];
+  const nearMisses: Array<{ path: string; hint: string | null }> = [];
   // When a pattern matches many files, skip uneditable ones instead of failing
   // the whole batch; a single explicit target keeps the precise error.
   const skipUnreadable = targets.length > 1;
@@ -1129,7 +1207,10 @@ async function strReplace(root: string, rel: string, oldStr: string, newStr: str
       throw new Error(`File appears to be binary: ${target.path}.`);
     }
     const occurrences = raw.split(oldStr).length - 1;
-    if (occurrences === 0) continue;
+    if (occurrences === 0) {
+      nearMisses.push({ path: target.path, hint: findNearMatch(raw, oldStr) });
+      continue;
+    }
     const all = replaceAll === true || replaceAll === "true" || replaceAll === 1 || replaceAll === "1";
     if (occurrences > 1 && !all) {
       throw new Error(`str_replace: old_string appears ${occurrences} times in ${target.path}. Include more surrounding context to make it unique, or set replace_all to true.`);
@@ -1140,7 +1221,8 @@ async function strReplace(root: string, rel: string, oldStr: string, newStr: str
   }
   if (edits.length === 0) {
     const skipNote = skipped.length > 0 ? ` (skipped: ${skipped.join(", ")})` : "";
-    throw new Error(`old_string was not found in matched files for ${rel}${skipNote}.`);
+    const hint = nearMisses.find((miss) => miss.hint)?.hint;
+    throw new Error(`old_string was not found in matched files for ${rel}${skipNote}.${hint ? ` ${hint}` : ""}`);
   }
   const totalOccurrences = edits.reduce((sum, edit) => sum + edit.occurrences, 0);
   if (edits.length > 1 || totalOccurrences > 10) {

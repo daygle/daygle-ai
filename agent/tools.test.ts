@@ -231,6 +231,40 @@ describe("str_replace", () => {
       runTool(root, "str_replace", { path: "../outside.txt", old_string: "a", new_string: "b" }),
     ).rejects.toThrow(/outside the repository/);
   });
+
+  test("splits a comma-separated grep-style path list and strips line suffixes", async () => {
+    const result = await runTool(root, "str_replace", {
+      path: "api/src/one.ts:1, api/src/two.ts:1",
+      old_string: "found",
+      new_string: "fixed",
+    }, async () => "approve");
+    expect(result).toContain("across 2 files");
+    expect(readFileSync(join(apiSrc, "one.ts"), "utf8")).toBe("fixed one\n");
+    expect(readFileSync(join(apiSrc, "two.ts"), "utf8")).toBe("fixed two\n");
+  });
+
+  test("strips a trailing line suffix from a single path", async () => {
+    reset();
+    const result = await runTool(root, "str_replace", {
+      path: "code.txt:2",
+      old_string: "line two - dash",
+      new_string: "line two - em dash",
+    });
+    expect(result).toContain("Replaced 1 occurrence");
+    expect(readFileSync(file, "utf8")).toContain("line two - em dash");
+  });
+
+  test("diagnoses a near match that differs only in dash character", async () => {
+    const dashed = join(root, "dashed.txt");
+    writeFileSync(dashed, "first\nvalue \u2013 value\nlast\n"); // en dash in file
+    await expect(
+      runTool(root, "str_replace", {
+        path: "dashed.txt",
+        old_string: "value \u2014 value", // em dash from the model
+        new_string: "value - value",
+      }),
+    ).rejects.toThrow(/near match exists at line 2.*en dash.*em dash/s);
+  });
 });
 
 describe("paths with spaces", () => {

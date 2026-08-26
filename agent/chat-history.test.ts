@@ -49,8 +49,12 @@ describe("chat history", () => {
     store.save(chat);
     const file = join(dir, "safe-session.json");
     expect(JSON.parse(readFileSync(file, "utf8"))).not.toHaveProperty("providerConfig.apiKey");
-    expect(statSync(dir).mode & 0o777).toBe(0o700);
-    expect(statSync(file).mode & 0o777).toBe(0o600);
+    // Windows emulates stat modes and always reports 0o666, so POSIX permission
+    // bits are only assertable on Unix.
+    if (process.platform !== "win32") {
+      expect(statSync(dir).mode & 0o777).toBe(0o700);
+      expect(statSync(file).mode & 0o777).toBe(0o600);
+    }
   });
 
   test("rejects path-like chat ids", () => {
