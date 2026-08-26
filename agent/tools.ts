@@ -233,7 +233,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       parameters: {
         type: "object",
         properties: {
-          path: { type: "string", description: "File, directory, or glob relative to the repo root. Directories and patterns like api/src/**/*.ts apply to matching files." },
+          path: { type: "string", description: "ONE file, directory, or glob relative to the repo root - call str_replace once per file, not with a space-separated list. Patterns like api/src/**/*.ts apply to matching files." },
           old_string: { type: "string", description: "The exact text to replace." },
           new_string: { type: "string", description: "The replacement text." },
           replace_all: { type: "boolean", description: "Replace every occurrence instead of requiring a single unique match." },
@@ -1185,7 +1185,25 @@ async function strReplace(root: string, rel: string, oldStr: string, newStr: str
     }
   }
   targets = [...new Map(targets.map((target) => [target.path, target])).values()];
-  if (targets.length === 0) throw new Error(`No files matched path pattern: ${rel}`);
+  if (targets.length === 0) {
+    // The model sometimes passes several space-separated paths in one call
+    // (as if str_replace accepted a file list). Like list_files and search,
+    // split the shorthand and apply the edit to each existing file instead of
+    // failing the whole call - a hard failure here made the model retry the
+    // identical call forever.
+    const multi = splitPaths(root, rel);
+    if (multi.length > 1) {
+      for (const requested of multi) {
+        const target = findExistingTarget(root, requested);
+        if (target && !fs.statSync(target.abs).isDirectory()) {
+          targets.push({ abs: target.abs, path: target.path });
+        }
+      }
+    }
+  }
+  if (targets.length === 0) {
+    throw new Error(`No files matched path pattern: ${rel}. str_replace takes a single file (or directory/glob) per call - call it once per file.`);
+  }
 
   const edits: Array<{ abs: string; path: string; replaced: string; occurrences: number }> = [];
   const nearMisses: Array<{ path: string; hint: string | null }> = [];
