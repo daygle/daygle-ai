@@ -258,15 +258,22 @@ export async function performAppUpdate(
     updateProgress = { status: "pulling", message: "Pulling latest changes...", startedAt: updateProgress?.startedAt ?? Date.now() };
     emit({ type: "update_progress", message: "Pulling latest changes..." });
 
+    // The updater runs from the installed checkout in normal deployments, but
+    // Bun/systemd can expose a different cwd. Resolve the repository from the
+    // server module location when cwd is not the project root.
+    const moduleDir = path.dirname(decodeURIComponent(new URL(import.meta.url).pathname));
+    const candidates = [appDir, path.resolve(moduleDir, "..")];
+    const repoDir = candidates.find((candidate) => fs.existsSync(path.join(candidate, ".git"))) ?? appDir;
+
     // Check if it's a git repo
-    const isGitRepo = fs.existsSync(path.join(appDir, ".git"));
+    const isGitRepo = fs.existsSync(path.join(repoDir, ".git"));
     if (!isGitRepo) {
       throw new Error("Not a git repository. Cannot auto-update.");
     }
 
     // Never update over a dirty checkout. This keeps local edits and untracked
     // files safe, and avoids resolving a hidden stash after a partial update.
-    const localStatus = execFileSync("git", ["status", "--porcelain"], { cwd: appDir, stdio: "pipe" }).toString().trim();
+    const localStatus = execFileSync("git", ["status", "--porcelain"], { cwd: repoDir, stdio: "pipe" }).toString().trim();
     if (localStatus) {
       throw new Error("The application checkout has local changes. Commit or move them before updating.");
     }
@@ -274,14 +281,14 @@ export async function performAppUpdate(
     // Detect the default branch (main, master, etc.)
     let defaultBranch = "main";
     try {
-      const ref = execFileSync("git", ["symbolic-ref", "refs/remotes/origin/HEAD"], { cwd: appDir, stdio: "pipe" })
+      const ref = execFileSync("git", ["symbolic-ref", "refs/remotes/origin/HEAD"], { cwd: repoDir, stdio: "pipe" })
         .toString().trim().replace("refs/remotes/origin/", "");
       if (/^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(ref) && !ref.includes("..")) defaultBranch = ref;
     } catch {
       // Fallback: check common branch names
       for (const candidate of ["main", "master", "develop"]) {
         try {
-          execFileSync("git", ["rev-parse", "--verify", `origin/${candidate}`], { cwd: appDir, stdio: "pipe" });
+          execFileSync("git", ["rev-parse", "--verify", `origin/${candidate}`], { cwd: repoDir, stdio: "pipe" });
           defaultBranch = candidate;
           break;
         } catch { /* try next */ }
@@ -293,20 +300,20 @@ export async function performAppUpdate(
     // branch before pulling so the updater works on those installations too.
     let currentBranch = "";
     try {
-      currentBranch = execFileSync("git", ["branch", "--show-current"], { cwd: appDir, stdio: "pipe" }).toString().trim();
+      currentBranch = execFileSync("git", ["branch", "--show-current"], { cwd: repoDir, stdio: "pipe" }).toString().trim();
     } catch { /* the pull below will report a useful error */ }
     if (currentBranch !== defaultBranch) {
       try {
-        execFileSync("git", ["switch", defaultBranch], { cwd: appDir, stdio: "pipe" });
+        execFileSync("git", ["switch", defaultBranch], { cwd: repoDir, stdio: "pipe" });
       } catch {
-        execFileSync("git", ["switch", "--create", defaultBranch, `origin/${defaultBranch}`], { cwd: appDir, stdio: "pipe" });
+        execFileSync("git", ["switch", "--create", defaultBranch, `origin/${defaultBranch}`], { cwd: repoDir, stdio: "pipe" });
       }
     }
 
     // Pull latest changes including tags, without creating an implicit merge
     // commit in the production checkout.
     try {
-      execFileSync("git", ["pull", "--ff-only", "origin", defaultBranch, "--tags"], { cwd: appDir, stdio: "pipe" });
+      execFileSync("git", ["pull", "--ff-only", "origin", defaultBranch, "--tags"], { cwd: repoDir, stdio: "pipe" });
     } catch (err) {
       throw new Error(`git pull failed: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -315,21 +322,21 @@ export async function performAppUpdate(
     emit({ type: "update_progress", message: "Installing dependencies..." });
 
     // Detect package manager (check lock files first, then try bun, then npm)
-    const hasBunLock = fs.existsSync(path.join(appDir, "bun.lockb")) || fs.existsSync(path.join(appDir, "bun.lock"));
-    const hasPnpmLock = fs.existsSync(path.join(appDir, "pnpm-lock.yaml"));
-    const hasYarnLock = fs.existsSync(path.join(appDir, "yarn.lock"));
+    const hasBunLock = fs.existsSync(path.join(repoDir, "bun.lockb")) || fs.existsSync(path.join(repoDir, "bun.lock"));
+    const hasPnpmLock = fs.existsSync(path.join(repoDir, "pnpm-lock.yaml"));
+    const hasYarnLock = fs.existsSync(path.join(repoDir, "yarn.lock"));
     const pm = hasBunLock ? "bun" : hasPnpmLock ? "pnpm" : hasYarnLock ? "yarn" : whichBun() ? "bun" : "npm";
 
-    runPackageManager(pm, ["install"], appDir);
+    runPackageManager(pm, ["install"], repoDir);
 
     updateProgress = { status: "building", message: "Building application...", startedAt: updateProgress?.startedAt ?? Date.now() };
     emit({ type: "update_progress", message: "Building application..." });
 
-    runPackageManager(pm, ["run", "build"], appDir);
+    runPackageManager(pm, ["run", "build"], repoDir);
 
     // Record the newly installed version after a successful build
     try {
-      const tag = execFileSync("git", ["describe", "--tags", "--abbrev=0"], { cwd: appDir, stdio: "pipe" }).toString().trim();
+      const tag = execFileSync("git", ["describe", "--tags", "--abbrev=0"], { cwd: repoDir, stdio: "pipe" }).toString().trim();
       writeCurrentVersion(tag.replace(/^v/i, ""));
     } catch { /* best effort */ }
 
@@ -337,7 +344,7 @@ export async function performAppUpdate(
     emit({ type: "update_progress", message: "Restarting agent server..." });
 
     // Restart the agent server
-    await restartAgentServer(appDir);
+    await restartAgentServer(repoDir);
 
     updateProgress = { status: "complete", message: "Update complete! Server is restarting.", startedAt: updateProgress?.startedAt ?? Date.now() };      emit({
         type: "update_complete",
