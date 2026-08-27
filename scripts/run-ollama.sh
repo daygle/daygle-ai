@@ -11,9 +11,15 @@ if [ ! -x "$OLLAMA" ]; then
 fi
 
 export OLLAMA_MODELS="${OLLAMA_MODELS:-$ROOT/.ollama/models}"
-# Ollama is local-only: the browser UI and agent reach it through loopback.
+# Keep loopback as the safe default. Set OLLAMA_HOST to a private LAN
+# address (or 0.0.0.0) only when direct LAN clients are intentionally enabled.
 export OLLAMA_HOST="${OLLAMA_HOST:-127.0.0.1:11434}"
 export OLLAMA_ORIGINS="${OLLAMA_ORIGINS:-http://127.0.0.1:5173,http://localhost:5173}"
+
+case "$OLLAMA_HOST" in
+  127.0.0.1:*|localhost:*) ;;
+  *) echo "  LAN API: $OLLAMA_HOST (protect port 11434 with a firewall)" ;;
+ esac
 
 mkdir -p "$OLLAMA_MODELS"
 
@@ -27,6 +33,6 @@ if command -v curl >/dev/null 2>&1 && \
 fi
 
 echo "Starting Ollama…"
-echo "  API:     http://127.0.0.1:11434 (loopback only)"
+echo "  API:     http://$OLLAMA_HOST"
 echo "  Models:  $OLLAMA_MODELS"
 exec "$OLLAMA" serve

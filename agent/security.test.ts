@@ -1,6 +1,6 @@
 /// <reference types="bun" />
 import { describe, expect, test } from "bun:test";
-import { getAllowedUiOrigins, isAllowedUiOrigin, isLoopbackUrl, isSafeExternalUrl, LOOPBACK_HOST } from "./security";
+import { getAllowedUiOrigins, isAllowedUiOrigin, isLocalOllamaUrl, isAllowedOllamaUrl, isSafeExternalUrl, LOOPBACK_HOST } from "./security";
 
 describe("agent security defaults", () => {
   test("uses IPv4 loopback", () => {
@@ -16,11 +16,22 @@ describe("agent security defaults", () => {
   });
 
   test("accepts only HTTP loopback Ollama URLs", () => {
-    expect(isLoopbackUrl("http://127.0.0.1:11434")).toBe(true);
-    expect(isLoopbackUrl("http://localhost:11434")).toBe(true);
-    expect(isLoopbackUrl("https://127.0.0.1:11434")).toBe(false);
-    expect(isLoopbackUrl("http://192.168.1.20:11434")).toBe(false);
-    expect(isLoopbackUrl("http://127.0.0.1:11434@evil.example")).toBe(false);
+    expect(isLocalOllamaUrl("http://127.0.0.1:11434")).toBe(true);
+    expect(isLocalOllamaUrl("http://localhost:11434")).toBe(true);
+    expect(isLocalOllamaUrl("https://127.0.0.1:11434")).toBe(false);
+    expect(isLocalOllamaUrl("http://192.168.1.20:11434")).toBe(false);
+    expect(isLocalOllamaUrl("http://127.0.0.1:11434@evil.example")).toBe(false);
+  });
+
+  test("allows private LAN Ollama only when explicitly enabled", () => {
+    const previous = process.env.DAYGLE_ALLOW_REMOTE_OLLAMA;
+    delete process.env.DAYGLE_ALLOW_REMOTE_OLLAMA;
+    expect(isAllowedOllamaUrl("http://192.168.1.20:11434")).toBe(false);
+    process.env.DAYGLE_ALLOW_REMOTE_OLLAMA = "1";
+    expect(isAllowedOllamaUrl("http://192.168.1.20:11434")).toBe(true);
+    expect(isAllowedOllamaUrl("http://8.8.8.8:11434")).toBe(false);
+    if (previous === undefined) delete process.env.DAYGLE_ALLOW_REMOTE_OLLAMA;
+    else process.env.DAYGLE_ALLOW_REMOTE_OLLAMA = previous;
   });
 
   test("accepts public DNS names without treating them as IPv4", () => {

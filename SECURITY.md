@@ -20,9 +20,12 @@ authentication boundary: anyone who can use the LAN UI can request agent
 operations. Do not forward the UI through the public internet without adding
 application authentication and CSRF protection.
 
-Do not change `HOST` or `OLLAMA_HOST` to `0.0.0.0`; only the UI should be
-LAN-facing. If a different topology is required, design it as a separate
-security boundary with authentication and an authenticated reverse proxy.
+Keep `HOST` loopback-only. `OLLAMA_HOST` may be changed to a private LAN IP only
+when direct clients such as VS Code are required, and only together with
+`DAYGLE_ALLOW_REMOTE_OLLAMA=1` for the agent. Restrict port 11434 to the trusted
+LAN using the VM/Proxmox firewall; never expose it to the public internet. If a
+different topology is required, design it as a separate security boundary with
+authentication and an authenticated reverse proxy.
 
 ## Supported Versions
 

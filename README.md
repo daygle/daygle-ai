@@ -43,7 +43,7 @@ older than 570 and refuses `DAYGLE_VLLM=1` on any P4 before creating the
 venv or downloading vLLM; use bundled Ollama on that GPU.
 Open the UI
 at `http://<server-ip>:5173` from the server itself or another trusted LAN machine.
-Only the UI is LAN-facing; Ollama and the agent remain loopback-only behind its proxy.
+Only the UI is LAN-facing by default. For direct clients such as VS Code, remote Ollama access can be explicitly enabled for a private LAN address; the agent remains loopback-only.
 
 ### Preflight check
 
@@ -235,9 +235,21 @@ Ollama lives inside the project:
 
 > On Linux, `bun run ollama:install` requires `zstd` to extract the download - `sudo apt-get install zstd`. On Windows, use WSL2 or the official Ollama installer.
 
-For safety, the bundled UI accepts its same-origin `/api/ollama` proxy or an
-Ollama endpoint on this machine's loopback interface. Do not expose Ollama itself
-through a tunnel or separate reverse proxy.
+For safety, the bundled UI uses its same-origin `/api/ollama` proxy by default.
+To allow a trusted LAN client such as VS Code to connect directly, bind Ollama to
+its private LAN IP and set `DAYGLE_ALLOW_REMOTE_OLLAMA=1` for the agent. Never
+expose port 11434 to the public internet and restrict it with the VM/Proxmox
+firewall.
+
+Example for the bundled shell:
+
+```bash
+OLLAMA_HOST=192.168.1.50:11434 bun run ollama
+DAYGLE_ALLOW_REMOTE_OLLAMA=1 bun run agent
+```
+
+For systemd, use `systemctl edit daygle-ai-ollama` and override
+`OLLAMA_HOST=192.168.1.50:11434`, then restart both services.
 
 **Model updates.** The Models page compares each installed model's digest against the current registry manifest and shows an **Update available** badge with a one-click **Update** button. The check runs through the local agent server (`bun run agent`) because the Ollama registry doesn't send CORS headers the browser could use directly.
 
@@ -303,10 +315,11 @@ Set `DAYGLE_SANDBOX_NETWORK=1` to allow network access inside the sandbox (off b
 | `DAYGLE_SANDBOX_IMAGE` | `node:22-slim` | Docker/Podman image for sandboxed commands (pinned by digest on first use; `image@sha256:...` pins explicitly) |
 | `DAYGLE_SANDBOX_REGISTRIES` | `docker.io` | Comma-separated registries the sandbox image may come from |
 | `OLLAMA_MODELS` | `.ollama/models` | Where Ollama stores model weights |
-| `OLLAMA_HOST` | `127.0.0.1:11434` | Ollama bind address; keep loopback-only |
+| `OLLAMA_HOST` | `127.0.0.1:11434` | Ollama bind address; use a private LAN IP only when direct clients are needed |
 | `OLLAMA_ORIGINS` | local UI origins | Allowed browser origins; direct browser access is not required when using the UI proxy |
 | `PORT` / `HOST` | `8787` / `127.0.0.1` | Agent server bind; keep loopback-only |
 | `DAYGLE_UI_ORIGINS` | local UI origins | Comma-separated UI origins allowed to call the agent |
+| `DAYGLE_ALLOW_REMOTE_OLLAMA` | off | Set `1` to allow the agent to use a private LAN Ollama URL |
 
 ## Troubleshooting
 

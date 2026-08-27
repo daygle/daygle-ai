@@ -41,7 +41,7 @@ import {
   type PullEvent,
 } from "./pulls";
 import { checkForAppUpdate, checkForAppUpdateCached, getUpdateProgress, performAppUpdate } from "./app-update";
-import { getAllowedUiOrigins, isAllowedUiOrigin, isLoopbackUrl, LOOPBACK_HOST } from "./security";
+import { getAllowedUiOrigins, isAllowedUiOrigin, isAllowedOllamaUrl, LOOPBACK_HOST } from "./security";
 
 const PORT = Number(process.env.PORT ?? 8787);
 // The agent holds GitHub credentials and must never be reachable from the LAN.
@@ -52,7 +52,7 @@ const DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434";
 
 function localOllamaUrl(value?: string): string | null {
   const url = (value ?? DEFAULT_OLLAMA_URL).trim();
-  return isLoopbackUrl(url) ? url : null;
+  return isAllowedOllamaUrl(url) ? url : null;
 }
 
 /**

@@ -68,7 +68,7 @@ export function isAllowedUiOrigin(origin: string | undefined, allowed: ReadonlyS
 }
 
 /** Only allow the agent to send model requests to this machine's Ollama. */
-export function isLoopbackUrl(value: string): boolean {
+export function isLocalOllamaUrl(value: string): boolean {
   try {
     const url = new URL(value);
     return (
@@ -77,6 +77,29 @@ export function isLoopbackUrl(value: string): boolean {
       !url.password &&
       (url.hostname === "127.0.0.1" || url.hostname === "localhost")
     );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Ollama may be hosted on a trusted LAN machine. This opt-in check accepts
+ * private IPv4 addresses and private DNS names, while rejecting public hosts,
+ * credentials, and non-HTTP URLs. Set DAYGLE_ALLOW_REMOTE_OLLAMA=1 to enable.
+ */
+export function isAllowedOllamaUrl(value: string): boolean {
+  if (isLocalOllamaUrl(value)) return true;
+  if (process.env.DAYGLE_ALLOW_REMOTE_OLLAMA !== "1") return false;
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "http:" || url.username || url.password) return false;
+    const host = url.hostname.toLowerCase();
+    if (host === "localhost" || host === "127.0.0.1" || host.endsWith(".localhost")) return true;
+    const parts = host.split(".");
+    if (parts.length !== 4 || parts.some((part) => !/^\d+$/.test(part))) return false;
+    const [a, b] = parts.map(Number);
+    if ([a, b].some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return false;
+    return a === 10 || a === 192 && b === 168 || a === 172 && b >= 16 && b <= 31;
   } catch {
     return false;
   }

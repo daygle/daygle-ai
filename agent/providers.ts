@@ -7,7 +7,7 @@
  */
 
 import type { ToolDefinition } from "./tools";
-import { isLoopbackUrl, isSafeExternalUrl } from "./security";
+import { isAllowedOllamaUrl, isSafeExternalUrl } from "./security";
 
 // ── Shared types ────────────────────────────────────────────────────────────
 
@@ -88,7 +88,7 @@ export interface ProviderConfig {
 export function createProvider(config: ProviderConfig): ChatProvider {
   switch (config.kind) {
     case "ollama":
-      if (!isLoopbackUrl(config.baseUrl)) throw new Error("Ollama baseUrl must be a loopback address.");
+      if (!isAllowedOllamaUrl(config.baseUrl)) throw new Error("Ollama baseUrl must be a local address, or enable DAYGLE_ALLOW_REMOTE_OLLAMA=1 for a private LAN address.");
       return new OllamaProvider(config.baseUrl);
     case "openai":
       if (!isSafeExternalUrl(config.baseUrl)) throw new Error("Cloud provider URL must be a public HTTPS address.");
