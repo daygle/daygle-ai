@@ -448,7 +448,7 @@ Use the local Ollama server and give the agent a GitHub token.
             </span>
             <Button variant="outline" size="sm" onClick={handleSandboxCheck} disabled={sandboxTesting}>
               {sandboxTesting ? <Spinner /> : <ShieldCheck className="h-3.5 w-3.5" />}
-              {sandboxTesting ? "Testing…" : "Test sandbox"}
+              {sandboxTesting ? "Testing…" : "Test Sandbox"}
             </Button>
           </div>
           <p className="mt-2 text-xs text-muted-foreground">
